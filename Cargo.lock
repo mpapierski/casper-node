@@ -459,6 +459,7 @@ dependencies = [
  "num-integer",
  "num-traits",
  "proptest",
+ "rustc_version",
  "uint",
  "version-sync",
 ]

@@ -3,7 +3,7 @@ CARGO  = $(or $(shell which cargo),  $(HOME)/.cargo/bin/cargo)
 RUSTUP = $(or $(shell which rustup), $(HOME)/.cargo/bin/rustup)
 NPM    = $(or $(shell which npm),    /usr/bin/npm)
 
-RUST_TOOLCHAIN := nightly
+RUST_TOOLCHAIN := stable
 
 CARGO := $(CARGO) $(CARGO_OPTS)
 
@@ -60,15 +60,6 @@ ENGINE_CORE_WASM_DIR      = engine-core/wasm
 
 CRATES_WITH_DOCS_RS_MANIFEST_TABLE = \
 	contract \
-	engine-core \
-	engine-grpc-server \
-	engine-shared \
-	engine-storage \
-	engine-test-support \
-	engine-wasm-prep \
-	mint \
-	proof-of-stake \
-	standard-payment \
 	types
 
 CRATES_WITH_DOCS_RS_MANIFEST_TABLE := $(patsubst %, doc-stable/%, $(CRATES_WITH_DOCS_RS_MANIFEST_TABLE))
@@ -134,7 +125,7 @@ test-rs:
 
 .PHONY: test-as
 test-as: setup-as
-	cd contract-as && npm run asbuild && npm run test
+	cd smart-contracts/contract-as && npm run asbuild && npm run test
 
 .PHONY: test
 test: test-rs test-as
@@ -264,8 +255,8 @@ setup-nightly-rs: RUST_TOOLCHAIN := nightly
 setup-nightly-rs: setup-rs
 
 .PHONY: setup-as
-setup-as: contract-as/package.json
-	cd contract-as && $(NPM) ci
+setup-as: smart-contracts/contract-as/package.json
+	cd smart-contracts/contract-as && $(NPM) ci
 
 .PHONY: setup
 setup: setup-rs setup-as

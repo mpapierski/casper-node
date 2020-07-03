@@ -33,5 +33,8 @@ uint = { version = "0.8.2", default-features = false, features = [] }
 proptest = "0.9.4"
 version-sync = "0.8"
 
+[build-dependencies]
+rustc_version = "0.2.3"
+
 [package.metadata.docs.rs]
 features = ["no-unstable-features"]
