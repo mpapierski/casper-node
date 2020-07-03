@@ -19,7 +19,7 @@ clone:
 # NOTE: Anchors are per document
 # Anchor for default buildenv
 __buildenv: &buildenv
-  image: "rust:latest"
+  image: "casperlabs/buildenv:latest"
   environment:
     CARGO_HOME: ".cargo"
 
