@@ -54,6 +54,7 @@ steps:
   environment:
     RUSTFLAGS: '-D warnings'
   commands:
+  - rustup default nightly
   - rustup component add clippy
   - cargo +nightly clippy --all-targets
 
@@ -66,7 +67,6 @@ steps:
   <<: *buildenv
   commands:
   - make setup
-  - rustup default nightly
   - make test-contracts-rs test-contracts-as
 
 - name: rebuild-cache
