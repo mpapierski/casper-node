@@ -41,6 +41,7 @@ pub(crate) mod requests;
 
 use std::{
     any::type_name,
+    collections::HashSet,
     fmt::{self, Debug, Display, Formatter},
     future::Future,
     time::{Duration, Instant},
@@ -51,10 +52,13 @@ use smallvec::{smallvec, SmallVec};
 use tracing::error;
 
 use crate::{
-    components::storage::{self, StorageType, Value},
+    components::{
+        consensus::BlockContext,
+        storage::{self, StorageType, Value},
+    },
     effect::requests::DeployBroadcasterRequest,
     reactor::{EventQueueHandle, QueueKind},
-    types::Deploy,
+    types::{Deploy, ExecutedBlock, ProtoBlock},
 };
 use announcements::NetworkAnnouncement;
 use requests::{NetworkRequest, StorageRequest};
@@ -304,18 +308,23 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Gossip a network message.
+    /// Gossips a network message.
     ///
-    /// A low-level "gossip" function, selects a fixed number of randomly chosen nodes on the
-    /// network and sends each a copy of the message.
-    // TODO: Remove list-relaxation once function is used.
+    /// A low-level "gossip" function, selects `count` randomly chosen nodes on the network,
+    /// excluding the indicated ones, and sends each a copy of the message.
+    // TODO: Remove lint-relaxation once function is used.
     #[allow(dead_code)]
-    pub(crate) async fn gossip_message<I, P>(self, payload: P)
+    pub(crate) async fn gossip_message<I, P>(self, payload: P, count: usize, exclude: HashSet<I>)
     where
         REv: From<NetworkRequest<I, P>>,
     {
         self.make_request(
-            |responder| NetworkRequest::Gossip { payload, responder },
+            |responder| NetworkRequest::Gossip {
+                payload,
+                count,
+                exclude,
+                responder,
+            },
             QueueKind::Network,
         )
         .await
@@ -474,5 +483,40 @@ impl<REv> EffectBuilder<REv> {
                 QueueKind::Regular,
             )
             .await;
+    }
+
+    /// Passes the timestamp of a future block for which deploys are to be proposed
+    // TODO: Add an argument (`BlockContext`?) that contains all information necessary to select
+    // deploys, e.g. the ancestors' deploys.
+    pub(crate) async fn request_proto_block(
+        self,
+        block_context: BlockContext, // TODO: This `BlockContext` will probably be a different type
+                                     // than the context in the return value in the future
+    ) -> (ProtoBlock, BlockContext) {
+        // TODO: actually return the relevant deploys and an actual random bit
+        (
+            ProtoBlock {
+                deploys: vec![],
+                random_bit: false,
+            },
+            block_context,
+        )
+    }
+
+    /// Passes a finalized proto-block to the contract runtime for execution
+    pub(crate) async fn execute_block(self, _proto_block: ProtoBlock) -> ExecutedBlock {
+        // TODO: actually execute the block and return the relevant stuff
+        todo!()
+    }
+
+    /// Checks whether the deploys included in the proto-block exist on the network
+    pub(crate) async fn validate_proto_block<I>(
+        self,
+        _sender: I,
+        proto_block: ProtoBlock,
+    ) -> (bool, ProtoBlock) {
+        // TODO: check with the deploy fetcher or something whether the deploys whose hashes are
+        // contained in the proto-block actually exist
+        (true, proto_block)
     }
 }

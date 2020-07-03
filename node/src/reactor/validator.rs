@@ -10,13 +10,14 @@ use derive_more::From;
 use rand::SeedableRng;
 use rand_chacha::ChaCha20Rng;
 use serde::{Deserialize, Serialize};
+use tracing::Span;
 
 use crate::{
     components::{
         api_server::{self, ApiServer},
-        consensus::{self, Consensus},
-        contract_runtime::{self, ContractRuntime},
+        consensus::{self, EraSupervisor},
         deploy_broadcaster::{self, DeployBroadcaster},
+        contract_runtime::{self, ContractRuntime},
         pinger::{self, Pinger},
         storage::{Storage, StorageType},
         Component,
@@ -132,7 +133,7 @@ pub struct Reactor {
     pinger: Pinger,
     storage: Storage,
     api_server: ApiServer,
-    consensus: Consensus,
+    consensus: EraSupervisor,
     deploy_broadcaster: DeployBroadcaster,
     rng: ChaCha20Rng,
     contract_runtime: ContractRuntime,
@@ -145,13 +146,16 @@ impl reactor::Reactor for Reactor {
     fn new(
         cfg: Self::Config,
         event_queue: EventQueueHandle<Self::Event>,
+        span: &Span,
     ) -> Result<(Self, Multiple<Effect<Self::Event>>)> {
         let effect_builder = EffectBuilder::new(event_queue);
         let (net, net_effects) = SmallNetwork::new(event_queue, cfg.validator_net)?;
+        span.record("id", &tracing::field::display(net.node_id()));
+
         let (pinger, pinger_effects) = Pinger::new(effect_builder);
         let storage = Storage::new(&cfg.storage)?;
         let (api_server, api_server_effects) = ApiServer::new(cfg.http_server, effect_builder);
-        let (consensus, consensus_effects) = Consensus::new(effect_builder);
+        let consensus = EraSupervisor::new();
         let deploy_broadcaster = DeployBroadcaster::new();
         let (contract_runtime, contract_runtime_effects) =
             ContractRuntime::new(&cfg.storage, cfg.contract_runtime, effect_builder);
@@ -159,7 +163,6 @@ impl reactor::Reactor for Reactor {
         let mut effects = reactor::wrap_effects(Event::Network, net_effects);
         effects.extend(reactor::wrap_effects(Event::Pinger, pinger_effects));
         effects.extend(reactor::wrap_effects(Event::ApiServer, api_server_effects));
-        effects.extend(reactor::wrap_effects(Event::Consensus, consensus_effects));
         effects.extend(reactor::wrap_effects(
             Event::ContractRuntime,
             contract_runtime_effects,

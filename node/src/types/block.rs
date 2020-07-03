@@ -8,8 +8,35 @@ use crate::{
         asymmetric_key::{self, PublicKey, SecretKey, Signature},
         hash::{self, Digest},
     },
+    types::DeployHash,
     utils::DisplayIter,
 };
+
+/// The piece of information that will become the content of a future block (isn't finalized or
+/// executed yet)
+///
+/// From the view of the consensus protocol this is the "consensus value": The protocol deals with
+/// finalizing an order of `ProtoBlock`s. Only after consensus has been reached, the block's
+/// deploys actually get executed, and the executed block gets signed.
+///
+/// The word "proto" does _not_ refer to "protocol" or "protobuf"! It is just a prefix to highlight
+/// that this comes before a block in the linear, executed, finalized blockchain is produced.
+#[derive(Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ProtoBlock {
+    /// The list of deploy hashes included in the block
+    pub deploys: Vec<DeployHash>,
+    /// A random bit needed for initializing a future era
+    pub random_bit: bool,
+}
+
+/// A proto-block after execution, with the resulting post-state-hash
+#[derive(Clone, Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct ExecutedBlock {
+    /// The executed proto-block
+    pub proto_block: ProtoBlock,
+    /// The root hash of the resulting state
+    pub post_state_hash: Digest,
+}
 
 /// The cryptographic hash of a [`Block`](struct.Block.html).
 #[derive(Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Debug)]

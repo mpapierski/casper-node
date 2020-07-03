@@ -16,12 +16,12 @@ use super::{
     block::Block,
     evidence::Evidence,
     tallies::Tallies,
-    traits::Context,
     validators::ValidatorIndex,
     vertex::{Dependency, WireVote},
     vote::{Observation, Panorama, Vote},
 };
 use crate::components::consensus::highway_core::vertex::SignedWireVote;
+use crate::components::consensus::traits::Context;
 
 /// A vote weight.
 #[derive(
@@ -50,27 +50,16 @@ pub(crate) struct AddVoteError<C: Context> {
 
 #[derive(Debug, Error, PartialEq)]
 pub(crate) enum VoteError {
-    /// The vote's panorama is inconsistent.
+    #[error("The vote's panorama is inconsistent.")]
     Panorama,
-    /// The vote contains the wrong sequence number.
+    #[error("The vote contains the wrong sequence number.")]
     SequenceNumber,
-    /// The vote's timestamp is older than a justification's.
+    #[error("The vote's timestamp is older than a justification's.")]
     Timestamps,
-}
-
-impl Display for VoteError {
-    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
-        match self {
-            VoteError::Panorama => write!(formatter, "The vote's panorama is inconsistent."),
-            VoteError::SequenceNumber => {
-                write!(formatter, "The vote contains the wrong sequence number.")
-            }
-            VoteError::Timestamps => write!(
-                formatter,
-                "The vote's timestamp is older than a justification's"
-            ),
-        }
-    }
+    #[error("The creator is not a validator.")]
+    Creator,
+    #[error("The signature is invalid.")]
+    Signature,
 }
 
 impl<C: Context> SignedWireVote<C> {
@@ -210,9 +199,9 @@ impl<C: Context> State<C> {
         self.update_panorama(&swvote);
         let hash = wvote.hash();
         let fork_choice = self.fork_choice(&wvote.panorama).cloned();
-        let (vote, opt_values) = Vote::new(swvote, fork_choice.as_ref(), self);
-        if let Some(values) = opt_values {
-            let block = Block::new(fork_choice, values, self);
+        let (vote, opt_value) = Vote::new(swvote, fork_choice.as_ref(), self);
+        if let Some(value) = opt_value {
+            let block = Block::new(fork_choice, value, self);
             self.blocks.insert(hash.clone(), block);
         }
         self.votes.insert(hash, vote);
@@ -227,11 +216,11 @@ impl<C: Context> State<C> {
     pub(crate) fn wire_vote(&self, hash: &C::Hash) -> Option<SignedWireVote<C>> {
         let vote = self.opt_vote(hash)?.clone();
         let opt_block = self.opt_block(hash);
-        let values = opt_block.map(|block| block.values.clone());
+        let value = opt_block.map(|block| block.value.clone());
         let wvote = WireVote {
             panorama: vote.panorama.clone(),
             sender: vote.sender,
-            values,
+            value,
             seq_number: vote.seq_number,
             instant: vote.instant,
         };
@@ -324,7 +313,7 @@ impl<C: Context> State<C> {
     fn validate_vote(&self, swvote: &SignedWireVote<C>) -> Result<(), VoteError> {
         let wvote = &swvote.wire_vote;
         let sender = wvote.sender;
-        if (wvote.values.is_none() && wvote.panorama.is_empty())
+        if (wvote.value.is_none() && wvote.panorama.is_empty())
             || !self.is_panorama_valid(&wvote.panorama)
         {
             return Err(VoteError::Panorama);
@@ -492,9 +481,8 @@ fn log2(x: u64) -> u32 {
 pub(crate) mod tests {
     use std::{collections::hash_map::DefaultHasher, hash::Hasher};
 
-    use super::super::traits::ValidatorSecret;
-
     use super::*;
+    use crate::components::consensus::traits::ValidatorSecret;
 
     pub(crate) const WEIGHTS: &[Weight] = &[Weight(3), Weight(4), Weight(5)];
 
@@ -505,7 +493,7 @@ pub(crate) mod tests {
     pub(crate) const N: Observation<TestContext> = Observation::None;
     pub(crate) const F: Observation<TestContext> = Observation::Faulty;
 
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub(crate) struct TestContext;
 
     #[derive(Clone, Debug, Eq, PartialEq)]
@@ -611,7 +599,7 @@ pub(crate) mod tests {
     fn find_in_swimlane() -> Result<(), AddVoteError<TestContext>> {
         let mut state = State::new(WEIGHTS, 0);
         let mut a = Vec::new();
-        let vote = vote!(ALICE, ALICE_SEC, 0; N, N, N; Some(vec![0xA]));
+        let vote = vote!(ALICE, ALICE_SEC, 0; N, N, N; Some(0xA));
         a.push(vote.hash());
         state.add_vote(vote)?;
         for i in 1..10 {

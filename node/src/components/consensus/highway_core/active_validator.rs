@@ -2,12 +2,13 @@ use tracing::warn;
 
 use super::{
     state::State,
-    traits::Context,
     validators::ValidatorIndex,
     vertex::{Vertex, WireVote},
     vote::{Observation, Panorama},
 };
+use crate::components::consensus::consensus_protocol::{BlockContext, Timestamp};
 use crate::components::consensus::highway_core::vertex::SignedWireVote;
+use crate::components::consensus::traits::Context;
 
 /// An action taken by a validator.
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -21,25 +22,12 @@ pub(crate) enum Effect<C: Context> {
     RequestNewBlock(BlockContext),
 }
 
-/// Information about the context in which a new block is created.
-#[derive(Clone, Eq, PartialEq, Debug)]
-pub(crate) struct BlockContext {
-    instant: u64,
-}
-
-impl BlockContext {
-    /// The block's timestamp.
-    pub(crate) fn instant(&self) -> u64 {
-        self.instant
-    }
-}
-
 /// A validator that actively participates in consensus by creating new vertices.
 ///
 /// It implements the Highway schedule. The protocol proceeds in rounds, and in each round one
 /// validator is the _leader_.
-/// * In the beginning of the round, the leader sends a _proposal_ vote, containing consensus values
-///   (i.e. a block).
+/// * In the beginning of the round, the leader sends a _proposal_ vote, containing a consensus
+///   value (i.e. a block).
 /// * Upon receiving the proposal, all the other validators send a _confirmation_ vote, citing only
 ///   the proposal, their own previous message, and resulting transitive justifications.
 /// * At a fixed point in time later in the round, everyone unconditionally sends a _witness_ vote,
@@ -48,11 +36,11 @@ impl BlockContext {
 /// If the rounds are long enough (i.e. message delivery is fast enough) and there are enough
 /// honest validators, there will be a lot of confirmations for the proposal, and enough witness
 /// votes citing all those confirmations, to create a summit and finalize the proposal.
+#[derive(Debug)]
 pub(crate) struct ActiveValidator<C: Context> {
     /// Our own validator index.
     vidx: ValidatorIndex,
     /// The validator's secret signing key.
-    // TODO: Sign votes.
     secret: C::ValidatorSecret,
     /// The round exponent: Our subjective rounds are `1 << round_exp` milliseconds long.
     round_exp: u8,
@@ -90,7 +78,7 @@ impl<C: Context> ActiveValidator<C> {
         let round_offset = instant % self.round_len();
         let round_id = instant - round_offset;
         if round_offset == 0 && state.leader(round_id) == self.vidx {
-            let bctx = BlockContext { instant };
+            let bctx = BlockContext::new(Timestamp(instant));
             effects.push(Effect::RequestNewBlock(bctx));
         } else if round_offset == self.witness_offset() {
             let panorama = state.panorama_cutoff(state.panorama(), instant);
@@ -120,17 +108,17 @@ impl<C: Context> ActiveValidator<C> {
     /// Proposes a new block with the given consensus value.
     pub(crate) fn propose(
         &self,
-        values: Vec<C::ConsensusValue>,
+        value: C::ConsensusValue,
         block_context: BlockContext,
         state: &State<C>,
     ) -> Vec<Effect<C>> {
-        if self.earliest_vote_time(state) > block_context.instant {
+        let timestamp = block_context.timestamp().0;
+        if self.earliest_vote_time(state) > timestamp {
             warn!(?block_context, "skipping outdated proposal");
             return vec![];
         }
-        let panorama = state.panorama_cutoff(state.panorama(), block_context.instant);
-        let instant = block_context.instant();
-        let proposal_vote = self.new_vote(panorama, instant, Some(values), state);
+        let panorama = state.panorama_cutoff(state.panorama(), timestamp);
+        let proposal_vote = self.new_vote(panorama, timestamp, Some(value), state);
         vec![Effect::NewVertex(Vertex::Vote(proposal_vote))]
     }
 
@@ -177,7 +165,7 @@ impl<C: Context> ActiveValidator<C> {
         &self,
         panorama: Panorama<C>,
         instant: u64,
-        values: Option<Vec<C::ConsensusValue>>,
+        value: Option<C::ConsensusValue>,
         state: &State<C>,
     ) -> SignedWireVote<C> {
         let add1 = |vh: &C::Hash| state.vote(vh).seq_number + 1;
@@ -185,7 +173,7 @@ impl<C: Context> ActiveValidator<C> {
         let wvote = WireVote {
             panorama,
             sender: self.vidx,
-            values,
+            value,
             seq_number,
             instant,
         };
@@ -283,10 +271,10 @@ mod tests {
             [Eff::ScheduleTimer(426), Eff::RequestNewBlock(bctx)] => bctx.clone(),
             effects => panic!("unexpected effects {:?}", effects),
         };
-        assert_eq!(416, bctx.instant());
+        assert_eq!(416, bctx.timestamp().0);
 
         // She has a pending deploy from Colin who wants to pay for a hot beverage.
-        let effects = alice_av.propose(vec![0xC0FFEE], bctx, &state);
+        let effects = alice_av.propose(0xC0FFEE, bctx, &state);
         let proposal_wvote = unwrap_single(effects).unwrap_vote();
         let prop_hash = proposal_wvote.hash();
         state.add_vote(proposal_wvote)?;
@@ -312,7 +300,7 @@ mod tests {
 
         // Payment finalized! "One Pumpkin Spice Mochaccino for Corbyn!"
         assert_eq!(
-            FinalityResult::Finalized(vec![0xC0FFEE], Vec::new()),
+            FinalityResult::Finalized(0xC0FFEE, Vec::new()),
             fd.run(&state)
         );
         Ok(())

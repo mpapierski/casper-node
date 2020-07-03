@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use super::{state::State, traits::Context, validators::ValidatorIndex, vertex::WireVote};
-use crate::components::consensus::highway_core::traits::ValidatorSecret;
+use super::{state::State, validators::ValidatorIndex, vertex::WireVote};
 use crate::components::consensus::highway_core::vertex::SignedWireVote;
+use crate::components::consensus::traits::{Context, ValidatorSecret};
 
 /// The observed behavior of a validator at some point in time.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -95,6 +95,11 @@ impl<C: Context> Panorama<C> {
     pub(crate) fn update(&mut self, idx: ValidatorIndex, obs: Observation<C>) {
         self.0[idx.0 as usize] = obs;
     }
+
+    /// Returns the number of entries in the panorama. This must equal the number of validators.
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
 }
 
 /// A vote sent to or received from the network.
@@ -121,14 +126,14 @@ pub(crate) struct Vote<C: Context> {
 }
 
 impl<C: Context> Vote<C> {
-    /// Creates a new `Vote` from the `WireVote`, and returns the values if it contained any.
+    /// Creates a new `Vote` from the `WireVote`, and returns the value if it contained any.
     /// Values must be stored as a block, with the same hash.
     pub(crate) fn new(
         swvote: SignedWireVote<C>,
         fork_choice: Option<&C::Hash>,
         state: &State<C>,
-    ) -> (Vote<C>, Option<Vec<C::ConsensusValue>>) {
-        let block = if swvote.wire_vote.values.is_some() {
+    ) -> (Vote<C>, Option<C::ConsensusValue>) {
+        let block = if swvote.wire_vote.value.is_some() {
             swvote.wire_vote.hash() // A vote with a new block votes for itself.
         } else {
             // If the vote didn't introduce a new block, it votes for the fork choice itself.
@@ -159,7 +164,7 @@ impl<C: Context> Vote<C> {
             instant: swvote.wire_vote.instant,
             signature: swvote.signature,
         };
-        (vote, swvote.wire_vote.values)
+        (vote, swvote.wire_vote.value)
     }
 
     /// Returns the sender's previous message.

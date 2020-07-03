@@ -27,6 +27,7 @@ pub mod contract_shared;
 pub mod contract_storage;
 pub mod crypto;
 pub mod effect;
+pub mod logging;
 pub mod reactor;
 pub mod tls;
 pub mod types;
@@ -39,6 +40,7 @@ pub use components::{
     small_network::{Config as SmallNetworkConfig, Error as SmallNetworkError},
     storage::{Config as StorageConfig, Error as StorageError},
 };
+pub use utils::gossip_table::{Config as GossipTableConfig, Error as GossipTableError};
 
 /// The default listening port for the root node of the validator network.
 pub const ROOT_VALIDATOR_LISTENING_PORT: u16 = 34553;
