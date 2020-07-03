@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ApiServerConfig, GossipTableConfig, SmallNetworkConfig, StorageConfig,
-    ROOT_VALIDATOR_LISTENING_PORT,ContractRuntimeConfig,
+    ApiServerConfig, ContractRuntimeConfig, GossipTableConfig, SmallNetworkConfig, StorageConfig,
+    ROOT_VALIDATOR_LISTENING_PORT,
 };
 
 /// Root configuration.

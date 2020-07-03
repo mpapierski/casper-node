@@ -16,8 +16,8 @@ use crate::{
     components::{
         api_server::{self, ApiServer},
         consensus::{self, EraSupervisor},
-        deploy_broadcaster::{self, DeployBroadcaster},
         contract_runtime::{self, ContractRuntime},
+        deploy_broadcaster::{self, DeployBroadcaster},
         pinger::{self, Pinger},
         storage::{Storage, StorageType},
         Component,
