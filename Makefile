@@ -241,7 +241,7 @@ setup-audit:
 	$(CARGO) install cargo-audit
 
 .PHONY: setup-rs
-setup-rs: rust-toolchain
+setup-rs:
 	$(RUSTUP) update
 	$(RUSTUP) toolchain install $(RUST_TOOLCHAIN)
 	$(RUSTUP) target add --toolchain $(RUST_TOOLCHAIN) wasm32-unknown-unknown
