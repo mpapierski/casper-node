@@ -66,13 +66,8 @@ steps:
   <<: *buildenv
   commands:
   - make setup
+  - rustup default nightly
   - make test-contracts-rs test-contracts-as
-
-- name: test-contracts
-  <<: *buildenv
-  commands:
-  - make test-contracts-rs
-
 
 - name: rebuild-cache
   <<: *cache
