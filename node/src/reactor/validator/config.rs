@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{ApiServerConfig, SmallNetworkConfig, StorageConfig, ROOT_VALIDATOR_LISTENING_PORT};
+use crate::{
+    ApiServerConfig, ContractRuntimeConfig, SmallNetworkConfig, StorageConfig,
+    ROOT_VALIDATOR_LISTENING_PORT,
+};
 
 /// Root configuration.
 #[derive(Debug, Deserialize, Serialize)]
@@ -11,6 +14,8 @@ pub struct Config {
     pub http_server: ApiServerConfig,
     /// On-disk storage configuration.
     pub storage: StorageConfig,
+    /// Contract runtime configuration.
+    pub contract_runtime: ContractRuntimeConfig,
 }
 
 impl Default for Config {
@@ -19,6 +24,7 @@ impl Default for Config {
             validator_net: SmallNetworkConfig::default_on_port(ROOT_VALIDATOR_LISTENING_PORT),
             http_server: ApiServerConfig::default(),
             storage: StorageConfig::default(),
+            contract_runtime: ContractRuntimeConfig::default(),
         }
     }
 }

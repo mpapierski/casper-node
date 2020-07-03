@@ -149,11 +149,12 @@ impl reactor::Reactor for Reactor {
         let effect_builder = EffectBuilder::new(event_queue);
         let (net, net_effects) = SmallNetwork::new(event_queue, cfg.validator_net)?;
         let (pinger, pinger_effects) = Pinger::new(effect_builder);
-        let storage = Storage::new(cfg.storage)?;
+        let storage = Storage::new(&cfg.storage)?;
         let (api_server, api_server_effects) = ApiServer::new(cfg.http_server, effect_builder);
         let (consensus, consensus_effects) = Consensus::new(effect_builder);
         let deploy_broadcaster = DeployBroadcaster::new();
-        let (contract_runtime, contract_runtime_effects) = ContractRuntime::new(effect_builder);
+        let (contract_runtime, contract_runtime_effects) =
+            ContractRuntime::new(&cfg.storage, cfg.contract_runtime, effect_builder);
 
         let mut effects = reactor::wrap_effects(Event::Network, net_effects);
         effects.extend(reactor::wrap_effects(Event::Pinger, pinger_effects));
