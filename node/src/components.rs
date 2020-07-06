@@ -5,7 +5,7 @@
 pub(crate) mod api_server;
 pub(crate) mod consensus;
 pub mod contract_runtime;
-pub(crate) mod deploy_broadcaster;
+pub(crate) mod deploy_gossiper;
 pub(crate) mod pinger;
 pub(crate) mod small_network;
 pub(crate) mod storage;
