@@ -62,12 +62,6 @@ steps:
   commands:
   - cargo test
 
-- name: test-contracts
-  <<: *buildenv
-  commands:
-  - make setup
-  - make test-contracts-rs test-contracts-as
-
 - name: rebuild-cache
   <<: *cache
   settings:
