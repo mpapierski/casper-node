@@ -6,3 +6,4 @@ mod proof_of_stake;
 mod standard_payment;
 mod standard_payment_install;
 mod upgrade;
+mod auction;
