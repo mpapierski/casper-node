@@ -63,7 +63,10 @@ impl SystemProvider for AuctionContract {
         target: URef,
         amount: U512,
     ) -> StdResult<(), Self::Error> {
-        system::transfer_from_purse_to_purse(source, target, amount).map_err(|_| Error::Transfer)
+        let e = system::transfer_from_purse_to_purse(source, target, amount);
+
+        runtime::print(&format!("{:?}", e));
+        e.map_err(|_| Error::Transfer)
     }
 }
 

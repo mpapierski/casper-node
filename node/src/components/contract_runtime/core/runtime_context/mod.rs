@@ -249,6 +249,10 @@ where
         self.access_rights.extend(access_rights);
     }
 
+    pub fn access_rights(&self) -> &HashMap<Address, HashSet<AccessRights>> {
+        &self.access_rights
+    }
+
     pub fn account(&self) -> &'a Account {
         &self.account
     }
@@ -568,6 +572,7 @@ where
         if uref_has_access_rights(uref, &self.access_rights) {
             Ok(())
         } else {
+            println!("nope it does not match {:?}", uref);
             Err(Error::ForgedReference(*uref))
         }
     }
