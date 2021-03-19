@@ -1,0 +1,160 @@
+targets = [
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "wasm32-unknown-unknown" },
+]
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+yanked = "warn"
+notice = "warn"
+ignore = [
+]
+
+[licenses]
+
+unlicensed = "warn"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    # If we want to mark our unlicensed crates as COSL we'd have to also add [[licenses.clarify]].
+    # Currently they are considered "Unlicense"
+    "LicenseRef-CasperLabs-Open-Source",
+    "ISC",
+    "OpenSSL",
+    # NOTE: Not sure about compatibility of those with COSL:
+    "MPL-2.0",
+    "Unlicense",
+    "BlueOak-1.0.0",
+]
+deny = [
+]
+copyleft = "deny"
+allow-osi-fsf-free = "neither"
+default = "deny"
+confidence-threshold = 0.9
+exceptions = [
+]
+
+
+[licenses.private]
+ignore = true
+
+#
+# NOTE: smart contracts are unpublished externally does not have explicit
+# license file and they are considered Unlicensed by cargo-deny.
+#
+
+[[licenses.clarify]]
+name = "casper-node"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+
+[[licenses.clarify]]
+name = "casper-contract"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-client"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-engine-tests"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-engine-test-support"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-execution-engine"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-node-macros"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "cargo-casper"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-updater"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "casper-types"
+expression = "LicenseRef-CasperLabs-Open-Source"
+license-files = [
+    { path = "LICENSE", hash = 0xa585de01 }
+]
+
+[[licenses.clarify]]
+name = "ring"
+# SPDX considers OpenSSL to encompass both the OpenSSL and SSLeay licenses
+# https://spdx.org/licenses/OpenSSL.html
+# ISC - Both BoringSSL and ring use this for their new files
+# MIT - "Files in third_party/ have their own licenses, as described therein. The MIT
+# license, for third_party/fiat, which, unlike other third_party directories, is
+# compiled into non-test libraries, is included below."
+# OpenSSL - Obviously
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+allow = [
+]
+deny = [
+]
+skip = [
+]
+skip-tree = [
+]
+
+[sources]
+unknown-registry = "warn"
+unknown-git = "warn"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[sources.allow-org]
+github = [""]
+gitlab = [""]
+bitbucket = [""]
