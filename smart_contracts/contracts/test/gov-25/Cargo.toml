@@ -1,0 +1,21 @@
+[package]
+name = "gov-25"
+version = "0.1.0"
+authors = ["Michał Papierski <michal@casperlabs.io>"]
+edition = "2018"
+
+[[bin]]
+name = "gov_25"
+path = "src/bin/main.rs"
+bench = false
+doctest = false
+test = false
+
+[features]
+default = ["no-std"]
+no-std = ["casper-contract/no-std", "casper-contract/provide-allocator", "casper-types/no-std"]
+std = ["casper-contract/std", "casper-types/std"]
+
+[dependencies]
+casper-contract = { path = "../../../contract", default-features = false }
+casper-types = { path = "../../../../types", default-features = false }
