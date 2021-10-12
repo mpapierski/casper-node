@@ -19,7 +19,7 @@ use crate::{
             system_contract_cache::SystemContractCache, EngineConfig,
         },
         execution::{address_generator::AddressGenerator, Error},
-        runtime::{extract_access_rights_from_keys, instance_and_memory, Runtime},
+        runtime::{extract_access_rights_from_keys, Runtime},
         runtime_context::{self, RuntimeContext},
         tracking_copy::{TrackingCopy, TrackingCopyExt},
     },
@@ -133,10 +133,9 @@ impl Executor {
         let entry_point_type = entry_point.entry_point_type();
         let entry_point_access = entry_point.access();
 
-        let instance = on_fail_charge!(instance_and_memory(
+        let instance = on_fail_charge!(self.wasm_engine.instance_and_memory(
             module.clone(),
             protocol_version,
-            &self.wasm_engine,
         ));
 
         let access_rights = {
@@ -289,7 +288,12 @@ impl Executor {
         let instance_ref = runtime.instance().clone();
 
         on_fail_charge!(
-            instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime),
+            instance_ref.invoke_export(
+                &self.wasm_engine,
+                entry_point_name,
+                Vec::new(),
+                &mut runtime
+            ),
             runtime.context().gas_counter(),
             execution_effect,
             runtime.context().transfers().to_owned()
@@ -608,7 +612,12 @@ impl Executor {
 
         let instance_ref = runtime.instance().clone();
 
-        let error = match instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime) {
+        let error = match instance_ref.invoke_export(
+            &self.wasm_engine,
+            entry_point_name,
+            Vec::new(),
+            &mut runtime,
+        ) {
             Err(error) => error,
             Ok(_) => {
                 // This duplicates the behavior of runtime sub_call.
@@ -703,7 +712,7 @@ impl Executor {
             transfers,
         );
 
-        let instance = instance_and_memory(module.clone(), protocol_version, &self.wasm_engine)?;
+        let instance = self.wasm_engine.instance_and_memory(module.clone(), protocol_version)?;
 
         let runtime = Runtime::new(
             self.config,

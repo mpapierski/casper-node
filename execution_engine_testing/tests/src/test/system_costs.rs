@@ -1,15 +1,7 @@
 use num_traits::Zero;
 use once_cell::sync::Lazy;
 
-use casper_engine_test_support::{
-    internal::{
-        utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
-        UpgradeRequestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_PUBLIC_KEY,
-        DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
-};
+use casper_engine_test_support::{AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, internal::{DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION, DEFAULT_RUN_GENESIS_REQUEST, DEFAULT_WASM_CONFIG, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder, utils}};
 use casper_execution_engine::{
     core::engine_state::{
         genesis::GenesisValidator, EngineConfig, GenesisAccount, DEFAULT_MAX_QUERY_DEPTH,
@@ -36,7 +28,7 @@ use casper_execution_engine::{
         },
         wasm,
         wasm_config::{
-            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+            WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
         },
     },
 };
@@ -196,7 +188,7 @@ fn upgraded_add_bid_and_withdraw_bid_have_expected_costs() {
     let new_engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         new_max_associated_keys,
-        WasmConfig::default(),
+        DEFAULT_WASM_CONFIG.clone(),
         new_system_config,
     );
 
@@ -434,7 +426,7 @@ fn upgraded_delegate_and_undelegate_have_expected_costs() {
     let new_engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         new_max_associated_keys,
-        WasmConfig::default(),
+        DEFAULT_WASM_CONFIG.clone(),
         new_system_config,
     );
 
@@ -850,7 +842,7 @@ fn should_verify_wasm_add_bid_wasm_cost_is_not_recursive() {
     let new_wasm_config = WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT,
-        DEFAULT_EXECUTION_MODE,
+        *DEFAULT_EXECUTION_MODE,
         new_opcode_costs,
         new_storage_costs,
         new_host_function_costs,

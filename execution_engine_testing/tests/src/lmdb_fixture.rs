@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use casper_engine_test_support::internal::LmdbWasmTestBuilder;
+use casper_engine_test_support::internal::{DEFAULT_ENGINE_CONFIG, LmdbWasmTestBuilder};
 use casper_types::ProtocolVersion;
 use fs_extra::dir;
 use serde::{Deserialize, Serialize};
@@ -72,7 +72,7 @@ pub fn builder_from_global_state_fixture(
     (
         LmdbWasmTestBuilder::open(
             &path_to_gs,
-            EngineConfig::default(),
+            *DEFAULT_ENGINE_CONFIG,
             lmdb_fixture_state.post_state_hash,
         ),
         lmdb_fixture_state,
@@ -93,7 +93,7 @@ pub fn generate_fixture(
     let lmdb_fixtures_root = path_to_lmdb_fixtures();
     let fixture_root = lmdb_fixtures_root.join(name);
 
-    let engine_config = EngineConfig::default();
+    let engine_config = *DEFAULT_ENGINE_CONFIG;
     let mut builder = LmdbWasmTestBuilder::new_with_config(&fixture_root, engine_config);
 
     builder.run_genesis(&genesis_request);

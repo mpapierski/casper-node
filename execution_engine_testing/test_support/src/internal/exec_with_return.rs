@@ -136,7 +136,7 @@ where
 
     let module = parity_module.take_module();
 
-    let instance = runtime::instance_and_memory(module.clone(), protocol_version, &wasm_engine)
+    let instance = wasm_engine.instance_and_memory(module.clone(), protocol_version)
         .expect("should be able to make wasm instance from module");
 
     let mut runtime = Runtime::new(
@@ -151,7 +151,7 @@ where
 
     let instance_ref = runtime.instance().clone();
 
-    match instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime) {
+    match instance_ref.invoke_export(wasm_engine, entry_point_name, Vec::new(), &mut runtime) {
         Ok(_) => None,
         Err(e) => {
             if let Some(exec_error) = e.as_execution_error() {

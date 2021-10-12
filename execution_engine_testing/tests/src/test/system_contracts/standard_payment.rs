@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use assert_matches::assert_matches;
 
 use casper_engine_test_support::{
@@ -242,10 +244,14 @@ fn should_run_out_of_gas_when_session_code_exceeds_gas_limit() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    let transfer_result = builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
-        .exec(exec_request)
-        .commit()
+    builder
+        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+
+    let start = Instant::now();
+    builder.exec(exec_request);
+    let stop = start.elapsed();
+
+    let transfer_result = builder.commit()
         .finish();
 
     let response = transfer_result
@@ -263,6 +269,7 @@ fn should_run_out_of_gas_when_session_code_exceeds_gas_limit() {
         session_gas_limit,
         "cost should equal gas limit"
     );
+    eprintln!("elapsed {:?}", stop);
 }
 
 #[ignore]

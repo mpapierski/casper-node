@@ -10,13 +10,7 @@ mod wasm_test_builder;
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
 
-use casper_execution_engine::{
-    core::engine_state::{
-        genesis::{ExecConfig, GenesisAccount, GenesisConfig},
-        run_genesis_request::RunGenesisRequest,
-    },
-    shared::{system_config::SystemConfig, wasm_config::WasmConfig},
-};
+use casper_execution_engine::{core::engine_state::{DEFAULT_MAX_QUERY_DEPTH, EngineConfig, genesis::{ExecConfig, GenesisAccount, GenesisConfig}, run_genesis_request::RunGenesisRequest}, shared::{host_function_costs::HostFunctionCosts, opcode_costs::OpcodeCosts, storage_costs::StorageCosts, system_config::SystemConfig, wasm_config::{DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY, WasmConfig}, wasm_engine::ExecutionMode}};
 use casper_hashing::Digest;
 use casper_types::{account::AccountHash, Motes, ProtocolVersion, PublicKey, SecretKey, U512};
 
@@ -52,6 +46,22 @@ pub const DEFAULT_GENESIS_TIMESTAMP_MILLIS: u64 = 0;
 pub const DEFAULT_MAX_ASSOCIATED_KEYS: u32 = 100;
 pub const DEFAULT_BLOCK_TIME: u64 = 0;
 pub const DEFAULT_GAS_PRICE: u64 = 1;
+
+pub const ENV_EXECUTION_MODE: &str = "CASPER_EXECUTION_MODE";
+pub const ENV_EXECUTION_MODE_COMPILED: &str = "compiled";
+pub const ENV_EXECUTION_MODE_INTERPRETED: &str = "interpreted";
+
+fn execution_mode_from_env() -> ExecutionMode {
+    match std::env::var_os(ENV_EXECUTION_MODE) {
+        Some(value) if value == ENV_EXECUTION_MODE_INTERPRETED => ExecutionMode::Interpreted,
+        Some(value) if value == ENV_EXECUTION_MODE_COMPILED => ExecutionMode::Compiled,
+        Some(_) | None => ExecutionMode::Interpreted,
+    }
+}
+
+/// TODO: This is initial plumbing to rapidly iterate and compare results from both execution modes.
+pub static DEFAULT_EXECUTION_MODE: Lazy<ExecutionMode> = Lazy::new(execution_mode_from_env);
+
 pub const MOCKED_ACCOUNT_ADDRESS: AccountHash = AccountHash::new([48u8; 32]);
 
 pub const ARG_AMOUNT: &str = "amount";
@@ -94,7 +104,19 @@ pub static DEFAULT_ACCOUNTS: Lazy<Vec<GenesisAccount>> = Lazy::new(|| {
 });
 pub static DEFAULT_PROTOCOL_VERSION: Lazy<ProtocolVersion> = Lazy::new(|| ProtocolVersion::V1_0_0);
 pub static DEFAULT_PAYMENT: Lazy<U512> = Lazy::new(|| U512::from(1_500_000_000_000u64));
-pub static DEFAULT_WASM_CONFIG: Lazy<WasmConfig> = Lazy::new(WasmConfig::default);
+pub static DEFAULT_WASM_CONFIG: Lazy<WasmConfig> = Lazy::new(|| {
+    WasmConfig::new(
+        DEFAULT_WASM_MAX_MEMORY,
+        DEFAULT_MAX_STACK_HEIGHT,
+        *DEFAULT_EXECUTION_MODE,
+        OpcodeCosts::default(),
+        StorageCosts::default(),
+        HostFunctionCosts::default(),
+    )
+});
+pub static DEFAULT_ENGINE_CONFIG: Lazy<EngineConfig> = Lazy::new(|| {
+    EngineConfig::new(DEFAULT_MAX_QUERY_DEPTH, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_WASM_CONFIG.clone(), *DEFAULT_SYSTEM_CONFIG)
+});
 pub static DEFAULT_SYSTEM_CONFIG: Lazy<SystemConfig> = Lazy::new(SystemConfig::default);
 pub static DEFAULT_EXEC_CONFIG: Lazy<ExecConfig> = Lazy::new(|| {
     ExecConfig::new(

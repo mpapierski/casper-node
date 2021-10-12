@@ -15,7 +15,7 @@ pub const DEFAULT_WASM_MAX_MEMORY: u32 = 64;
 /// Default maximum stack height.
 pub const DEFAULT_MAX_STACK_HEIGHT: u32 = 64 * 1024;
 /// Default execution mode.
-pub const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Interpreted;
+pub(crate) const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Compiled;
 
 /// Configuration of the Wasm execution environment.
 ///

@@ -6,13 +6,7 @@ use std::{env, path::PathBuf};
 
 use clap::{crate_version, App};
 
-use casper_engine_test_support::internal::{
-    DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, ARG_AMOUNT, DEFAULT_ACCOUNTS,
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_AUCTION_DELAY, DEFAULT_GENESIS_CONFIG_HASH,
-    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_PAYMENT,
-    DEFAULT_PROTOCOL_VERSION, DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG,
-    DEFAULT_UNBONDING_DELAY, DEFAULT_VALIDATOR_SLOTS, DEFAULT_WASM_CONFIG,
-};
+use casper_engine_test_support::internal::{ARG_AMOUNT, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR, DEFAULT_AUCTION_DELAY, DEFAULT_ENGINE_CONFIG, DEFAULT_GENESIS_CONFIG_HASH, DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION, DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY, DEFAULT_VALIDATOR_SLOTS, DEFAULT_WASM_CONFIG, DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder};
 use casper_engine_tests::profiling;
 use casper_execution_engine::core::engine_state::{
     engine_config::EngineConfig, genesis::ExecConfig, run_genesis_request::RunGenesisRequest,
@@ -64,7 +58,7 @@ fn main() {
         ExecuteRequestBuilder::new().push_deploy(deploy).build()
     };
 
-    let engine_config = EngineConfig::default();
+    let engine_config = *DEFAULT_ENGINE_CONFIG;
     let mut builder = LmdbWasmTestBuilder::new_with_config(&data_dir, engine_config);
 
     let exec_config = ExecConfig::new(

@@ -1,24 +1,20 @@
 use std::{collections::BTreeSet, convert::TryFrom};
 
-use wasmi::{Externals, RuntimeArgs, RuntimeValue, Trap};
+use wasmi::{Externals, MemoryRef, RuntimeArgs, RuntimeValue, Trap};
 
-use casper_types::{
-    account,
-    account::AccountHash,
-    api_error,
-    bytesrepr::{self, ToBytes},
-    contracts::{ContractPackageStatus, EntryPoints, NamedKeys},
-    system::auction::EraInfo,
-    ContractHash, ContractPackageHash, ContractVersion, EraId, Gas, Group, Key, StoredValue, URef,
-    U512,
-};
+use casper_types::{CLValue, ContractHash, ContractPackageHash, ContractVersion, EraId, Gas, Group, Key, StoredValue, U512, URef, account, account::AccountHash, api_error, bytesrepr::{self, FromBytes, ToBytes}, contracts::{ContractPackageStatus, EntryPoints, NamedKeys}, system::auction::EraInfo};
 
 use super::{scoped_instrumenter::ScopedInstrumenter, wasmi_args_parser::Args, Error, Runtime};
-use crate::{
-    core::resolvers::v1_function_index::FunctionIndex,
-    shared::host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
-    storage::global_state::StateReader,
-};
+use crate::{core::{execution, resolvers::v1_function_index::FunctionIndex}, shared::host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY}, storage::global_state::StateReader};
+
+fn t_from_memory<T>(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<T, Error> where T: FromBytes {
+    let bytes  = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
+    Ok(bytesrepr::deserialize(bytes)?)
+}
+
+fn cl_value_from_memory(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<CLValue, Error> {
+    t_from_memory(&memory_ref, offset, size)
+}
 
 impl<'a, R> Externals for Runtime<'a, R>
 where
@@ -75,8 +71,11 @@ where
                     &host_function_costs.write,
                     [key_ptr, key_size, value_ptr, value_size],
                 )?;
+                let memory = self.instance.interpreted_memory();
+                let key: Key =t_from_memory(&memory, key_ptr, key_size as usize)?;
+                let cl_value: CLValue = t_from_memory(&memory, value_ptr, value_size as usize)?;
                 scoped_instrumenter.add_property("value_size", value_size);
-                self.write(key_ptr, key_size, value_ptr, value_size)?;
+                self.casper_write(key, cl_value)?;
                 Ok(None)
             }
 
@@ -104,7 +103,15 @@ where
                     [uref_ptr, value_ptr, value_size],
                 )?;
                 scoped_instrumenter.add_property("value_size", value_size);
-                self.new_uref(uref_ptr, value_ptr, value_size)?;
+                let memory = self.instance.interpreted_memory();
+
+                let value = cl_value_from_memory(&memory, value_ptr, value_size as usize)?;
+
+                let uref = self.casper_new_uref(value)?;
+
+                let bytes = uref.into_bytes().map_err(Error::from)?;
+                memory.set(uref_ptr, &bytes).map_err(|e| Error::Interpreter(e.into()))?;
+
                 Ok(None)
             }
 
@@ -505,7 +512,10 @@ where
                 // args(0) = pointer to Wasm memory where to write.
                 let (dest_ptr,) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
-                self.get_main_purse(dest_ptr)?;
+                let purse = self.casper_get_main_purse()?;
+                let bytes = purse.into_bytes().map_err(Error::from)?;
+                let memory = self.memory();
+                memory.set(dest_ptr, &bytes).map_err(|e| Error::Interpreter(e.into()))?;
                 Ok(None)
             }
 

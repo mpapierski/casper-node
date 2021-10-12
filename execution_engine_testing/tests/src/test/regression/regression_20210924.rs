@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use num_traits::Zero;
 
 use casper_engine_test_support::{
@@ -131,7 +133,9 @@ fn should_execute_do_minimum_session() {
 
     let account_balance_before = builder.get_purse_balance(account.main_purse());
 
+    let start = Instant::now();
     builder.exec(do_minimum_request).expect_success().commit();
+    let stop = start.elapsed();
 
     let gas = builder.last_exec_gas_cost();
     assert_eq!(gas, Gas::from(DEFAULT_NOP_COST));
@@ -147,6 +151,7 @@ fn should_execute_do_minimum_session() {
         proposer_balance_before + minimum_deploy_payment,
         proposer_balance_after
     );
+    eprintln!("elapsed {:?}", stop);
 }
 
 #[ignore]

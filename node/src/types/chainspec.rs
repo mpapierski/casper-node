@@ -206,12 +206,7 @@ mod tests {
     use num_rational::Ratio;
     use once_cell::sync::Lazy;
 
-    use casper_execution_engine::shared::{
-        host_function_costs::{HostFunction, HostFunctionCosts},
-        opcode_costs::OpcodeCosts,
-        storage_costs::StorageCosts,
-        wasm_config::{WasmConfig, DEFAULT_EXECUTION_MODE},
-    };
+    use casper_execution_engine::shared::{host_function_costs::{HostFunction, HostFunctionCosts}, opcode_costs::OpcodeCosts, storage_costs::StorageCosts, wasm_config::WasmConfig, wasm_engine::ExecutionMode};
     use casper_types::{EraId, Motes, ProtocolVersion, StoredValue, U512};
 
     use super::*;
@@ -269,7 +264,7 @@ mod tests {
         WasmConfig::new(
             17, // initial_memory
             19, // max_stack_height
-            DEFAULT_EXECUTION_MODE,
+            ExecutionMode::Interpreted, // default value
             EXPECTED_GENESIS_COSTS,
             EXPECTED_GENESIS_STORAGE_COSTS,
             *EXPECTED_GENESIS_HOST_FUNCTION_COSTS,

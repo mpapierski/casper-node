@@ -64,6 +64,8 @@ use crate::internal::{
     utils, ExecuteRequestBuilder, DEFAULT_PROPOSER_ADDR, DEFAULT_PROTOCOL_VERSION, SYSTEM_ADDR,
 };
 
+use super::DEFAULT_ENGINE_CONFIG;
+
 /// LMDB initial map size is calculated based on DEFAULT_LMDB_PAGES and systems page size.
 const DEFAULT_LMDB_PAGES: usize = 256_000_000;
 
@@ -77,6 +79,7 @@ const GLOBAL_STATE_DIR: &str = "global_state";
 
 pub type InMemoryWasmTestBuilder = WasmTestBuilder<InMemoryGlobalState>;
 pub type LmdbWasmTestBuilder = WasmTestBuilder<LmdbGlobalState>;
+
 
 /// Builder for simple WASM test
 pub struct WasmTestBuilder<S> {
@@ -114,7 +117,7 @@ impl<S> WasmTestBuilder<S> {
 impl Default for InMemoryWasmTestBuilder {
     fn default() -> Self {
         Self::initialize_logging();
-        let engine_config = EngineConfig::default();
+        let engine_config = *DEFAULT_ENGINE_CONFIG;
 
         let global_state = InMemoryGlobalState::empty().expect("should create global state");
         let engine_state = EngineState::new(global_state, engine_config);

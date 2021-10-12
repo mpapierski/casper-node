@@ -2,14 +2,7 @@ use std::collections::BTreeMap;
 
 use num_rational::Ratio;
 
-use casper_engine_test_support::{
-    internal::{
-        ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
-        DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_RUN_GENESIS_REQUEST, DEFAULT_UNBONDING_DELAY,
-        DEFAULT_WASM_CONFIG,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR,
-};
+use casper_engine_test_support::{AccountHash, DEFAULT_ACCOUNT_ADDR, internal::{DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_RUN_GENESIS_REQUEST, DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder}};
 
 use casper_execution_engine::{
     core::engine_state::{EngineConfig, DEFAULT_MAX_QUERY_DEPTH},
@@ -30,7 +23,7 @@ use casper_execution_engine::{
             DEFAULT_WASMLESS_TRANSFER_COST,
         },
         wasm_config::{
-            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+            WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
         },
     },
 };
@@ -75,7 +68,7 @@ fn get_upgraded_wasm_config() -> WasmConfig {
     WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT * 2,
-        DEFAULT_EXECUTION_MODE,
+        *DEFAULT_EXECUTION_MODE,
         opcode_cost,
         storage_costs,
         host_function_costs,

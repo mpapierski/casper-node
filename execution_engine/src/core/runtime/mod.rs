@@ -12,6 +12,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::TryFrom,
     iter::IntoIterator,
+    rc::Rc,
 };
 
 use itertools::Itertools;
@@ -40,22 +41,14 @@ use casper_types::{
     TransferResult, TransferredTo, URef, DICTIONARY_ITEM_KEY_MAX_LENGTH, U128, U256, U512,
 };
 
-use crate::{
-    core::{
+use crate::{core::{
         engine_state::{system_contract_cache::SystemContractCache, EngineConfig},
         execution::{self, Error},
         resolvers::{create_module_resolver, memory_resolver::MemoryResolver},
         runtime::scoped_instrumenter::ScopedInstrumenter,
         runtime_context::{self, RuntimeContext},
         Address,
-    },
-    shared::{
-        host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
-        wasm_config::WasmConfig,
-        wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine},
-    },
-    storage::global_state::StateReader,
-};
+    }, shared::{host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY}, wasm_config::WasmConfig, wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine}}, storage::global_state::StateReader};
 
 use super::resolvers::v1_function_index::FunctionIndex;
 
@@ -71,42 +64,6 @@ pub struct Runtime<'a, R> {
     wasm_engine: &'a WasmEngine,
 }
 
-/// Creates an WASM module instance and a memory instance.
-///
-/// This ensures that a memory instance is properly resolved into a pre-allocated memory area, and a
-/// host function resolver is attached to the module.
-///
-/// The WASM module is also validated to not have a "start" section as we currently don't support
-/// running it.
-///
-/// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
-pub fn instance_and_memory(
-    wasm_module: Module,
-    protocol_version: ProtocolVersion,
-    wasm_engine: &WasmEngine,
-) -> Result<Instance, Error> {
-    match wasm_engine.execution_mode() {
-        ExecutionMode::Interpreted => {
-            let wasmi_module = wasm_module
-                .try_into_interpreted()
-                .expect("expected interpreted wasm module");
-            let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
-            let resolver = create_module_resolver(protocol_version, wasm_engine.wasm_config())?;
-            let mut imports = ImportsBuilder::new();
-            imports.push_resolver("env", &resolver);
-            let not_started_module = ModuleInstance::new(&module, &imports)?;
-            if not_started_module.has_start() {
-                return Err(Error::UnsupportedWasmStart);
-            }
-            let instance = not_started_module.not_started_instance().clone();
-            let memory = resolver.memory_ref()?;
-            Ok(Instance::Interpreted(instance, memory))
-        }
-        ExecutionMode::Compiled => {
-            todo!("compiled mode")
-        }
-    }
-}
 
 /// Turns `key` into a `([u8; 32], AccessRights)` tuple.
 /// Returns None if `key` is not `Key::URef` as it wouldn't have `AccessRights`
@@ -1024,7 +981,7 @@ where
         &self.context
     }
 
-    fn gas(&mut self, amount: Gas) -> Result<(), Error> {
+    pub(crate) fn gas(&mut self, amount: Gas) -> Result<(), Error> {
         self.context.charge_gas(amount)
     }
 
@@ -1052,8 +1009,12 @@ where
     }
 
     /// Returns bytes from the WASM memory instance.
-    fn bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
+    fn  bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
         self.memory().get(ptr, size).map_err(Into::into)
+    }
+
+    fn memory(&self) -> MemoryRef {
+        self.instance.interpreted_memory()
     }
 
     /// Returns a deserialized type from the WASM memory instance.
@@ -1088,7 +1049,7 @@ where
         &mut self,
         entry_points: &EntryPoints,
     ) -> Result<Vec<u8>, Error> {
-        let mut parity_wasm = self.module.clone().into_interpreted()?;
+        let mut parity_wasm = self.module.clone().into_interpreted();
 
         let export_section = parity_wasm
             .export_section()
@@ -1109,7 +1070,7 @@ where
         if let Some(missing_name) = maybe_missing_name {
             Err(Error::FunctionNotFound(missing_name))
         } else {
-            let mut module = self.module.clone().into_interpreted()?;
+            let mut module = self.module.clone().into_interpreted();
             pwasm_utils::optimize(&mut module, entry_point_names)?;
             parity_wasm::serialize(module).map_err(Error::ParityWasm)
         }
@@ -1191,12 +1152,9 @@ where
     }
 
     /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
-    fn get_main_purse(&mut self, dest_ptr: u32) -> Result<(), Error> {
+    pub(crate) fn casper_get_main_purse(&mut self) -> Result<URef, Error> {
         let purse = self.context.get_main_purse()?;
-        let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
-        self.memory()
-            .set(dest_ptr, &purse_bytes)
-            .map_err(|e| Error::Interpreter(e.into()).into())
+        Ok(purse)
     }
 
     /// Writes caller (deploy) account public key to dest_ptr in the Wasm
@@ -2205,7 +2163,7 @@ where
 
         let entry_point_name = entry_point.name();
 
-        let instance = instance_and_memory(module.clone(), protocol_version, self.wasm_engine)?;
+        let instance = self.wasm_engine.instance_and_memory(module.clone(), protocol_version)?;
 
         let access_rights = {
             let mut keys: Vec<Key> = named_keys.values().cloned().collect();
@@ -2272,7 +2230,12 @@ where
 
         let instance_ref = runtime.instance().clone();
 
-        let result = instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime);
+        let result = instance_ref.invoke_export(
+            self.wasm_engine,
+            entry_point_name,
+            Vec::new(),
+            &mut runtime,
+        );
 
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
@@ -2682,24 +2645,23 @@ where
 
     /// Generates new unforgable reference and adds it to the context's
     /// access_rights set.
-    fn new_uref(&mut self, uref_ptr: u32, value_ptr: u32, value_size: u32) -> Result<(), Error> {
-        let cl_value = self.cl_value_from_mem(value_ptr, value_size)?; // read initial value from memory
+    pub(crate) fn casper_new_uref(&mut self, cl_value: CLValue) -> Result<URef, Error> {
         let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
-        self.memory()
-            .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
-            .map_err(|e| Error::Interpreter(e.into()).into())
+        Ok(uref)
     }
 
     /// Writes `value` under `key` in GlobalState.
-    fn write(
+    pub(crate) fn casper_write(
         &mut self,
-        key_ptr: u32,
-        key_size: u32,
-        value_ptr: u32,
-        value_size: u32,
+        key: Key,
+        cl_value: CLValue,
+        // key_ptr: u32,
+        // key_size: u32,
+        // value_ptr: u32,
+        // value_size: u32,
+
     ) -> Result<(), Error> {
-        let key = self.key_from_mem(key_ptr, key_size)?;
-        let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+        //
         self.context
             .metered_write_gs(key, cl_value)
             .map_err(Into::into)
@@ -3536,7 +3498,7 @@ where
     }
 
     /// Calculate gas cost for a host function
-    fn charge_host_function_call<T>(
+    pub(crate) fn charge_host_function_call<T>(
         &mut self,
         host_function: &HostFunction<T>,
         weights: T,
@@ -3648,20 +3610,14 @@ where
     }
 
     /// Reverts contract execution with a status specified.
-    pub fn casper_revert(&mut self, status: u32) -> Result<(), Error> {
+    pub(crate) fn casper_revert(&mut self, status: u32) -> Result<(), Error> {
         // Err(Error::Revert(api_error:))
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(&host_function_costs.revert, [status])?;
         Err(Error::Revert(status.into()))
     }
 
-    pub fn memory(&self) -> &MemoryRef {
-        match &self.instance {
-            Instance::Interpreted(_module, memory_ref) => memory_ref,
-        }
-    }
-
-    // pub fn invoke_wasm_function(&self, func: FunctionIndex, args: &[RuntimeValue]) ->
+     // pub fn invoke_wasm_function(&self, func: FunctionIndex, args: &[RuntimeValue]) ->
     // Result<Option<RuntimeValue>, Error> {
 
     // let mut scoped_instrumenter = ScopedInstrumenter::new(func);
@@ -4679,6 +4635,11 @@ where
     //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
     //     }
     // }
+
+    /// Get a reference to the runtime's wasm engine.
+    pub fn wasm_engine(&self) -> &'a WasmEngine {
+        self.wasm_engine
+    }
 }
 
 #[cfg(test)]

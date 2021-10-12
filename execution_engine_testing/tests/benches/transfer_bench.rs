@@ -50,7 +50,7 @@ fn bootstrap(data_dir: &Path, accounts: Vec<AccountHash>, amount: U512) -> LmdbW
     )
     .build();
 
-    let engine_config = EngineConfig::default();
+    let engine_config = *DEFAULT_ENGINE_CONFIG;
 
     let mut builder = LmdbWasmTestBuilder::new_with_config(data_dir, engine_config);
 

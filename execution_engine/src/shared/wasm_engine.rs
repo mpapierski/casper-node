@@ -1,29 +1,21 @@
 //! Preprocessing of Wasm modules.
-use casper_types::{
-    bytesrepr::{self, FromBytes, ToBytes},
-    Key, StoredValue,
-};
+use casper_types::{ApiError, CLValue, Gas, Key, ProtocolVersion, StoredValue, U512, bytesrepr::{self, FromBytes, ToBytes}};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use parity_wasm::elements::{self, MemorySection, Section};
 use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt::{self, Display, Formatter},
-    rc::Rc,
-};
+use std::{cell::{Cell, RefCell}, error::Error, fmt::{self, Display, Formatter}, rc::Rc};
 use thiserror::Error;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
 
 use parity_wasm::elements::Module as WasmiModule;
-use wasmi::{MemoryRef, ModuleRef};
+use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
+use wasmtime::{AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory, MemoryType, Trap};
 
-use crate::{
-    core::{execution, runtime::Runtime},
-    storage::global_state::StateReader,
-};
+use crate::{core::{execution, resolvers::{create_module_resolver, memory_resolver::MemoryResolver}, runtime::Runtime}, storage::global_state::StateReader};
 
 use super::wasm_config::WasmConfig;
 
@@ -70,9 +62,19 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 /// Statically dispatched Wasm module wrapper for different implementations
 /// NOTE: Probably at this stage it can hold raw wasm bytes without being an enum, and the decision
 /// can be made later
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone)]
 pub enum Module {
     Interpreted(WasmiModule),
+    Compiled(Vec<u8>),
+}
+
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interpreted(arg0) => f.debug_tuple("Interpreted").field(arg0).finish(),
+            Self::Compiled(arg0) => f.debug_tuple("Compiled").finish(),
+        }
+    }
 }
 
 impl Module {
@@ -88,9 +90,20 @@ impl Module {
     ///
     /// Such module can be useful for performing optimizations. To create a [`Module`] back use
     /// appropriate [`WasmEngine`] method.
-    pub fn into_interpreted(self) -> Result<WasmiModule, PreprocessingError> {
+    pub fn into_interpreted(self) -> WasmiModule {
         match self {
-            Module::Interpreted(parity_wasm) => Ok(parity_wasm),
+            Module::Interpreted(parity_wasm) => parity_wasm,
+            Module::Compiled(_) => {
+                todo!("serialize compiled module")
+            }
+        }
+    }
+
+    pub fn try_into_compiled(self) -> Result<Vec<u8>, Self> {
+        if let Self::Compiled(v) = self {
+            Ok(v)
+        } else {
+            Err(self)
         }
     }
 }
@@ -101,30 +114,41 @@ impl From<WasmiModule> for Module {
     }
 }
 
+// impl From<wasmtime::Module> for Module {
+//     fn from(wasmtime_module: wasmtime::Module) -> Self {
+//         Self::Compiled(wasmtime_module)
+//     }
+// }
+
 #[derive(Error, Debug)]
 pub enum RuntimeError {
     #[error(transparent)]
     WasmiError(#[from] wasmi::Error),
+    #[error(transparent)]
+    WasmtimeError(#[from] wasmtime::Trap),
 }
 
 impl RuntimeError {
+    /// Extracts the executor error from a runtime Wasm trap.
     pub fn as_execution_error(&self) -> Option<&execution::Error> {
         match self {
             RuntimeError::WasmiError(wasmi_error) => wasmi_error
                 .as_host_error()
                 .and_then(|host_error| host_error.downcast_ref::<execution::Error>()),
+            RuntimeError::WasmtimeError(wasmtime_trap) => {
+                let src = wasmtime_trap.source()?;
+                let error = src.downcast_ref::<execution::Error>()?;
+                Some(error)
+            }
         }
     }
 }
 
-// impl ToString for RuntimeError {
-//     fn to_string(&self) -> String {
-//         // NOTE: Using this is likely not portable across different Wasm implementations
-//         match self {
-//             RuntimeError::WasmiError(wasmi_error) => wasmi_error.into(),
-//         }
-//     }
-// }
+impl Into<String> for RuntimeError {
+    fn into(self) -> String {
+        self.to_string()
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum RuntimeValue {
@@ -159,9 +183,24 @@ impl Into<wasmi::RuntimeValue> for RuntimeValue {
 }
 
 /// Warmed up instance of a wasm module used for execution.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Instance {
     Interpreted(ModuleRef, MemoryRef),
+    // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has a lifetime and a generic R
+    Compiled(wasmtime::Module),
+}
+
+impl fmt::Debug for Instance {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Interpreted(arg0, arg1) => f
+                .debug_tuple("Interpreted")
+                .field(arg0)
+                .field(arg1)
+                .finish(),
+            Self::Compiled(_arg0) => f.debug_tuple("Compiled").finish(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -173,15 +212,40 @@ impl From<Instance> for InstanceRef {
     }
 }
 
+// pub enum MemoryAdapter<'a> {
+//     Interpreted(MemoryRef),
+//     Compiled(&'a Cell<[u8]>),
+// }
+
+// impl<'a> MemoryAdapter<'a> {
+//     pub fn set(&mut self, offset: u32, bytes: &[u8]) -> Result<(), RuntimeError> {
+//         match self {
+//             MemoryAdapter::Interpreted(memory_ref) => memory_ref.set(offset, bytes).map_err(RuntimeError::WasmiError)?,
+//             MemoryAdapter::Compiled(_) => {
+//                 todo!("compiled");
+//             }
+//         }
+//         Ok(())
+//     }
+//     pub fn get(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+//         match self {
+//             MemoryAdapter::Interpreted(memory_ref) => Ok(memory_ref.get(offset, size)?),
+//             MemoryAdapter::Compiled(_) => todo!(),
+//         }
+//     }
+// }
+
 impl Instance {
-    pub fn memory(&self) -> &MemoryRef {
+    pub fn interpreted_memory(&self) -> MemoryRef {
         match self {
-            Instance::Interpreted(_module_ref, memory_ref) => memory_ref,
+            Instance::Interpreted(_, memory_ref) => memory_ref.clone(),
+            Instance::Compiled(_) => unreachable!("available only from wasmi externals"),
         }
     }
-
+    /// Invokes exported function
     pub fn invoke_export<R>(
         &self,
+        wasm_engine: &WasmEngine,
         func_name: &str,
         args: Vec<RuntimeValue>,
         runtime: &mut Runtime<R>,
@@ -201,6 +265,186 @@ impl Instance {
                 let result = wasmi_result.map(RuntimeValue::from);
                 Ok(result)
             }
+            Instance::Compiled(mut compiled_module) => {
+                let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
+
+                let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
+
+                let memory_import = compiled_module
+                    .imports()
+                    .filter_map(|import| {
+                        if (import.module(), import.name()) == ("env", Some("memory")) {
+                            Some(import.ty())
+                        } else {
+                            None
+                        }
+                    })
+                    .next();
+
+                let memory_type = match memory_import {
+                    Some(ExternType::Memory(memory)) => memory,
+                    Some(unknown_extern) => panic!("unexpected extern {:?}", unknown_extern),
+                    None => MemoryType::new(1, Some(wasm_engine.wasm_config().max_memory)),
+                };
+
+                debug_assert_eq!(
+                    memory_type.maximum(),
+                    Some(wasm_engine.wasm_config().max_memory as u64)
+                );
+
+                let memory = wasmtime::Memory::new(&mut store, memory_type).unwrap();
+
+                linker
+                    .define("env", "memory", wasmtime::Extern::from(memory))
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_revert",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, param: u32| {
+                            // println!("Got {} from WebAssembly", param);
+                            // println!("my host state is: {}", caller.data());
+                            // todo!("revert {}", param);
+                            let mut runtime = caller.data_mut();
+                            runtime.casper_revert(param)?;
+                            Ok(()) //unreachable
+                        },
+                    )
+                    .unwrap();
+                linker
+                    .func_wrap(
+                        "env",
+                        "gas",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, param: u32| {
+                            let mut runtime = caller.data_mut();
+                            runtime.gas(Gas::new(U512::from(param)))?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker.func_wrap("env", "casper_new_uref",  |mut caller: Caller<'_, &mut Runtime<R>>, uref_ptr, value_ptr, value_size| {
+                    let runtime = caller.data_mut();
+
+                    let host_function_costs =  caller.data_mut().wasm_engine().wasm_config().take_host_function_costs();
+                    caller.data_mut().charge_host_function_call(
+                        &host_function_costs.new_uref,
+                        [uref_ptr, value_ptr, value_size],
+                    )?;
+
+
+                    let mem = match caller.get_export("memory") {
+                        Some(Extern::Memory(mem)) => mem,
+                        _ => return Err(Trap::new("failed to find host memory")),
+                    };
+
+                    let mut buffer = vec![0; value_size as usize];
+                    mem.read(&caller, value_ptr as usize, &mut buffer).map_err(|e| Trap::new("memory access"))?;
+                    let cl_value = bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
+
+                    let uref = caller.data_mut().casper_new_uref(cl_value)?;
+
+
+                    // let data = mem.data(&caller).get_mut(uref_ptr).ok_or_else(|| Trap::new("bad ptr"))?;
+                    // uref.into_bytes().map_err(execution::Error::BytesRepr)
+                    // data.copy_from_slice(&?;
+                    // mem.data
+                    mem.write(&mut caller, uref_ptr as usize, &uref.into_bytes().unwrap()).map_err(|_| Trap::new("memory access"))?;
+
+                    // self.memory()
+                    // .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
+                    // .map_err(|e| Error::Interpreter(e.into()).into())
+
+                    Ok(())
+                }).unwrap();
+                linker.func_wrap("env", "casper_write",  |mut caller: Caller<'_, &mut Runtime<R>>, key_ptr, key_size, value_ptr, value_size| {
+                    let host_function_costs = caller.data_mut().wasm_engine().wasm_config().take_host_function_costs();
+
+                    caller.data_mut().charge_host_function_call(
+                                &host_function_costs.write,
+                                [key_ptr, key_size, value_ptr, value_size],
+                            )?;
+                            // let key = self.key_from_mem(key_ptr, key_size)?;
+                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+
+
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+
+                            let key = {
+                                let mut buffer = vec![0; key_size as usize];
+                                mem.read(&caller, key_ptr as usize, &mut buffer).map_err(|e| Trap::new("memory access"))?;
+                                let key: Key = bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
+                                key
+                            };
+
+                            let cl_value = {
+                                let mut buffer = vec![0; value_size as usize];
+                                mem.read(&caller, value_ptr as usize, &mut buffer).map_err(|e| Trap::new("memory access"))?;
+                                let key: CLValue = bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
+                                key
+                            };
+
+                            let mut runtime = caller.data_mut();
+                            runtime.casper_write(key, cl_value)?;
+
+
+                            Ok(())
+                        }).unwrap();
+
+
+
+                        // linker.func_wrap("env", "casper_get_main_purse",  |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr| {
+
+                        //     let mut runtime = caller.data_mut();
+                        //     let host_function_costs = runtime.wasm_engine().wasm_config().take_host_function_costs();
+
+                        // runtime.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
+                        // let uref = runtime.casper_get_main_purse()?;
+
+                        // Ok(())
+                        // }).unwrap();
+
+                    linker.func_wrap("env", "casper_get_main_purse",  |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr:u32| {
+
+                        let purse = caller.data_mut().casper_get_main_purse()?;
+
+                        let purse_bytes = purse.into_bytes().map_err(execution::Error::from)?;
+
+                        let mem = match caller.get_export("memory") {
+                            Some(Extern::Memory(mem)) => mem,
+                            _ => return Err(Trap::new("failed to find host memory")),
+                        };
+                        let host_function_costs =  caller.data_mut().wasm_engine().wasm_config().take_host_function_costs();
+
+                        caller.data_mut().charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
+                        let uref = caller.data_mut().casper_get_main_purse()?;
+
+
+                    // let data = mem.data(&caller).get_mut(uref_ptr).ok_or_else(|| Trap::new("bad ptr"))?;
+                    // uref.into_bytes().map_err(execution::Error::BytesRepr)
+                    // data.copy_from_slice(&?;
+                    // mem.data
+                    mem.write(&mut caller, dest_ptr as usize, &uref.into_bytes().unwrap()).map_err(|_| Trap::new("memory access"))?;
+
+
+Ok(())
+                    }).unwrap();
+
+                let instance = linker
+                    .instantiate(&mut store, &compiled_module)
+                    .expect("should instantiate");
+                let exported_func = instance
+                    .get_typed_func::<(), (), _>(&mut store, func_name)
+                    .expect("should get typed func");
+                exported_func
+                    .call(&mut store, ())
+                    .map_err(RuntimeError::from)?;
+                Ok(Some(RuntimeValue::I64(0)))
+            }
         }
     }
 }
@@ -209,12 +453,18 @@ impl Instance {
 #[derive(Debug, Clone, Error)]
 pub enum PreprocessingError {
     /// Unable to deserialize Wasm bytes.
+    #[error("Deserialization error: {0}")]
     Deserialize(String),
     /// Found opcodes forbidden by gas rules.
+    #[error(
+        "Encountered operation forbidden by gas rules. Consult instruction -> metering config map"
+    )]
     OperationForbiddenByGasRules,
     /// Stack limiter was unable to instrument the binary.
+    #[error("Stack limiter error")]
     StackLimiter,
     /// Wasm bytes is missing memory section.
+    #[error("Memory section should exist")]
     MissingMemorySection,
 }
 
@@ -224,16 +474,16 @@ impl From<elements::Error> for PreprocessingError {
     }
 }
 
-impl Display for PreprocessingError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            PreprocessingError::Deserialize(error) => write!(f, "Deserialization error: {}", error),
-            PreprocessingError::OperationForbiddenByGasRules => write!(f, "Encountered operation forbidden by gas rules. Consult instruction -> metering config map"),
-            PreprocessingError::StackLimiter => write!(f, "Stack limiter error"),
-            PreprocessingError::MissingMemorySection => write!(f, "Memory section should exist"),
-        }
-    }
-}
+// impl Display for PreprocessingError {
+//     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+//         match self {
+//             PreprocessingError::Deserialize(error) => write!(f, ", error),
+//             PreprocessingError::OperationForbiddenByGasRules => write!(f, ""),
+//             PreprocessingError::StackLimiter => write!(f, "Stack limiter error"),
+//             PreprocessingError::MissingMemorySection => write!(f, "Memory section should exist"),
+//         }
+//     }
+// }
 
 /// Checks if given wasm module contains a memory section.
 fn memory_section(module: &WasmiModule) -> Option<&MemorySection> {
@@ -249,6 +499,15 @@ fn memory_section(module: &WasmiModule) -> Option<&MemorySection> {
 pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
+    compiled_engine: wasmtime::Engine,
+}
+
+fn new_compiled_engine(wasm_config: &WasmConfig) -> wasmtime::Engine {
+    let mut config = wasmtime::Config::new();
+    config.async_support(false);
+    config.max_wasm_stack(wasm_config.max_stack_height as usize).expect("should set max stack");
+    // TODO: Tweak more
+    wasmtime::Engine::new(&config).expect("should create new engine")
 }
 
 impl WasmEngine {
@@ -257,6 +516,7 @@ impl WasmEngine {
         Self {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
+            compiled_engine: new_compiled_engine(&wasm_config),
         }
     }
 
@@ -276,34 +536,50 @@ impl WasmEngine {
     /// In case the preprocessing rules can't be applied, an error is returned.
     /// Otherwise, this method returns a valid module ready to be executed safely on the host.
     pub fn preprocess(&self, module_bytes: &[u8]) -> Result<Module, PreprocessingError> {
+
         let module = deserialize_interpreted(module_bytes)?;
 
-        if memory_section(&module).is_none() {
-            // `pwasm_utils::externalize_mem` expects a memory section to exist in the module, and
-            // panics otherwise.
-            return Err(PreprocessingError::MissingMemorySection);
-        }
+                let module = pwasm_utils::inject_gas_counter(
+                module,
+                &self.wasm_config.opcode_costs().to_set(),
+                DEFAULT_GAS_MODULE_NAME,
+                )
+                .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
 
-        let module = pwasm_utils::externalize_mem(module, None, self.wasm_config.max_memory);
-        let module = pwasm_utils::inject_gas_counter(
-            module,
-            &self.wasm_config.opcode_costs().to_set(),
-            DEFAULT_GAS_MODULE_NAME,
-        )
-        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
-        let module = stack_height::inject_limiter(module, self.wasm_config.max_stack_height)
-            .map_err(|_| PreprocessingError::StackLimiter)?;
 
         match self.execution_mode {
-            ExecutionMode::Interpreted => Ok(module.into()),
+            ExecutionMode::Interpreted => {
+                if memory_section(&module).is_none() {
+                    // `pwasm_utils::externalize_mem` expects a memory section to exist in the module, and
+                    // panics otherwise.
+                    return Err(PreprocessingError::MissingMemorySection);
+                }
+                let module = pwasm_utils::externalize_mem(module, None, self.wasm_config.max_memory);
+
+                let module = stack_height::inject_limiter(module, self.wasm_config.max_stack_height)
+                    .map_err(|_| PreprocessingError::StackLimiter)?;
+
+                Ok(module.into())
+            },
             ExecutionMode::Compiled => {
-                // Convert modified pwasm module bytes into compiled module
-                let _preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module).expect("preprocessed wasm to bytes");
-                // TODO: preprocessed wasm bytes into compiled wasm modlue
-                todo!("finish preprocessing compiled module")
-            }
+                let preprocessed_wasm_bytes =
+                            parity_wasm::serialize(module).expect("preprocessed wasm to bytes");
+
+                // aot compile
+                let precompiled_bytes = self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should preprocess");
+                Ok(Module::Compiled(precompiled_bytes))
+
+                // let compiled_module =
+                //             wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
+                //                 .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+                //     Ok(compiled_module.into())
+            },
         }
+        // let module = deserialize_interpreted(module_bytes)?;
+
+
+
+
     }
 
     /// Get a reference to the wasm engine's wasm config.
@@ -319,8 +595,86 @@ impl WasmEngine {
                     .map_err(PreprocessingError::from)?;
                 Module::Interpreted(parity_module)
             }
-            ExecutionMode::Compiled => todo!("compiled module from bytes"),
+            ExecutionMode::Compiled => {
+                // aot compile
+                let precompiled_bytes = self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
+                Module::Compiled(precompiled_bytes)
+                // let compiled_module =
+                //             wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
+                //                 .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+                //     Ok(compiled_module.into())
+                // let compiled_module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes)
+                //     .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+                // Module::Compiled(compiled_module)
+            }
         };
         Ok(module)
+    }
+
+    /// Get a reference to the wasm engine's compiled engine.
+    pub fn compiled_engine(&self) -> &wasmtime::Engine {
+        &self.compiled_engine
+    }
+    /// Creates an WASM module instance and a memory instance.
+///
+/// This ensures that a memory instance is properly resolved into a pre-allocated memory area, and a
+/// host function resolver is attached to the module.
+///
+/// The WASM module is also validated to not have a "start" section as we currently don't support
+/// running it.
+///
+/// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
+pub fn instance_and_memory(
+    &self,
+    wasm_module: Module,
+    protocol_version: ProtocolVersion,
+) -> Result<Instance, execution::Error> {
+    // match wasm_engine.execution_mode() {
+    match wasm_module {
+        Module::Interpreted(wasmi_module) => {
+            // let wasmi_module = wasm_module.try_into_interpreted().expect("expected interpreted
+            // wasm module");
+            let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
+            let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
+            let mut imports = ImportsBuilder::new();
+            imports.push_resolver("env", &resolver);
+            let not_started_module = ModuleInstance::new(&module, &imports)?;
+            if not_started_module.has_start() {
+                return Err(execution::Error::UnsupportedWasmStart);
+            }
+            let instance = not_started_module.not_started_instance().clone();
+            let memory = resolver.memory_ref()?;
+            Ok(Instance::Interpreted(instance, memory))
+        }
+        Module::Compiled(compiled_module) => {
+            // aot compile
+            // let precompiled_bytes = self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should preprocess");
+            // Ok(Module::Compiled(precompiled_bytes))
+
+
+            let compiled_module = unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), &compiled_module).expect("should load precompiled module") };
+            // todo!("compiled mode")
+            // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
+            // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
+            // &[]).expect("should create compiled module");
+            Ok(Instance::Compiled(compiled_module))
+        }
+    }
+}
+
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wasmtime_trap_recover() {
+        let error = execution::Error::Revert(ApiError::User(100));
+        let trap: wasmtime::Trap = wasmtime::Trap::from(error);
+        let runtime_error = RuntimeError::from(trap);
+        let recovered = runtime_error.as_execution_error().expect("should have error");
+        assert!(matches!(recovered, execution::Error::Revert(ApiError::User(100))));
     }
 }

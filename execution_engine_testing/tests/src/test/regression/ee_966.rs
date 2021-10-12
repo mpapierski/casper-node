@@ -2,14 +2,7 @@ use assert_matches::assert_matches;
 use once_cell::sync::Lazy;
 use parity_wasm::builder;
 
-use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
-        ARG_AMOUNT, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    DEFAULT_ACCOUNT_ADDR,
-};
+use casper_engine_test_support::{DEFAULT_ACCOUNT_ADDR, internal::{ARG_AMOUNT, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION, DEFAULT_RUN_GENESIS_REQUEST, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder}};
 use casper_execution_engine::{
     core::{
         engine_state::{EngineConfig, Error, ExecuteRequest, DEFAULT_MAX_QUERY_DEPTH},
@@ -21,7 +14,7 @@ use casper_execution_engine::{
         storage_costs::StorageCosts,
         system_config::SystemConfig,
         wasm_config::{
-            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+            WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
         },
     },
 };
@@ -38,7 +31,7 @@ static DOUBLED_WASM_MEMORY_LIMIT: Lazy<WasmConfig> = Lazy::new(|| {
     WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY * 2,
         DEFAULT_MAX_STACK_HEIGHT,
-        DEFAULT_EXECUTION_MODE,
+        *DEFAULT_EXECUTION_MODE,
         OpcodeCosts::default(),
         StorageCosts::default(),
         HostFunctionCosts::default(),

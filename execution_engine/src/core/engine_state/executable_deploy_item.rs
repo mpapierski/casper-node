@@ -955,7 +955,7 @@ impl Distribution<ExecutableDeployItem> for Standard {
 /// The metadata which results from resolving an instance of [`ExecutableDeployItem`] into values
 /// that will be later be used to create a [`crate::core::runtime::Runtime`] and
 /// [`crate::core::runtime_context::RuntimeContext`].
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct DeployMetadata {
     /// This will be a [`DeployKind::System`] if the resolved contract is a system one based on
     /// it's [`ContractHash`] or a [`DeployKind::Session`] or [`DeployKind::Contract`]
