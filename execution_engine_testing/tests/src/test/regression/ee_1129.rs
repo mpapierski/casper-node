@@ -17,7 +17,7 @@ use casper_execution_engine::{
         },
         execution,
     },
-    shared::{wasm::do_nothing_bytes, wasm_prep::PreprocessingError},
+    shared::{wasm::do_nothing_bytes, wasm_engine::PreprocessingError},
 };
 use casper_types::{
     account::AccountHash,

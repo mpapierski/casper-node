@@ -10,7 +10,7 @@ use crate::{
         engine_state::{genesis::GenesisError, upgrade::ProtocolUpgradeError},
         execution,
     },
-    shared::wasm_prep,
+    shared::wasm_engine,
     storage,
     storage::global_state::CommitError,
 };
@@ -29,7 +29,7 @@ pub enum Error {
     Genesis(Box<GenesisError>),
     /// WASM preprocessing error.
     #[error("Wasm preprocessing error: {0}")]
-    WasmPreprocessing(#[from] wasm_prep::PreprocessingError),
+    WasmPreprocessing(#[from] wasm_engine::PreprocessingError),
     /// WASM serialization error.
     #[error("Wasm serialization error: {0:?}")]
     WasmSerialization(#[from] parity_wasm::SerializationError),

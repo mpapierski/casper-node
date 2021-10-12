@@ -31,7 +31,7 @@ use crate::{
         tracking_copy::{AddResult, TrackingCopy, TrackingCopyExt},
         Address,
     },
-    shared::newtypes::CorrelationId,
+    shared::{newtypes::CorrelationId, wasm_engine::WasmEngine},
     storage::global_state::StateReader,
 };
 

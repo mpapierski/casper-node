@@ -1,6 +1,5 @@
 use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
 
-use parity_wasm::elements::Module;
 use tracing::warn;
 use wasmi::ModuleRef;
 
@@ -24,7 +23,10 @@ use crate::{
         runtime_context::{self, RuntimeContext},
         tracking_copy::{TrackingCopy, TrackingCopyExt},
     },
-    shared::newtypes::CorrelationId,
+    shared::{
+        newtypes::CorrelationId,
+        wasm_engine::{Instance, Module, WasmEngine},
+    },
     storage::global_state::StateReader,
 };
 
@@ -74,18 +76,28 @@ macro_rules! on_fail_charge {
 /// Executor object deals with execution of WASM modules.
 pub struct Executor {
     config: EngineConfig,
+    wasm_engine: WasmEngine,
 }
 
 #[allow(clippy::too_many_arguments)]
 impl Executor {
     /// Creates new executor object.
     pub fn new(config: EngineConfig) -> Self {
-        Executor { config }
+        let wasm_engine = WasmEngine::new(*config.wasm_config());
+        Executor {
+            config,
+            wasm_engine,
+        }
     }
 
     /// Returns config.
     pub fn config(&self) -> EngineConfig {
         self.config
+    }
+
+    /// Wasm engine.
+    pub fn wasm_engine(&self) -> &WasmEngine {
+        &self.wasm_engine
     }
 
     /// Executes a WASM module.
@@ -121,10 +133,10 @@ impl Executor {
         let entry_point_type = entry_point.entry_point_type();
         let entry_point_access = entry_point.access();
 
-        let (instance, memory) = on_fail_charge!(instance_and_memory(
+        let instance = on_fail_charge!(instance_and_memory(
             module.clone(),
             protocol_version,
-            self.config.wasm_config()
+            &self.wasm_engine,
         ));
 
         let access_rights = {
@@ -177,10 +189,11 @@ impl Executor {
         let mut runtime = Runtime::new(
             self.config,
             system_contract_cache,
-            memory,
             module,
+            instance,
             context,
             call_stack,
+            &self.wasm_engine,
         );
 
         let accounts_access_rights = {
@@ -272,8 +285,11 @@ impl Executor {
                 }
             }
         }
+
+        let instance_ref = runtime.instance().clone();
+
         on_fail_charge!(
-            instance.invoke_export(entry_point_name, &[], &mut runtime),
+            instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime),
             runtime.context().gas_counter(),
             execution_effect,
             runtime.context().transfers().to_owned()
@@ -344,8 +360,9 @@ impl Executor {
             phase,
             system_contract_cache,
             call_stack,
+            &self.wasm_engine,
         ) {
-            Ok((_instance, runtime)) => runtime,
+            Ok(runtime) => runtime,
             Err(error) => {
                 return ExecutionResult::Failure {
                     error: error.into(),
@@ -487,7 +504,7 @@ impl Executor {
 
         let transfers = Vec::default();
 
-        let (_, runtime) = match self.create_runtime(
+        let runtime = match self.create_runtime(
             module,
             EntryPointType::Contract,
             runtime_args.clone(),
@@ -508,8 +525,9 @@ impl Executor {
             phase,
             system_contract_cache,
             call_stack,
+            &self.wasm_engine,
         ) {
-            Ok((instance, runtime)) => (instance, runtime),
+            Ok(runtime) => runtime,
             Err(error) => {
                 return ExecutionResult::Failure {
                     execution_effect,
@@ -564,7 +582,7 @@ impl Executor {
         let mut named_keys: NamedKeys = account.named_keys().clone();
         let base_key = account.account_hash().into();
 
-        let (instance, mut runtime) = self.create_runtime(
+        let mut runtime = self.create_runtime(
             module,
             EntryPointType::Session,
             args,
@@ -585,10 +603,12 @@ impl Executor {
             phase,
             system_contract_cache,
             call_stack,
+            &self.wasm_engine,
         )?;
 
-        let error: wasmi::Error = match instance.invoke_export(entry_point_name, &[], &mut runtime)
-        {
+        let instance_ref = runtime.instance().clone();
+
+        let error = match instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime) {
             Err(error) => error,
             Ok(_) => {
                 // This duplicates the behavior of runtime sub_call.
@@ -603,16 +623,13 @@ impl Executor {
             }
         };
 
-        let return_value: CLValue = match error
-            .as_host_error()
-            .and_then(|host_error| host_error.downcast_ref::<Error>())
-        {
+        let return_value: CLValue = match error.as_execution_error() {
             Some(Error::Ret(_)) => runtime
                 .take_host_buffer()
                 .ok_or(Error::ExpectedReturnValue)?,
             Some(Error::Revert(code)) => return Err(Error::Revert(*code)),
             Some(error) => return Err(error.clone()),
-            _ => return Err(Error::Interpreter(error.into())),
+            _ => return Err(Error::Interpreter(format!("{}", error))),
         };
 
         let ret = return_value.into_t()?;
@@ -648,7 +665,8 @@ impl Executor {
         phase: Phase,
         system_contract_cache: SystemContractCache,
         call_stack: Vec<CallStackElement>,
-    ) -> Result<(ModuleRef, Runtime<'a, R>), Error>
+        wasm_engine: &'a WasmEngine,
+    ) -> Result<Runtime<'a, R>, Error>
     where
         R: StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
@@ -685,19 +703,19 @@ impl Executor {
             transfers,
         );
 
-        let (instance, memory) =
-            instance_and_memory(module.clone(), protocol_version, self.config.wasm_config())?;
+        let instance = instance_and_memory(module.clone(), protocol_version, &self.wasm_engine)?;
 
         let runtime = Runtime::new(
             self.config,
             system_contract_cache,
-            memory,
             module,
+            instance,
             runtime_context,
             call_stack,
+            wasm_engine,
         );
 
-        Ok((instance, runtime))
+        Ok(runtime)
     }
 }
 

@@ -13,7 +13,7 @@ use casper_types::{
     U512,
 };
 
-use super::{args::Args, scoped_instrumenter::ScopedInstrumenter, Error, Runtime};
+use super::{scoped_instrumenter::ScopedInstrumenter, wasmi_args_parser::Args, Error, Runtime};
 use crate::{
     core::resolvers::v1_function_index::FunctionIndex,
     shared::host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
@@ -114,7 +114,9 @@ where
                 let (value_ptr, value_size) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.ret, [value_ptr, value_size])?;
                 scoped_instrumenter.add_property("value_size", value_size);
-                Err(self.ret(value_ptr, value_size as usize, &mut scoped_instrumenter))
+                Err(self
+                    .ret(value_ptr, value_size as usize, &mut scoped_instrumenter)
+                    .into())
             }
 
             FunctionIndex::GetKeyFuncIndex => {
@@ -222,7 +224,7 @@ where
                 // args(0) = status u32
                 let (status,) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.revert, [status])?;
-                Err(self.revert(status))
+                Err(self.casper_revert(status).unwrap_err().into())
             }
 
             FunctionIndex::AddAssociatedKeyFuncIndex => {
@@ -295,7 +297,7 @@ where
                 let purse = self.create_purse()?;
                 let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
                 assert_eq!(dest_size, purse_bytes.len() as u32);
-                self.memory
+                self.memory()
                     .set(dest_ptr, &purse_bytes)
                     .map_err(|e| Error::Interpreter(e.into()))?;
                 Ok(Some(RuntimeValue::I32(0)))
@@ -340,7 +342,7 @@ where
                     Ok(transferred_to) => {
                         let result_value: u32 = transferred_to as u32;
                         let result_value_bytes = result_value.to_le_bytes();
-                        self.memory
+                        self.memory()
                             .set(result_ptr, &result_value_bytes)
                             .map_err(|error| Error::Interpreter(error.into()))?;
                         Ok(())
@@ -410,7 +412,7 @@ where
                     Ok(transferred_to) => {
                         let result_value: u32 = transferred_to as u32;
                         let result_value_bytes = result_value.to_le_bytes();
-                        self.memory
+                        self.memory()
                             .set(result_ptr, &result_value_bytes)
                             .map_err(|error| Error::Interpreter(error.into()))?;
                         Ok(())
@@ -918,7 +920,7 @@ where
                     let err_value = u32::from(api_error::ApiError::BufferTooSmall) as i32;
                     return Ok(Some(RuntimeValue::I32(err_value)));
                 }
-                self.memory
+                self.memory()
                     .set(out_ptr, &digest)
                     .map_err(|error| Error::Interpreter(error.into()))?;
                 Ok(Some(RuntimeValue::I32(0)))

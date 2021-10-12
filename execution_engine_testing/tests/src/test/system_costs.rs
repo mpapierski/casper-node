@@ -35,7 +35,9 @@ use casper_execution_engine::{
             SystemConfig, DEFAULT_WASMLESS_TRANSFER_COST,
         },
         wasm,
-        wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
+        wasm_config::{
+            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+        },
     },
 };
 use casper_types::{
@@ -848,6 +850,7 @@ fn should_verify_wasm_add_bid_wasm_cost_is_not_recursive() {
     let new_wasm_config = WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT,
+        DEFAULT_EXECUTION_MODE,
         new_opcode_costs,
         new_storage_costs,
         new_host_function_costs,

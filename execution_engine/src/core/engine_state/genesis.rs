@@ -4,7 +4,6 @@ use std::{cell::RefCell, collections::BTreeMap, fmt, iter, rc::Rc};
 use datasize::DataSize;
 use num::Zero;
 use num_rational::Ratio;
-use parity_wasm::elements::Module;
 use rand::{
     distributions::{Distribution, Standard},
     Rng,
@@ -45,7 +44,12 @@ use crate::{
         execution::{AddressGenerator, Executor},
         tracking_copy::{TrackingCopy, TrackingCopyExt},
     },
-    shared::{newtypes::CorrelationId, system_config::SystemConfig, wasm_config::WasmConfig},
+    shared::{
+        newtypes::CorrelationId,
+        system_config::SystemConfig,
+        wasm_config::WasmConfig,
+        wasm_engine::{Module, WasmEngine},
+    },
     storage::global_state::StateProvider,
 };
 
@@ -1261,7 +1265,9 @@ where
 
         let call_stack = Vec::new();
 
-        let (_instance, mut runtime) = self
+        let wasm_engine = self.executor.wasm_engine();
+
+        let mut runtime = self
             .executor
             .create_runtime(
                 self.system_module.clone(),
@@ -1284,8 +1290,12 @@ where
                 Phase::System,
                 Default::default(),
                 call_stack,
+                wasm_engine,
             )
-            .map_err(|_| GenesisError::UnableToCreateRuntime)?;
+            .map_err(|e| {
+                eprintln!("unable to create runtime {:?}", e);
+                GenesisError::UnableToCreateRuntime
+            })?;
 
         let purse_uref = runtime
             .call_contract(*mint_hash, METHOD_MINT, args)

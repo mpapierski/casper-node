@@ -29,7 +29,9 @@ use casper_execution_engine::{
             mint_costs::MintCosts, standard_payment_costs::StandardPaymentCosts, SystemConfig,
             DEFAULT_WASMLESS_TRANSFER_COST,
         },
-        wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
+        wasm_config::{
+            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+        },
     },
 };
 use casper_types::{
@@ -73,6 +75,7 @@ fn get_upgraded_wasm_config() -> WasmConfig {
     WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT * 2,
+        DEFAULT_EXECUTION_MODE,
         opcode_cost,
         storage_costs,
         host_function_costs,

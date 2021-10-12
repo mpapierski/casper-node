@@ -82,7 +82,7 @@ use crate::{
     },
     shared::{
         additive_map::AdditiveMap, newtypes::CorrelationId, transform::Transform,
-        wasm_prep::Preprocessor,
+        wasm_engine::WasmEngine,
     },
     storage::{
         global_state::{lmdb::LmdbGlobalState, StateProvider},
@@ -168,6 +168,10 @@ where
         protocol_version: ProtocolVersion,
         ee_config: &ExecConfig,
     ) -> Result<GenesisSuccess, Error> {
+        let executor = Executor::new(*self.config());
+
+        let wasm_engine = executor.wasm_engine();
+
         // Preliminaries
         let initial_root_hash = self.state.empty_root();
 
@@ -179,12 +183,7 @@ where
             Err(error) => return Err(error),
         };
 
-        let wasm_config = ee_config.wasm_config();
-        let preprocessor = Preprocessor::new(*wasm_config);
-
-        let system_module = tracking_copy
-            .borrow_mut()
-            .get_system_module(&preprocessor)?;
+        let system_module = tracking_copy.borrow_mut().get_system_module(&wasm_engine)?;
 
         let mut genesis_installer: GenesisInstaller<S> = GenesisInstaller::new(
             genesis_config_hash,
@@ -584,13 +583,10 @@ where
             Ok(Some(tracking_copy)) => Rc::new(RefCell::new(tracking_copy)),
         };
 
-        let preprocessor = {
-            let wasm_config = *self.config().wasm_config();
-            Preprocessor::new(wasm_config)
-        };
+        let wasm_engine = executor.wasm_engine();
 
         let system_module = {
-            match tracking_copy.borrow_mut().get_system_module(&preprocessor) {
+            match tracking_copy.borrow_mut().get_system_module(&wasm_engine) {
                 Ok(module) => module,
                 Err(error) => {
                     return Ok(ExecutionResult::precondition_failure(error.into()));
@@ -1167,12 +1163,7 @@ where
         proposer: PublicKey,
     ) -> Result<ExecutionResult, Error> {
         // spec: https://casperlabs.atlassian.net/wiki/spaces/EN/pages/123404576/Payment+code+execution+specification
-
-        let preprocessor = {
-            let config = self.config();
-            let wasm_config = config.wasm_config();
-            Preprocessor::new(*wasm_config)
-        };
+        let wasm_engine = executor.wasm_engine();
 
         // Create tracking copy (which functions as a deploy context)
         // validation_spec_2: prestate_hash check
@@ -1184,7 +1175,7 @@ where
         };
 
         let system_module = {
-            match tracking_copy.borrow_mut().get_system_module(&preprocessor) {
+            match tracking_copy.borrow_mut().get_system_module(&wasm_engine) {
                 Ok(module) => module,
                 Err(error) => {
                     return Ok(ExecutionResult::precondition_failure(error.into()));
@@ -1225,7 +1216,7 @@ where
             Rc::clone(&tracking_copy),
             &account,
             correlation_id,
-            &preprocessor,
+            &wasm_engine,
             &protocol_version,
             system_contract_registry,
             Phase::Session,
@@ -1308,7 +1299,7 @@ where
                 Rc::clone(&tracking_copy),
                 &account,
                 correlation_id,
-                &preprocessor,
+                &wasm_engine,
                 &protocol_version,
                 system_contract_registry,
                 phase,
@@ -1793,6 +1784,9 @@ where
         correlation_id: CorrelationId,
         get_era_validators_request: GetEraValidatorsRequest,
     ) -> Result<EraValidators, GetEraValidatorsError> {
+        let executor = Executor::new(*self.config());
+        let wasm_engine = executor.wasm_engine();
+
         let protocol_version = get_era_validators_request.protocol_version();
 
         let tracking_copy = match self.tracking_copy(get_era_validators_request.state_hash())? {
@@ -1802,8 +1796,6 @@ where
 
         let engine_config = self.config();
         let wasm_config = engine_config.wasm_config();
-
-        let preprocessor = Preprocessor::new(*wasm_config);
 
         let system_contract_registry = tracking_copy
             .borrow_mut()
@@ -1823,7 +1815,7 @@ where
         let system_module = {
             tracking_copy
                 .borrow_mut()
-                .get_system_module(&preprocessor)
+                .get_system_module(wasm_engine)
                 .map_err(Error::from)?
         };
 
@@ -1933,11 +1925,7 @@ where
 
         let executor = Executor::new(*self.config());
 
-        let preprocessor = {
-            let config = self.config();
-            let wasm_config = config.wasm_config();
-            Preprocessor::new(*wasm_config)
-        };
+        let wasm_engine = executor.wasm_engine();
 
         let system_contract_registry = tracking_copy
             .borrow_mut()
@@ -1959,7 +1947,7 @@ where
             }
         };
 
-        let system_module = match tracking_copy.borrow_mut().get_system_module(&preprocessor) {
+        let system_module = match tracking_copy.borrow_mut().get_system_module(&wasm_engine) {
             Ok(module) => module,
             Err(error) => {
                 return Err(StepError::GetSystemModuleError(error.into()));

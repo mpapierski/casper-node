@@ -48,7 +48,7 @@ fn make_payment_error_effects(
 
 /// Represents the result of an execution specified by
 /// [`crate::core::engine_state::ExecuteRequest`].
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ExecutionResult {
     /// An error condition that happened during execution
     Failure {

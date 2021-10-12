@@ -19,7 +19,9 @@ use casper_execution_engine::{
         opcode_costs::OpcodeCosts,
         storage_costs::StorageCosts,
         system_config::SystemConfig,
-        wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
+        wasm_config::{
+            WasmConfig, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
+        },
     },
 };
 use casper_types::{
@@ -130,6 +132,7 @@ static STORAGE_COSTS_ONLY: Lazy<WasmConfig> = Lazy::new(|| {
     WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT,
+        DEFAULT_EXECUTION_MODE,
         NEW_OPCODE_COSTS,
         StorageCosts::default(),
         *NEW_HOST_FUNCTION_COSTS,

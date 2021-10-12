@@ -12,4 +12,4 @@ pub mod transform;
 pub mod utils;
 pub mod wasm;
 pub mod wasm_config;
-pub mod wasm_prep;
+pub mod wasm_engine;

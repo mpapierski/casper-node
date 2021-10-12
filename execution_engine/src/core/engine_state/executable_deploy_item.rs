@@ -11,7 +11,6 @@ use std::{
 use datasize::DataSize;
 use hex_buffer_serde::{Hex, HexForm};
 use hex_fmt::HexFmt;
-use parity_wasm::elements::Module;
 use rand::{
     distributions::{Alphanumeric, Distribution, Standard},
     Rng,
@@ -35,7 +34,11 @@ use crate::{
         execution,
         tracking_copy::{TrackingCopy, TrackingCopyExt},
     },
-    shared::{newtypes::CorrelationId, wasm, wasm_prep, wasm_prep::Preprocessor},
+    shared::{
+        newtypes::CorrelationId,
+        wasm,
+        wasm_engine::{self, Module, WasmEngine},
+    },
     storage::global_state::StateReader,
 };
 
@@ -323,7 +326,7 @@ impl ExecutableDeployItem {
         tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
         account: &Account,
         correlation_id: CorrelationId,
-        preprocessor: &Preprocessor,
+        wasm_engine: &WasmEngine,
         protocol_version: &ProtocolVersion,
         system_contract_registry: SystemContractRegistry,
         phase: Phase,
@@ -354,7 +357,7 @@ impl ExecutableDeployItem {
                             error!("Missing handle payment contract hash");
                             Error::MissingSystemContractHash(HANDLE_PAYMENT.to_string())
                         })?;
-                let module = wasm::do_nothing_module(preprocessor)?;
+                let module = wasm::do_nothing_module(wasm_engine)?;
                 return Ok(DeployMetadata {
                     kind: DeployKind::System,
                     account_hash,
@@ -369,7 +372,7 @@ impl ExecutableDeployItem {
             }
             ExecutableDeployItem::ModuleBytes { module_bytes, .. } => {
                 let base_key = account_hash.into();
-                let module = preprocessor.preprocess(module_bytes.as_ref())?;
+                let module = wasm_engine.preprocess(module_bytes.as_ref())?;
                 return Ok(DeployMetadata {
                     kind: DeployKind::Session,
                     account_hash,
@@ -527,7 +530,7 @@ impl ExecutableDeployItem {
             .values()
             .any(|value| *value == contract_hash)
         {
-            let module = wasm::do_nothing_module(preprocessor)?;
+            let module = wasm::do_nothing_module(wasm_engine)?;
             return Ok(DeployMetadata {
                 kind: DeployKind::System,
                 account_hash,
@@ -545,7 +548,7 @@ impl ExecutableDeployItem {
             .borrow_mut()
             .get_contract_wasm(correlation_id, contract.contract_wasm_hash())?;
 
-        let module = wasm_prep::deserialize(contract_wasm.bytes())?;
+        let module = wasm_engine.module_from_bytes(contract_wasm.bytes())?;
 
         match entry_point.entry_point_type() {
             EntryPointType::Session => {

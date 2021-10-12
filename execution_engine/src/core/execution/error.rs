@@ -8,7 +8,11 @@ use casper_types::{
     ContractPackageHash, ContractVersionKey, ContractWasmHash, Key, StoredValueTypeMismatch, URef,
 };
 
-use crate::{core::resolvers::error::ResolverError, shared::wasm_prep, storage};
+use crate::{
+    core::resolvers::error::ResolverError,
+    shared::wasm_engine::{self, RuntimeError},
+    storage,
+};
 
 /// Possible execution errors.
 #[derive(Error, Debug, Clone)]
@@ -122,7 +126,7 @@ pub enum Error {
     NoSuchMethod(String),
     /// Error processing WASM bytes.
     #[error("Wasm preprocessing error: {}", _0)]
-    WasmPreprocessing(wasm_prep::PreprocessingError),
+    WasmPreprocessing(wasm_engine::PreprocessingError),
     /// Unable to convert a [`Key`] into an [`URef`].
     #[error("Key is not a URef: {}", _0)]
     KeyIsNotAURef(Key),
@@ -158,8 +162,8 @@ pub enum Error {
     MissingSystemContractHash(String),
 }
 
-impl From<wasm_prep::PreprocessingError> for Error {
-    fn from(error: wasm_prep::PreprocessingError) -> Self {
+impl From<wasm_engine::PreprocessingError> for Error {
+    fn from(error: wasm_engine::PreprocessingError) -> Self {
         Error::WasmPreprocessing(error)
     }
 }
@@ -190,6 +194,14 @@ impl From<wasmi::Error> for Error {
         {
             Some(error) => error.clone(),
             None => Error::Interpreter(error.into()),
+        }
+    }
+}
+
+impl From<RuntimeError> for Error {
+    fn from(runtime_error: RuntimeError) -> Self {
+        match runtime_error {
+            RuntimeError::WasmiError(wasmi_error) => wasmi_error.into(),
         }
     }
 }

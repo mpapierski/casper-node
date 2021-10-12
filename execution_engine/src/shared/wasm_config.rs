@@ -7,12 +7,15 @@ use casper_types::bytesrepr::{self, FromBytes, ToBytes};
 
 use super::{
     host_function_costs::HostFunctionCosts, opcode_costs::OpcodeCosts, storage_costs::StorageCosts,
+    wasm_engine::ExecutionMode,
 };
 
 /// Default maximum number of pages of the Wasm memory.
 pub const DEFAULT_WASM_MAX_MEMORY: u32 = 64;
 /// Default maximum stack height.
 pub const DEFAULT_MAX_STACK_HEIGHT: u32 = 64 * 1024;
+/// Default execution mode.
+pub const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Interpreted;
 
 /// Configuration of the Wasm execution environment.
 ///
@@ -24,6 +27,10 @@ pub struct WasmConfig {
     pub max_memory: u32,
     /// Max stack height (native WebAssembly stack limiter).
     pub max_stack_height: u32,
+    /// Wasm execution mode.
+    #[data_size(skip)]
+    pub execution_mode: ExecutionMode,
+
     /// Wasm opcode costs table.
     opcode_costs: OpcodeCosts,
     /// Storage costs.
@@ -37,6 +44,7 @@ impl WasmConfig {
     pub const fn new(
         max_memory: u32,
         max_stack_height: u32,
+        execution_mode: ExecutionMode,
         opcode_costs: OpcodeCosts,
         storage_costs: StorageCosts,
         host_function_costs: HostFunctionCosts,
@@ -44,6 +52,7 @@ impl WasmConfig {
         Self {
             max_memory,
             max_stack_height,
+            execution_mode,
             opcode_costs,
             storage_costs,
             host_function_costs,
@@ -64,6 +73,11 @@ impl WasmConfig {
     pub fn take_host_function_costs(self) -> HostFunctionCosts {
         self.host_function_costs
     }
+
+    /// Get a reference to the wasm config's execution mode.
+    pub fn execution_mode(&self) -> &ExecutionMode {
+        &self.execution_mode
+    }
 }
 
 impl Default for WasmConfig {
@@ -71,6 +85,7 @@ impl Default for WasmConfig {
         Self {
             max_memory: DEFAULT_WASM_MAX_MEMORY,
             max_stack_height: DEFAULT_MAX_STACK_HEIGHT,
+            execution_mode: DEFAULT_EXECUTION_MODE,
             opcode_costs: OpcodeCosts::default(),
             storage_costs: StorageCosts::default(),
             host_function_costs: HostFunctionCosts::default(),
@@ -84,6 +99,7 @@ impl ToBytes for WasmConfig {
 
         ret.append(&mut self.max_memory.to_bytes()?);
         ret.append(&mut self.max_stack_height.to_bytes()?);
+        ret.append(&mut self.execution_mode.to_bytes()?);
         ret.append(&mut self.opcode_costs.to_bytes()?);
         ret.append(&mut self.storage_costs.to_bytes()?);
         ret.append(&mut self.host_function_costs.to_bytes()?);
@@ -94,6 +110,7 @@ impl ToBytes for WasmConfig {
     fn serialized_length(&self) -> usize {
         self.max_memory.serialized_length()
             + self.max_stack_height.serialized_length()
+            + self.execution_mode.serialized_length()
             + self.opcode_costs.serialized_length()
             + self.storage_costs.serialized_length()
             + self.host_function_costs.serialized_length()
@@ -104,6 +121,7 @@ impl FromBytes for WasmConfig {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (max_memory, rem) = FromBytes::from_bytes(bytes)?;
         let (max_stack_height, rem) = FromBytes::from_bytes(rem)?;
+        let (execution_mode, rem) = FromBytes::from_bytes(rem)?;
         let (opcode_costs, rem) = FromBytes::from_bytes(rem)?;
         let (storage_costs, rem) = FromBytes::from_bytes(rem)?;
         let (host_function_costs, rem) = FromBytes::from_bytes(rem)?;
@@ -112,6 +130,7 @@ impl FromBytes for WasmConfig {
             WasmConfig {
                 max_memory,
                 max_stack_height,
+                execution_mode,
                 opcode_costs,
                 storage_costs,
                 host_function_costs,
@@ -126,6 +145,7 @@ impl Distribution<WasmConfig> for Standard {
         WasmConfig {
             max_memory: rng.gen(),
             max_stack_height: rng.gen(),
+            execution_mode: rng.gen(),
             opcode_costs: rng.gen(),
             storage_costs: rng.gen(),
             host_function_costs: rng.gen(),
@@ -141,7 +161,7 @@ pub mod gens {
     use super::WasmConfig;
     use crate::shared::{
         host_function_costs::gens::host_function_costs_arb, opcode_costs::gens::opcode_costs_arb,
-        storage_costs::gens::storage_costs_arb,
+        storage_costs::gens::storage_costs_arb, wasm_engine::ExecutionMode,
     };
 
     prop_compose! {
@@ -155,6 +175,7 @@ pub mod gens {
             WasmConfig {
                 max_memory,
                 max_stack_height,
+                execution_mode: ExecutionMode::Interpreted,
                 opcode_costs,
                 storage_costs,
                 host_function_costs,

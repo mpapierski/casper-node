@@ -210,7 +210,7 @@ mod tests {
         host_function_costs::{HostFunction, HostFunctionCosts},
         opcode_costs::OpcodeCosts,
         storage_costs::StorageCosts,
-        wasm_config::WasmConfig,
+        wasm_config::{WasmConfig, DEFAULT_EXECUTION_MODE},
     };
     use casper_types::{EraId, Motes, ProtocolVersion, StoredValue, U512};
 
@@ -269,6 +269,7 @@ mod tests {
         WasmConfig::new(
             17, // initial_memory
             19, // max_stack_height
+            DEFAULT_EXECUTION_MODE,
             EXPECTED_GENESIS_COSTS,
             EXPECTED_GENESIS_STORAGE_COSTS,
             *EXPECTED_GENESIS_HOST_FUNCTION_COSTS,

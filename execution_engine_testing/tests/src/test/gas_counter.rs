@@ -11,7 +11,7 @@ use casper_engine_test_support::{
     },
     DEFAULT_ACCOUNT_ADDR,
 };
-use casper_execution_engine::{core::engine_state::Error, shared::wasm_prep::PreprocessingError};
+use casper_execution_engine::{core::engine_state::Error, shared::wasm_engine::PreprocessingError};
 use casper_types::{contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, Gas, RuntimeArgs};
 
 /// Prepare malicious payload with amount of opcodes that could potentially overflow injected gas

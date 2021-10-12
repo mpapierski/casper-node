@@ -1,11 +1,11 @@
 //! This module contains executor state of the WASM code.
-mod args;
 mod auction_internal;
 mod externals;
 mod handle_payment_internal;
 mod mint_internal;
 mod scoped_instrumenter;
 mod standard_payment_internal;
+mod wasmi_args_parser;
 
 use std::{
     cmp,
@@ -15,12 +15,12 @@ use std::{
 };
 
 use itertools::Itertools;
-use parity_wasm::elements::Module;
 use tracing::error;
-use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef, Trap, TrapKind};
+use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
 
 use casper_types::{
-    account::{Account, AccountHash, ActionType, Weight},
+    account::{self, Account, AccountHash, ActionType, Weight},
+    api_error,
     bytesrepr::{self, FromBytes, ToBytes},
     contracts::{
         self, Contract, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
@@ -50,21 +50,25 @@ use crate::{
         Address,
     },
     shared::{
-        host_function_costs::{Cost, HostFunction},
+        host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
         wasm_config::WasmConfig,
+        wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine},
     },
     storage::global_state::StateReader,
 };
+
+use super::resolvers::v1_function_index::FunctionIndex;
 
 /// Represents the runtime properties of a WASM execution.
 pub struct Runtime<'a, R> {
     system_contract_cache: SystemContractCache,
     config: EngineConfig,
-    memory: MemoryRef,
     module: Module,
+    instance: Instance,
     host_buffer: Option<CLValue>,
     context: RuntimeContext<'a, R>,
     call_stack: Vec<CallStackElement>,
+    wasm_engine: &'a WasmEngine,
 }
 
 /// Creates an WASM module instance and a memory instance.
@@ -77,21 +81,31 @@ pub struct Runtime<'a, R> {
 ///
 /// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
 pub fn instance_and_memory(
-    parity_module: Module,
+    wasm_module: Module,
     protocol_version: ProtocolVersion,
-    wasm_config: &WasmConfig,
-) -> Result<(ModuleRef, MemoryRef), Error> {
-    let module = wasmi::Module::from_parity_wasm_module(parity_module)?;
-    let resolver = create_module_resolver(protocol_version, wasm_config)?;
-    let mut imports = ImportsBuilder::new();
-    imports.push_resolver("env", &resolver);
-    let not_started_module = ModuleInstance::new(&module, &imports)?;
-    if not_started_module.has_start() {
-        return Err(Error::UnsupportedWasmStart);
+    wasm_engine: &WasmEngine,
+) -> Result<Instance, Error> {
+    match wasm_engine.execution_mode() {
+        ExecutionMode::Interpreted => {
+            let wasmi_module = wasm_module
+                .try_into_interpreted()
+                .expect("expected interpreted wasm module");
+            let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
+            let resolver = create_module_resolver(protocol_version, wasm_engine.wasm_config())?;
+            let mut imports = ImportsBuilder::new();
+            imports.push_resolver("env", &resolver);
+            let not_started_module = ModuleInstance::new(&module, &imports)?;
+            if not_started_module.has_start() {
+                return Err(Error::UnsupportedWasmStart);
+            }
+            let instance = not_started_module.not_started_instance().clone();
+            let memory = resolver.memory_ref()?;
+            Ok(Instance::Interpreted(instance, memory))
+        }
+        ExecutionMode::Compiled => {
+            todo!("compiled mode")
+        }
     }
-    let instance = not_started_module.not_started_instance().clone();
-    let memory = resolver.memory_ref()?;
-    Ok((instance, memory))
 }
 
 /// Turns `key` into a `([u8; 32], AccessRights)` tuple.
@@ -982,30 +996,27 @@ where
     pub fn new(
         config: EngineConfig,
         system_contract_cache: SystemContractCache,
-        memory: MemoryRef,
         module: Module,
+        instance: Instance,
         context: RuntimeContext<'a, R>,
         call_stack: Vec<CallStackElement>,
+        wasm_engine: &'a WasmEngine,
     ) -> Self {
         Runtime {
             config,
             system_contract_cache,
-            memory,
             module,
+            instance,
             host_buffer: None,
             context,
             call_stack,
+            wasm_engine,
         }
     }
 
-    /// Returns a memory instance.
-    pub fn memory(&self) -> &MemoryRef {
-        &self.memory
-    }
-
-    /// Returns a WASM module instance.
-    pub fn module(&self) -> &Module {
-        &self.module
+    /// Returns a Wasm module instance.
+    pub fn instance(&self) -> &Instance {
+        &self.instance
     }
 
     /// Returns the context.
@@ -1042,7 +1053,7 @@ where
 
     /// Returns bytes from the WASM memory instance.
     fn bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
-        self.memory.get(ptr, size).map_err(Into::into)
+        self.memory().get(ptr, size).map_err(Into::into)
     }
 
     /// Returns a deserialized type from the WASM memory instance.
@@ -1068,7 +1079,7 @@ where
     }
 
     /// Returns a deserialized string from the WASM memory instance.
-    fn string_from_mem(&self, ptr: u32, size: u32) -> Result<String, Trap> {
+    fn string_from_mem(&self, ptr: u32, size: u32) -> Result<String, Error> {
         let bytes = self.bytes_from_mem(ptr, size as usize)?;
         bytesrepr::deserialize(bytes).map_err(|e| Error::BytesRepr(e).into())
     }
@@ -1077,8 +1088,9 @@ where
         &mut self,
         entry_points: &EntryPoints,
     ) -> Result<Vec<u8>, Error> {
-        let export_section = self
-            .module
+        let mut parity_wasm = self.module.clone().into_interpreted()?;
+
+        let export_section = parity_wasm
             .export_section()
             .ok_or_else(|| Error::FunctionNotFound(String::from("Missing Export Section")))?;
 
@@ -1097,13 +1109,13 @@ where
         if let Some(missing_name) = maybe_missing_name {
             Err(Error::FunctionNotFound(missing_name))
         } else {
-            let mut module = self.module.clone();
+            let mut module = self.module.clone().into_interpreted()?;
             pwasm_utils::optimize(&mut module, entry_point_names)?;
             parity_wasm::serialize(module).map_err(Error::ParityWasm)
         }
     }
 
-    fn is_valid_uref(&mut self, uref_ptr: u32, uref_size: u32) -> Result<bool, Trap> {
+    fn is_valid_uref(&mut self, uref_ptr: u32, uref_size: u32) -> Result<bool, Error> {
         let bytes = self.bytes_from_mem(uref_ptr, uref_size as usize)?;
         let uref: URef = bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?;
         Ok(self.context.validate_uref(&uref).is_ok())
@@ -1117,7 +1129,7 @@ where
         output_ptr: u32,
         output_size: usize,
         bytes_written_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         let name = self.string_from_mem(name_ptr, name_size)?;
 
         // Get a key and serialize it
@@ -1137,21 +1149,21 @@ where
         }
 
         // Set serialized Key bytes into the output buffer
-        if let Err(error) = self.memory.set(output_ptr, &key_bytes) {
+        if let Err(error) = self.memory().set(output_ptr, &key_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
         // For all practical purposes following cast is assumed to be safe
         let bytes_size = key_bytes.len() as u32;
         let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(bytes_written_ptr, &size_bytes) {
+        if let Err(error) = self.memory().set(bytes_written_ptr, &size_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
         Ok(Ok(()))
     }
 
-    fn has_key(&mut self, name_ptr: u32, name_size: u32) -> Result<i32, Trap> {
+    fn has_key(&mut self, name_ptr: u32, name_size: u32) -> Result<i32, Error> {
         let name = self.string_from_mem(name_ptr, name_size)?;
         if self.context.named_keys_contains_key(&name) {
             Ok(0)
@@ -1166,30 +1178,30 @@ where
         name_size: u32,
         key_ptr: u32,
         key_size: u32,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), Error> {
         let name = self.string_from_mem(name_ptr, name_size)?;
         let key = self.key_from_mem(key_ptr, key_size)?;
         self.context.put_key(name, key).map_err(Into::into)
     }
 
-    fn remove_key(&mut self, name_ptr: u32, name_size: u32) -> Result<(), Trap> {
+    fn remove_key(&mut self, name_ptr: u32, name_size: u32) -> Result<(), Error> {
         let name = self.string_from_mem(name_ptr, name_size)?;
         self.context.remove_key(&name)?;
         Ok(())
     }
 
     /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
-    fn get_main_purse(&mut self, dest_ptr: u32) -> Result<(), Trap> {
+    fn get_main_purse(&mut self, dest_ptr: u32) -> Result<(), Error> {
         let purse = self.context.get_main_purse()?;
         let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
-        self.memory
+        self.memory()
             .set(dest_ptr, &purse_bytes)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
     /// Writes caller (deploy) account public key to dest_ptr in the Wasm
     /// memory.
-    fn get_caller(&mut self, output_size: u32) -> Result<Result<(), ApiError>, Trap> {
+    fn get_caller(&mut self, output_size: u32) -> Result<Result<(), ApiError>, Error> {
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -1204,7 +1216,7 @@ where
 
         // Write output
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size, &output_size_bytes) {
+        if let Err(error) = self.memory().set(output_size, &output_size_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
         Ok(Ok(()))
@@ -1228,22 +1240,22 @@ where
     }
 
     /// Writes runtime context's phase to dest_ptr in the Wasm memory.
-    fn get_phase(&mut self, dest_ptr: u32) -> Result<(), Trap> {
+    fn get_phase(&mut self, dest_ptr: u32) -> Result<(), Error> {
         let phase = self.context.phase();
         let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
-        self.memory
+        self.memory()
             .set(dest_ptr, &bytes)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
     /// Writes current blocktime to dest_ptr in Wasm memory.
-    fn get_blocktime(&self, dest_ptr: u32) -> Result<(), Trap> {
+    fn get_blocktime(&self, dest_ptr: u32) -> Result<(), Error> {
         let blocktime = self
             .context
             .get_blocktime()
             .into_bytes()
             .map_err(Error::BytesRepr)?;
-        self.memory
+        self.memory()
             .set(dest_ptr, &blocktime)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
@@ -1255,7 +1267,7 @@ where
         call_stack_len_ptr: u32,
         // (Output) Pointer to size in bytes of the serialized call stack.
         result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -1264,7 +1276,7 @@ where
         let call_stack_len = call_stack.len() as u32;
         let call_stack_len_bytes = call_stack_len.to_le_bytes();
 
-        if let Err(error) = self.memory.set(call_stack_len_ptr, &call_stack_len_bytes) {
+        if let Err(error) = self.memory().set(call_stack_len_ptr, &call_stack_len_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
@@ -1282,7 +1294,7 @@ where
         let call_stack_cl_value_bytes_len_bytes = call_stack_cl_value_bytes_len.to_le_bytes();
 
         if let Err(error) = self
-            .memory
+            .memory()
             .set(result_size_ptr, &call_stack_cl_value_bytes_len_bytes)
         {
             return Err(Error::Interpreter(error.into()).into());
@@ -1298,11 +1310,11 @@ where
         value_ptr: u32,
         value_size: usize,
         scoped_instrumenter: &mut ScopedInstrumenter,
-    ) -> Trap {
+    ) -> Error {
         const UREF_COUNT: &str = "uref_count";
         self.host_buffer = None;
         let mem_get = self
-            .memory
+            .memory()
             .get(value_ptr, value_size)
             .map_err(|e| Error::Interpreter(e.into()));
         match mem_get {
@@ -1461,10 +1473,11 @@ where
         let mut mint_runtime = Runtime::new(
             self.config,
             SystemContractCache::clone(&self.system_contract_cache),
-            self.memory.clone(),
             self.module.clone(),
+            self.instance.clone(),
             mint_context,
             call_stack,
+            self.wasm_engine,
         );
 
         let system_config = self.config.system_config();
@@ -1608,10 +1621,11 @@ where
         let mut runtime = Runtime::new(
             self.config,
             SystemContractCache::clone(&self.system_contract_cache),
-            self.memory.clone(),
             self.module.clone(),
+            self.instance.clone(),
             runtime_context,
             call_stack,
+            self.wasm_engine,
         );
 
         let system_config = self.config.system_config();
@@ -1739,10 +1753,11 @@ where
         let mut runtime = Runtime::new(
             self.config,
             SystemContractCache::clone(&self.system_contract_cache),
-            self.memory.clone(),
             self.module.clone(),
+            self.instance.clone(),
             runtime_context,
             call_stack,
+            self.wasm_engine,
         );
 
         let system_config = self.config.system_config();
@@ -2184,14 +2199,13 @@ where
             };
             match maybe_module {
                 Some(module) => module,
-                None => parity_wasm::deserialize_buffer(contract_wasm.bytes())?,
+                None => self.wasm_engine.module_from_bytes(contract_wasm.bytes())?,
             }
         };
 
         let entry_point_name = entry_point.name();
 
-        let (instance, memory) =
-            instance_and_memory(module.clone(), protocol_version, self.config.wasm_config())?;
+        let instance = instance_and_memory(module.clone(), protocol_version, self.wasm_engine)?;
 
         let access_rights = {
             let mut keys: Vec<Key> = named_keys.values().cloned().collect();
@@ -2248,14 +2262,17 @@ where
         let mut runtime = Runtime {
             system_contract_cache,
             config,
-            memory,
             module,
+            instance,
             host_buffer,
             context,
             call_stack,
+            wasm_engine: self.wasm_engine,
         };
 
-        let result = instance.invoke_export(entry_point_name, &[], &mut runtime);
+        let instance_ref = runtime.instance().clone();
+
+        let result = instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime);
 
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
@@ -2285,13 +2302,12 @@ where
             }
         };
 
-        if let Some(host_error) = error.as_host_error() {
+        if let Some(host_error) = error.as_execution_error() {
             // If the "error" was in fact a trap caused by calling `ret` then
             // this is normal operation and we should return the value captured
             // in the Runtime result field.
-            let downcasted_error = host_error.downcast_ref::<Error>();
-            match downcasted_error {
-                Some(Error::Ret(ref ret_urefs)) => {
+            match host_error {
+                Error::Ret(ref ret_urefs) => {
                     // insert extra urefs returned from call
                     let ret_urefs_map: HashMap<Address, HashSet<AccessRights>> =
                         extract_access_rights_from_urefs(ret_urefs.clone());
@@ -2306,12 +2322,12 @@ where
                     }
                     return runtime.take_host_buffer().ok_or(Error::ExpectedReturnValue);
                 }
-                Some(error) => return Err(error.clone()),
-                None => return Err(Error::Interpreter(host_error.to_string())),
+                error => return Err(error.clone()),
+                // None => return Err(Error::Interpreter(host_error.to_string())),
             }
+        } else {
+            Err(Error::Interpreter(error.to_string()))
         }
-
-        Err(Error::Interpreter(error.into()))
     }
 
     fn call_contract_host_buffer(
@@ -2381,7 +2397,7 @@ where
         }
 
         let result_size_bytes = result_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(result_size_ptr, &result_size_bytes) {
+        if let Err(error) = self.memory().set(result_size_ptr, &result_size_bytes) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -2393,7 +2409,7 @@ where
         total_keys_ptr: u32,
         result_size_ptr: u32,
         scoped_instrumenter: &mut ScopedInstrumenter,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         scoped_instrumenter.add_property(
             "names_total_length",
             self.context
@@ -2410,7 +2426,7 @@ where
 
         let total_keys = self.context.named_keys().len() as u32;
         let total_keys_bytes = total_keys.to_le_bytes();
-        if let Err(error) = self.memory.set(total_keys_ptr, &total_keys_bytes) {
+        if let Err(error) = self.memory().set(total_keys_ptr, &total_keys_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
@@ -2428,7 +2444,7 @@ where
         }
 
         let length_bytes = length.to_le_bytes();
-        if let Err(error) = self.memory.set(result_size_ptr, &length_bytes) {
+        if let Err(error) = self.memory().set(result_size_ptr, &length_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
@@ -2521,7 +2537,7 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &output_size_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &output_size_bytes) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -2608,20 +2624,20 @@ where
             }
 
             // Set serialized Key bytes into the output buffer
-            if let Err(error) = self.memory.set(output_ptr, &key_bytes) {
+            if let Err(error) = self.memory().set(output_ptr, &key_bytes) {
                 return Err(Error::Interpreter(error.into()));
             }
 
             // Following cast is assumed to be safe
             let bytes_size = key_bytes.len() as u32;
             let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
-            if let Err(error) = self.memory.set(bytes_written_ptr, &size_bytes) {
+            if let Err(error) = self.memory().set(bytes_written_ptr, &size_bytes) {
                 return Err(Error::Interpreter(error.into()));
             }
 
             let version_value: u32 = insert_contract_result.contract_version();
             let version_bytes = version_value.to_le_bytes();
-            if let Err(error) = self.memory.set(version_ptr, &version_bytes) {
+            if let Err(error) = self.memory().set(version_ptr, &version_bytes) {
                 return Err(Error::Interpreter(error.into()));
             }
         }
@@ -2658,18 +2674,18 @@ where
 
     /// Writes function address (`hash_bytes`) into the Wasm memory (at
     /// `dest_ptr` pointer).
-    fn function_address(&mut self, hash_bytes: [u8; 32], dest_ptr: u32) -> Result<(), Trap> {
-        self.memory
+    fn function_address(&mut self, hash_bytes: [u8; 32], dest_ptr: u32) -> Result<(), Error> {
+        self.memory()
             .set(dest_ptr, &hash_bytes)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
     /// Generates new unforgable reference and adds it to the context's
     /// access_rights set.
-    fn new_uref(&mut self, uref_ptr: u32, value_ptr: u32, value_size: u32) -> Result<(), Trap> {
+    fn new_uref(&mut self, uref_ptr: u32, value_ptr: u32, value_size: u32) -> Result<(), Error> {
         let cl_value = self.cl_value_from_mem(value_ptr, value_size)?; // read initial value from memory
         let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
-        self.memory
+        self.memory()
             .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
@@ -2681,7 +2697,7 @@ where
         key_size: u32,
         value_ptr: u32,
         value_size: u32,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), Error> {
         let key = self.key_from_mem(key_ptr, key_size)?;
         let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
         self.context
@@ -2744,7 +2760,7 @@ where
         key_size: u32,
         value_ptr: u32,
         value_size: u32,
-    ) -> Result<(), Trap> {
+    ) -> Result<(), Error> {
         let key = self.key_from_mem(key_ptr, key_size)?;
         let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
         self.context
@@ -2762,7 +2778,7 @@ where
         key_ptr: u32,
         key_size: u32,
         output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -2780,16 +2796,11 @@ where
         }
 
         let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &value_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &value_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
         Ok(Ok(()))
-    }
-
-    /// Reverts contract execution with a status specified.
-    fn revert(&mut self, status: u32) -> Trap {
-        Error::Revert(status.into()).into()
     }
 
     fn add_associated_key(
@@ -2797,7 +2808,7 @@ where
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
@@ -2824,7 +2835,7 @@ where
         &mut self,
         account_hash_ptr: u32,
         account_hash_size: usize,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
@@ -2845,7 +2856,7 @@ where
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
@@ -2872,7 +2883,7 @@ where
         &mut self,
         action_type_value: u32,
         threshold_value: u8,
-    ) -> Result<i32, Trap> {
+    ) -> Result<i32, Error> {
         match ActionType::try_from(action_type_value) {
             Ok(action_type) => {
                 let threshold = Weight::new(threshold_value);
@@ -2882,7 +2893,7 @@ where
                     Err(e) => Err(e.into()),
                 }
             }
-            Err(_) => Err(Trap::new(TrapKind::Unreachable)),
+            Err(_) => todo!("Err(Trap::new(TrapKind::Unreachable))"),
         }
     }
 
@@ -3213,7 +3224,7 @@ where
         }
 
         let balance_size_bytes = balance_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &balance_size_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &balance_size_bytes) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -3225,7 +3236,7 @@ where
         system_contract_index: u32,
         dest_ptr: u32,
         _dest_size: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         let contract_hash: ContractHash = match SystemContractType::try_from(system_contract_index)
         {
             Ok(SystemContractType::Mint) => self.get_mint_contract()?,
@@ -3235,7 +3246,7 @@ where
             Err(error) => return Ok(Err(error)),
         };
 
-        match self.memory.set(dest_ptr, contract_hash.as_ref()) {
+        match self.memory().set(dest_ptr, contract_hash.as_ref()) {
             Ok(_) => Ok(Ok(())),
             Err(error) => Err(Error::Interpreter(error.into()).into()),
         }
@@ -3283,14 +3294,14 @@ where
         // Slice data, so if `dest_size` is larger than host_buffer size, it will take host_buffer
         // as whole.
         let sliced_buf = &serialized_value[..cmp::min(dest_size, serialized_value.len())];
-        if let Err(error) = self.memory.set(dest_ptr, sliced_buf) {
+        if let Err(error) = self.memory().set(dest_ptr, sliced_buf) {
             return Err(Error::Interpreter(error.into()));
         }
 
         let bytes_written = sliced_buf.len() as u32;
         let bytes_written_data = bytes_written.to_le_bytes();
 
-        if let Err(error) = self.memory.set(bytes_written_ptr, &bytes_written_data) {
+        if let Err(error) = self.memory().set(bytes_written_ptr, &bytes_written_data) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -3298,7 +3309,7 @@ where
     }
 
     #[cfg(feature = "test-support")]
-    fn print(&mut self, text_ptr: u32, text_size: u32) -> Result<(), Trap> {
+    fn print(&mut self, text_ptr: u32, text_size: u32) -> Result<(), Error> {
         let text = self.string_from_mem(text_ptr, text_size)?;
         println!("{}", text);
         Ok(())
@@ -3309,7 +3320,7 @@ where
         name_ptr: u32,
         name_size: usize,
         size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
         let name = String::from_utf8_lossy(&name_bytes);
 
@@ -3323,7 +3334,7 @@ where
 
         let arg_size_bytes = arg_size.to_le_bytes(); // Wasm is little-endian
 
-        if let Err(e) = self.memory.set(size_ptr, &arg_size_bytes) {
+        if let Err(e) = self.memory().set(size_ptr, &arg_size_bytes) {
             return Err(Error::Interpreter(e.into()).into());
         }
 
@@ -3336,7 +3347,7 @@ where
         name_size: usize,
         output_ptr: u32,
         output_size: usize,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
         let name = String::from_utf8_lossy(&name_bytes);
 
@@ -3350,7 +3361,7 @@ where
         }
 
         if let Err(e) = self
-            .memory
+            .memory()
             .set(output_ptr, &arg.inner_bytes()[..output_size])
         {
             return Err(Error::Interpreter(e.into()).into());
@@ -3470,7 +3481,7 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &output_size_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &output_size_bytes) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -3529,7 +3540,7 @@ where
         &mut self,
         host_function: &HostFunction<T>,
         weights: T,
-    ) -> Result<(), Trap>
+    ) -> Result<(), Error>
     where
         T: AsRef<[Cost]> + Copy,
     {
@@ -3557,7 +3568,7 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &output_size_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &output_size_bytes) {
             return Err(Error::Interpreter(error.into()));
         }
 
@@ -3572,7 +3583,7 @@ where
         dictionary_item_key_bytes_ptr: u32,
         dictionary_item_key_bytes_size: u32,
         output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         // check we can write to the host buffer
         if let Err(err) = self.check_host_buffer() {
             return Ok(Err(err));
@@ -3602,7 +3613,7 @@ where
         }
 
         let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory.set(output_size_ptr, &value_bytes) {
+        if let Err(error) = self.memory().set(output_size_ptr, &value_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
@@ -3618,7 +3629,7 @@ where
         key_size: u32,
         value_ptr: u32,
         value_size: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
         let uref: URef = self.t_from_mem(uref_ptr, uref_size)?;
         let dictionary_item_key_bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
         if dictionary_item_key_bytes.len() > DICTIONARY_ITEM_KEY_MAX_LENGTH {
@@ -3631,14 +3642,1043 @@ where
             return Ok(Err(ApiError::InvalidDictionaryItemKey));
         };
         let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
-        if let Err(e) = self
-            .context
-            .dictionary_put(uref, &dictionary_item_key, cl_value)
-        {
-            return Err(Trap::from(e));
-        }
+        self.context
+            .dictionary_put(uref, &dictionary_item_key, cl_value)?;
         Ok(Ok(()))
     }
+
+    /// Reverts contract execution with a status specified.
+    pub fn casper_revert(&mut self, status: u32) -> Result<(), Error> {
+        // Err(Error::Revert(api_error:))
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(&host_function_costs.revert, [status])?;
+        Err(Error::Revert(status.into()))
+    }
+
+    pub fn memory(&self) -> &MemoryRef {
+        match &self.instance {
+            Instance::Interpreted(_module, memory_ref) => memory_ref,
+        }
+    }
+
+    // pub fn invoke_wasm_function(&self, func: FunctionIndex, args: &[RuntimeValue]) ->
+    // Result<Option<RuntimeValue>, Error> {
+
+    // let mut scoped_instrumenter = ScopedInstrumenter::new(func);
+
+    // // let host_function_costs = self.config.wasm_config().take_host_function_costs();
+    // match func {
+    //     FunctionIndex::RevertFuncIndex => {
+
+    //     }
+    // }
+
+    // match func {
+    //     FunctionIndex::ReadFuncIndex => {
+    //         // args(0) = pointer to key in Wasm memory
+    //         // args(1) = size of key in Wasm memory
+    //         // args(2) = pointer to output size (output param)
+    //         let (key_ptr, key_size, output_size_ptr) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.read_value,
+    //             [key_ptr, key_size, output_size_ptr],
+    //         )?;
+    //         let ret = self.read(key_ptr, key_size, output_size_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::LoadNamedKeysFuncIndex => {
+    //         // args(0) = pointer to amount of keys (output)
+    //         // args(1) = pointer to amount of serialized bytes (output)
+    //         let (total_keys_ptr, result_size_ptr) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.load_named_keys,
+    //             [total_keys_ptr, result_size_ptr],
+    //         )?;
+    //         let ret = self.load_named_keys(
+    //             total_keys_ptr,
+    //             result_size_ptr,
+    //             &mut scoped_instrumenter,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::WriteFuncIndex => {
+    //         // args(0) = pointer to key in Wasm memory
+    //         // args(1) = size of key
+    //         // args(2) = pointer to value
+    //         // args(3) = size of value
+    //         let (key_ptr, key_size, value_ptr, value_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.write,
+    //             [key_ptr, key_size, value_ptr, value_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("value_size", value_size);
+    //         self.write(key_ptr, key_size, value_ptr, value_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::AddFuncIndex => {
+    //         // args(0) = pointer to key in Wasm memory
+    //         // args(1) = size of key
+    //         // args(2) = pointer to value
+    //         // args(3) = size of value
+    //         let (key_ptr, key_size, value_ptr, value_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.add,
+    //             [key_ptr, key_size, value_ptr, value_size],
+    //         )?;
+    //         self.add(key_ptr, key_size, value_ptr, value_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::NewFuncIndex => {
+    //         // args(0) = pointer to uref destination in Wasm memory
+    //         // args(1) = pointer to initial value
+    //         // args(2) = size of initial value
+    //         let (uref_ptr, value_ptr, value_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.new_uref,
+    //             [uref_ptr, value_ptr, value_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("value_size", value_size);
+    //         self.new_uref(uref_ptr, value_ptr, value_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::RetFuncIndex => {
+    //         // args(0) = pointer to value
+    //         // args(1) = size of value
+    //         let (value_ptr, value_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.ret, [value_ptr, value_size])?;
+    //         scoped_instrumenter.add_property("value_size", value_size);
+    //         Err(self.ret(value_ptr, value_size as usize, &mut scoped_instrumenter))
+    //     }
+
+    //     FunctionIndex::GetKeyFuncIndex => {
+    //         // args(0) = pointer to key name in Wasm memory
+    //         // args(1) = size of key name
+    //         // args(2) = pointer to output buffer for serialized key
+    //         // args(3) = size of output buffer
+    //         // args(4) = pointer to bytes written
+    //         let (name_ptr, name_size, output_ptr, output_size, bytes_written) =
+    //             Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.get_key,
+    //             [name_ptr, name_size, output_ptr, output_size, bytes_written],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size);
+    //         let ret = self.load_key(
+    //             name_ptr,
+    //             name_size,
+    //             output_ptr,
+    //             output_size as usize,
+    //             bytes_written,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::HasKeyFuncIndex => {
+    //         // args(0) = pointer to key name in Wasm memory
+    //         // args(1) = size of key name
+    //         let (name_ptr, name_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.has_key,
+    //             [name_ptr, name_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size);
+    //         let result = self.has_key(name_ptr, name_size)?;
+    //         Ok(Some(RuntimeValue::I32(result)))
+    //     }
+
+    //     FunctionIndex::PutKeyFuncIndex => {
+    //         // args(0) = pointer to key name in Wasm memory
+    //         // args(1) = size of key name
+    //         // args(2) = pointer to key in Wasm memory
+    //         // args(3) = size of key
+    //         let (name_ptr, name_size, key_ptr, key_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.put_key,
+    //             [name_ptr, name_size, key_ptr, key_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size);
+    //         self.put_key(name_ptr, name_size, key_ptr, key_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::RemoveKeyFuncIndex => {
+    //         // args(0) = pointer to key name in Wasm memory
+    //         // args(1) = size of key name
+    //         let (name_ptr, name_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.remove_key,
+    //             [name_ptr, name_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size);
+    //         self.remove_key(name_ptr, name_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::GetCallerIndex => {
+    //         // args(0) = pointer where a size of serialized bytes will be stored
+    //         let (output_size,) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.get_caller, [output_size])?;
+    //         let ret = self.get_caller(output_size)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::GetBlocktimeIndex => {
+    //         // args(0) = pointer to Wasm memory where to write.
+    //         let (dest_ptr,) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.get_blocktime, [dest_ptr])?;
+    //         self.get_blocktime(dest_ptr)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::GasFuncIndex => {
+    //         let (gas_arg,): (u32,) = Args::parse(args)?;
+    //         // Gas is special cased internal host function and for accounting purposes it isn't
+    //         // represented in protocol data.
+    //         self.gas(Gas::new(gas_arg.into()))?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::IsValidURefFnIndex => {
+    //         // args(0) = pointer to value to validate
+    //         // args(1) = size of value
+    //         let (uref_ptr, uref_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.is_valid_uref,
+    //             [uref_ptr, uref_size],
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(i32::from(
+    //             self.is_valid_uref(uref_ptr, uref_size)?,
+    //         ))))
+    //     }
+
+    //     FunctionIndex::RevertFuncIndex => {
+    //         // args(0) = status u32
+    //         let (status,) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.revert, [status])?;
+    //         Err(self.revert(status))
+    //     }
+
+    //     FunctionIndex::AddAssociatedKeyFuncIndex => {
+    //         // args(0) = pointer to array of bytes of an account hash
+    //         // args(1) = size of an account hash
+    //         // args(2) = weight of the key
+    //         let (account_hash_ptr, account_hash_size, weight_value) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.add_associated_key,
+    //             [account_hash_ptr, account_hash_size, weight_value as Cost],
+    //         )?;
+    //         let value = self.add_associated_key(
+    //             account_hash_ptr,
+    //             account_hash_size as usize,
+    //             weight_value,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(value)))
+    //     }
+
+    //     FunctionIndex::RemoveAssociatedKeyFuncIndex => {
+    //         // args(0) = pointer to array of bytes of an account hash
+    //         // args(1) = size of an account hash
+    //         let (account_hash_ptr, account_hash_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.remove_associated_key,
+    //             [account_hash_ptr, account_hash_size],
+    //         )?;
+    //         let value =
+    //             self.remove_associated_key(account_hash_ptr, account_hash_size as usize)?;
+    //         Ok(Some(RuntimeValue::I32(value)))
+    //     }
+
+    //     FunctionIndex::UpdateAssociatedKeyFuncIndex => {
+    //         // args(0) = pointer to array of bytes of an account hash
+    //         // args(1) = size of an account hash
+    //         // args(2) = weight of the key
+    //         let (account_hash_ptr, account_hash_size, weight_value) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.update_associated_key,
+    //             [account_hash_ptr, account_hash_size, weight_value as Cost],
+    //         )?;
+    //         let value = self.update_associated_key(
+    //             account_hash_ptr,
+    //             account_hash_size as usize,
+    //             weight_value,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(value)))
+    //     }
+
+    //     FunctionIndex::SetActionThresholdFuncIndex => {
+    //         // args(0) = action type
+    //         // args(1) = new threshold
+    //         let (action_type_value, threshold_value) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.set_action_threshold,
+    //             [action_type_value, threshold_value as Cost],
+    //         )?;
+    //         let value = self.set_action_threshold(action_type_value, threshold_value)?;
+    //         Ok(Some(RuntimeValue::I32(value)))
+    //     }
+
+    //     FunctionIndex::CreatePurseIndex => {
+    //         // args(0) = pointer to array for return value
+    //         // args(1) = length of array for return value
+    //         let (dest_ptr, dest_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.create_purse,
+    //             [dest_ptr, dest_size],
+    //         )?;
+    //         let purse = self.create_purse()?;
+    //         let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
+    //         assert_eq!(dest_size, purse_bytes.len() as u32);
+    //         self.instance.memory()
+    //             .set(dest_ptr, &purse_bytes)
+    //             .map_err(|e| Error::Interpreter(e.into()))?;
+    //         Ok(Some(RuntimeValue::I32(0)))
+    //     }
+
+    //     FunctionIndex::TransferToAccountIndex => {
+    //         // args(0) = pointer to array of bytes of an account hash
+    //         // args(1) = length of array of bytes of an account hash
+    //         // args(2) = pointer to array of bytes of an amount
+    //         // args(3) = length of array of bytes of an amount
+    //         // args(4) = pointer to array of bytes of an id
+    //         // args(5) = length of array of bytes of an id
+    //         // args(6) = pointer to a value where new value will be set
+    //         let (key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr) =
+    //             Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.transfer_to_account,
+    //             [
+    //                 key_ptr,
+    //                 key_size,
+    //                 amount_ptr,
+    //                 amount_size,
+    //                 id_ptr,
+    //                 id_size,
+    //                 result_ptr,
+    //             ],
+    //         )?;
+    //         let account_hash: AccountHash = {
+    //             let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let amount: U512 = {
+    //             let bytes = self.bytes_from_mem(amount_ptr, amount_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let id: Option<u64> = {
+    //             let bytes = self.bytes_from_mem(id_ptr, id_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+
+    //         let ret = match self.transfer_to_account(account_hash, amount, id)? {
+    //             Ok(transferred_to) => {
+    //                 let result_value: u32 = transferred_to as u32;
+    //                 let result_value_bytes = result_value.to_le_bytes();
+    //                 self.memory()
+    //                     .set(result_ptr, &result_value_bytes)
+    //                     .map_err(|error| Error::Interpreter(error.into()))?;
+    //                 Ok(())
+    //             }
+    //             Err(api_error) => Err(api_error),
+    //         };
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::TransferFromPurseToAccountIndex => {
+    //         // args(0) = pointer to array of bytes in Wasm memory of a source purse
+    //         // args(1) = length of array of bytes in Wasm memory of a source purse
+    //         // args(2) = pointer to array of bytes in Wasm memory of an account hash
+    //         // args(3) = length of array of bytes in Wasm memory of an account hash
+    //         // args(4) = pointer to array of bytes in Wasm memory of an amount
+    //         // args(5) = length of array of bytes in Wasm memory of an amount
+    //         // args(6) = pointer to array of bytes in Wasm memory of an id
+    //         // args(7) = length of array of bytes in Wasm memory of an id
+    //         // args(8) = pointer to a value where value of `TransferredTo` enum will be set
+    //         let (
+    //             source_ptr,
+    //             source_size,
+    //             key_ptr,
+    //             key_size,
+    //             amount_ptr,
+    //             amount_size,
+    //             id_ptr,
+    //             id_size,
+    //             result_ptr,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.transfer_from_purse_to_account,
+    //             [
+    //                 source_ptr,
+    //                 source_size,
+    //                 key_ptr,
+    //                 key_size,
+    //                 amount_ptr,
+    //                 amount_size,
+    //                 id_ptr,
+    //                 id_size,
+    //                 result_ptr,
+    //             ],
+    //         )?;
+    //         let source_purse = {
+    //             let bytes = self.bytes_from_mem(source_ptr, source_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let account_hash: AccountHash = {
+    //             let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let amount: U512 = {
+    //             let bytes = self.bytes_from_mem(amount_ptr, amount_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let id: Option<u64> = {
+    //             let bytes = self.bytes_from_mem(id_ptr, id_size as usize)?;
+    //             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+    //         };
+    //         let ret = match self.transfer_from_purse_to_account(
+    //             source_purse,
+    //             account_hash,
+    //             amount,
+    //             id,
+    //         )? {
+    //             Ok(transferred_to) => {
+    //                 let result_value: u32 = transferred_to as u32;
+    //                 let result_value_bytes = result_value.to_le_bytes();
+    //                 self.memory()
+    //                     .set(result_ptr, &result_value_bytes)
+    //                     .map_err(|error| Error::Interpreter(error.into()))?;
+    //                 Ok(())
+    //             }
+    //             Err(api_error) => Err(api_error),
+    //         };
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::TransferFromPurseToPurseIndex => {
+    //         // args(0) = pointer to array of bytes in Wasm memory of a source purse
+    //         // args(1) = length of array of bytes in Wasm memory of a source purse
+    //         // args(2) = pointer to array of bytes in Wasm memory of a target purse
+    //         // args(3) = length of array of bytes in Wasm memory of a target purse
+    //         // args(4) = pointer to array of bytes in Wasm memory of an amount
+    //         // args(5) = length of array of bytes in Wasm memory of an amount
+    //         // args(6) = pointer to array of bytes in Wasm memory of an id
+    //         // args(7) = length of array of bytes in Wasm memory of an id
+    //         let (
+    //             source_ptr,
+    //             source_size,
+    //             target_ptr,
+    //             target_size,
+    //             amount_ptr,
+    //             amount_size,
+    //             id_ptr,
+    //             id_size,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.transfer_from_purse_to_purse,
+    //             [
+    //                 source_ptr,
+    //                 source_size,
+    //                 target_ptr,
+    //                 target_size,
+    //                 amount_ptr,
+    //                 amount_size,
+    //                 id_ptr,
+    //                 id_size,
+    //             ],
+    //         )?;
+    //         let ret = self.transfer_from_purse_to_purse(
+    //             source_ptr,
+    //             source_size,
+    //             target_ptr,
+    //             target_size,
+    //             amount_ptr,
+    //             amount_size,
+    //             id_ptr,
+    //             id_size,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::GetBalanceIndex => {
+    //         // args(0) = pointer to purse input
+    //         // args(1) = length of purse
+    //         // args(2) = pointer to output size (output)
+    //         let (ptr, ptr_size, output_size_ptr) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.get_balance,
+    //             [ptr, ptr_size, output_size_ptr],
+    //         )?;
+    //         let ret = self.get_balance_host_buffer(ptr, ptr_size as usize, output_size_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::GetPhaseIndex => {
+    //         // args(0) = pointer to Wasm memory where to write.
+    //         let (dest_ptr,) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.get_phase, [dest_ptr])?;
+    //         self.get_phase(dest_ptr)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::GetSystemContractIndex => {
+    //         // args(0) = system contract index
+    //         // args(1) = dest pointer for storing serialized result
+    //         // args(2) = dest pointer size
+    //         let (system_contract_index, dest_ptr, dest_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.get_system_contract,
+    //             [system_contract_index, dest_ptr, dest_size],
+    //         )?;
+    //         let ret = self.get_system_contract(system_contract_index, dest_ptr, dest_size)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::GetMainPurseIndex => {
+    //         // args(0) = pointer to Wasm memory where to write.
+    //         let (dest_ptr,) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
+    //         self.get_main_purse(dest_ptr)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::ReadHostBufferIndex => {
+    //         // args(0) = pointer to Wasm memory where to write size.
+    //         let (dest_ptr, dest_size, bytes_written_ptr) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.read_host_buffer,
+    //             [dest_ptr, dest_size, bytes_written_ptr],
+    //         )?;
+    //         scoped_instrumenter.add_property("dest_size", dest_size);
+    //         let ret = self.read_host_buffer(dest_ptr, dest_size as usize, bytes_written_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::CreateContractPackageAtHash => {
+    //         // args(0) = pointer to wasm memory where to write 32-byte Hash address
+    //         // args(1) = pointer to wasm memory where to write 32-byte access key address
+    //         // args(2) = boolean flag to determine if the contract can be versioned
+    //         let (hash_dest_ptr, access_dest_ptr, is_locked) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.create_contract_package_at_hash,
+    //             [hash_dest_ptr, access_dest_ptr],
+    //         )?;
+    //         let package_status = ContractPackageStatus::new(is_locked);
+    //         let (hash_addr, access_addr) =
+    //             self.create_contract_package_at_hash(package_status)?;
+
+    //         self.function_address(hash_addr, hash_dest_ptr)?;
+    //         self.function_address(access_addr, access_dest_ptr)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::CreateContractUserGroup => {
+    //         // args(0) = pointer to package key in wasm memory
+    //         // args(1) = size of package key in wasm memory
+    //         // args(2) = pointer to group label in wasm memory
+    //         // args(3) = size of group label in wasm memory
+    //         // args(4) = number of new urefs to generate for the group
+    //         // args(5) = pointer to existing_urefs in wasm memory
+    //         // args(6) = size of existing_urefs in wasm memory
+    //         // args(7) = pointer to location to write size of output (written to host buffer)
+    //         let (
+    //             package_key_ptr,
+    //             package_key_size,
+    //             label_ptr,
+    //             label_size,
+    //             num_new_urefs,
+    //             existing_urefs_ptr,
+    //             existing_urefs_size,
+    //             output_size_ptr,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.create_contract_user_group,
+    //             [
+    //                 package_key_ptr,
+    //                 package_key_size,
+    //                 label_ptr,
+    //                 label_size,
+    //                 num_new_urefs,
+    //                 existing_urefs_ptr,
+    //                 existing_urefs_size,
+    //                 output_size_ptr,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter
+    //             .add_property("existing_urefs_size", existing_urefs_size.to_string());
+    //         scoped_instrumenter.add_property("label_size", label_size.to_string());
+
+    //         let contract_package_hash: ContractPackageHash =
+    //             self.t_from_mem(package_key_ptr, package_key_size)?;
+    //         let label: String = self.t_from_mem(label_ptr, label_size)?;
+    //         let existing_urefs: BTreeSet<URef> =
+    //             self.t_from_mem(existing_urefs_ptr, existing_urefs_size)?;
+
+    //         let ret = self.create_contract_user_group(
+    //             contract_package_hash,
+    //             label,
+    //             num_new_urefs,
+    //             existing_urefs,
+    //             output_size_ptr,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::AddContractVersion => {
+    //         // args(0) = pointer to package key in wasm memory
+    //         // args(1) = size of package key in wasm memory
+    //         // args(2) = pointer to entrypoints in wasm memory
+    //         // args(3) = size of entrypoints in wasm memory
+    //         // args(4) = pointer to named keys in wasm memory
+    //         // args(5) = size of named keys in wasm memory
+    //         // args(6) = pointer to output buffer for serialized key
+    //         // args(7) = size of output buffer
+    //         // args(8) = pointer to bytes written
+    //         let (
+    //             contract_package_hash_ptr,
+    //             contract_package_hash_size,
+    //             version_ptr,
+    //             entry_points_ptr,
+    //             entry_points_size,
+    //             named_keys_ptr,
+    //             named_keys_size,
+    //             output_ptr,
+    //             output_size,
+    //             bytes_written_ptr,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.add_contract_version,
+    //             [
+    //                 contract_package_hash_ptr,
+    //                 contract_package_hash_size,
+    //                 version_ptr,
+    //                 entry_points_ptr,
+    //                 entry_points_size,
+    //                 named_keys_ptr,
+    //                 named_keys_size,
+    //                 output_ptr,
+    //                 output_size,
+    //                 bytes_written_ptr,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter
+    //             .add_property("entry_points_size", entry_points_size.to_string());
+    //         scoped_instrumenter.add_property("named_keys_size", named_keys_size.to_string());
+
+    //         let contract_package_hash: ContractPackageHash =
+    //             self.t_from_mem(contract_package_hash_ptr, contract_package_hash_size)?;
+    //         let entry_points: EntryPoints =
+    //             self.t_from_mem(entry_points_ptr, entry_points_size)?;
+    //         let named_keys: NamedKeys = self.t_from_mem(named_keys_ptr, named_keys_size)?;
+    //         let ret = self.add_contract_version(
+    //             contract_package_hash,
+    //             entry_points,
+    //             named_keys,
+    //             output_ptr,
+    //             output_size as usize,
+    //             bytes_written_ptr,
+    //             version_ptr,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::DisableContractVersion => {
+    //         // args(0) = pointer to package hash in wasm memory
+    //         // args(1) = size of package hash in wasm memory
+    //         // args(2) = pointer to contract hash in wasm memory
+    //         // args(3) = size of contract hash in wasm memory
+    //         let (package_key_ptr, package_key_size, contract_hash_ptr, contract_hash_size) =
+    //             Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.disable_contract_version,
+    //             [
+    //                 package_key_ptr,
+    //                 package_key_size,
+    //                 contract_hash_ptr,
+    //                 contract_hash_size,
+    //             ],
+    //         )?;
+    //         let contract_package_hash = self.t_from_mem(package_key_ptr, package_key_size)?;
+    //         let contract_hash = self.t_from_mem(contract_hash_ptr, contract_hash_size)?;
+
+    //         let result = self.disable_contract_version(contract_package_hash, contract_hash)?;
+
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(result))))
+    //     }
+
+    //     FunctionIndex::CallContractFuncIndex => {
+    //         // args(0) = pointer to contract hash where contract is at in global state
+    //         // args(1) = size of contract hash
+    //         // args(2) = pointer to entry point
+    //         // args(3) = size of entry point
+    //         // args(4) = pointer to function arguments in Wasm memory
+    //         // args(5) = size of arguments
+    //         // args(6) = pointer to result size (output)
+    //         let (
+    //             contract_hash_ptr,
+    //             contract_hash_size,
+    //             entry_point_name_ptr,
+    //             entry_point_name_size,
+    //             args_ptr,
+    //             args_size,
+    //             result_size_ptr,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.call_contract,
+    //             [
+    //                 contract_hash_ptr,
+    //                 contract_hash_size,
+    //                 entry_point_name_ptr,
+    //                 entry_point_name_size,
+    //                 args_ptr,
+    //                 args_size,
+    //                 result_size_ptr,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter
+    //             .add_property("entry_point_name_size", entry_point_name_size.to_string());
+    //         scoped_instrumenter.add_property("args_size", args_size.to_string());
+
+    //         let contract_hash: ContractHash =
+    //             self.t_from_mem(contract_hash_ptr, contract_hash_size)?;
+    //         let entry_point_name: String =
+    //             self.t_from_mem(entry_point_name_ptr, entry_point_name_size)?;
+    //         let args_bytes: Vec<u8> = {
+    //             let args_size: u32 = args_size;
+    //             self.bytes_from_mem(args_ptr, args_size as usize)?
+    //         };
+
+    //         let ret = self.call_contract_host_buffer(
+    //             contract_hash,
+    //             &entry_point_name,
+    //             args_bytes,
+    //             result_size_ptr,
+    //             &mut scoped_instrumenter,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::CallVersionedContract => {
+    //         // args(0) = pointer to contract_package_hash where contract is at in global state
+    //         // args(1) = size of contract_package_hash
+    //         // args(2) = pointer to contract version in wasm memory
+    //         // args(3) = size of contract version in wasm memory
+    //         // args(4) = pointer to method name in wasm memory
+    //         // args(5) = size of method name in wasm memory
+    //         // args(6) = pointer to function arguments in Wasm memory
+    //         // args(7) = size of arguments
+    //         // args(8) = pointer to result size (output)
+    //         let (
+    //             contract_package_hash_ptr,
+    //             contract_package_hash_size,
+    //             contract_version_ptr,
+    //             contract_package_size,
+    //             entry_point_name_ptr,
+    //             entry_point_name_size,
+    //             args_ptr,
+    //             args_size,
+    //             result_size_ptr,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.call_versioned_contract,
+    //             [
+    //                 contract_package_hash_ptr,
+    //                 contract_package_hash_size,
+    //                 contract_version_ptr,
+    //                 contract_package_size,
+    //                 entry_point_name_ptr,
+    //                 entry_point_name_size,
+    //                 args_ptr,
+    //                 args_size,
+    //                 result_size_ptr,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter
+    //             .add_property("entry_point_name_size", entry_point_name_size.to_string());
+    //         scoped_instrumenter.add_property("args_size", args_size.to_string());
+
+    //         let contract_package_hash: ContractPackageHash =
+    //             self.t_from_mem(contract_package_hash_ptr, contract_package_hash_size)?;
+    //         let contract_version: Option<ContractVersion> =
+    //             self.t_from_mem(contract_version_ptr, contract_package_size)?;
+    //         let entry_point_name: String =
+    //             self.t_from_mem(entry_point_name_ptr, entry_point_name_size)?;
+    //         let args_bytes: Vec<u8> = {
+    //             let args_size: u32 = args_size;
+    //             self.bytes_from_mem(args_ptr, args_size as usize)?
+    //         };
+
+    //         let ret = self.call_versioned_contract_host_buffer(
+    //             contract_package_hash,
+    //             contract_version,
+    //             entry_point_name,
+    //             args_bytes,
+    //             result_size_ptr,
+    //             &mut scoped_instrumenter,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     #[cfg(feature = "test-support")]
+    //     FunctionIndex::PrintIndex => {
+    //         let (text_ptr, text_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(&host_function_costs.print, [text_ptr, text_size])?;
+    //         scoped_instrumenter.add_property("text_size", text_size);
+    //         self.print(text_ptr, text_size)?;
+    //         Ok(None)
+    //     }
+
+    //     FunctionIndex::GetRuntimeArgsizeIndex => {
+    //         // args(0) = pointer to name of host runtime arg to load
+    //         // args(1) = size of name of the host runtime arg
+    //         // args(2) = pointer to a argument size (output)
+    //         let (name_ptr, name_size, size_ptr) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.get_named_arg_size,
+    //             [name_ptr, name_size, size_ptr],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size.to_string());
+    //         let ret = self.get_named_arg_size(name_ptr, name_size as usize, size_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::GetRuntimeArgIndex => {
+    //         // args(0) = pointer to serialized argument name
+    //         // args(1) = size of serialized argument name
+    //         // args(2) = pointer to output pointer where host will write argument bytes
+    //         // args(3) = size of available data under output pointer
+    //         let (name_ptr, name_size, dest_ptr, dest_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.get_named_arg,
+    //             [name_ptr, name_size, dest_ptr, dest_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("name_size", name_size.to_string());
+    //         scoped_instrumenter.add_property("dest_size", dest_size.to_string());
+    //         let ret =
+    //             self.get_named_arg(name_ptr, name_size as usize, dest_ptr, dest_size as usize)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::RemoveContractUserGroupIndex => {
+    //         // args(0) = pointer to package key in wasm memory
+    //         // args(1) = size of package key in wasm memory
+    //         // args(2) = pointer to serialized group label
+    //         // args(3) = size of serialized group label
+    //         let (package_key_ptr, package_key_size, label_ptr, label_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.remove_contract_user_group,
+    //             [package_key_ptr, package_key_size, label_ptr, label_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("label_size", label_size.to_string());
+    //         let package_key = self.t_from_mem(package_key_ptr, package_key_size)?;
+    //         let label: Group = self.t_from_mem(label_ptr, label_size)?;
+
+    //         let ret = self.remove_contract_user_group(package_key, label)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::ExtendContractUserGroupURefsIndex => {
+    //         // args(0) = pointer to package key in wasm memory
+    //         // args(1) = size of package key in wasm memory
+    //         // args(2) = pointer to label name
+    //         // args(3) = label size bytes
+    //         // args(4) = output of size value of host bytes data
+    //         let (package_ptr, package_size, label_ptr, label_size, value_size_ptr) =
+    //             Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.provision_contract_user_group_uref,
+    //             [
+    //                 package_ptr,
+    //                 package_size,
+    //                 label_ptr,
+    //                 label_size,
+    //                 value_size_ptr,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter.add_property("label_size", label_size.to_string());
+    //         let ret = self.provision_contract_user_group_uref(
+    //             package_ptr,
+    //             package_size,
+    //             label_ptr,
+    //             label_size,
+    //             value_size_ptr,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::RemoveContractUserGroupURefsIndex => {
+    //         // args(0) = pointer to package key in wasm memory
+    //         // args(1) = size of package key in wasm memory
+    //         // args(2) = pointer to label name
+    //         // args(3) = label size bytes
+    //         // args(4) = pointer to urefs
+    //         // args(5) = size of urefs pointer
+    //         let (package_ptr, package_size, label_ptr, label_size, urefs_ptr, urefs_size) =
+    //             Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.remove_contract_user_group_urefs,
+    //             [
+    //                 package_ptr,
+    //                 package_size,
+    //                 label_ptr,
+    //                 label_size,
+    //                 urefs_ptr,
+    //                 urefs_size,
+    //             ],
+    //         )?;
+    //         scoped_instrumenter.add_property("label_size", label_size.to_string());
+    //         scoped_instrumenter.add_property("urefs_size", urefs_size.to_string());
+    //         let ret = self.remove_contract_user_group_urefs(
+    //             package_ptr,
+    //             package_size,
+    //             label_ptr,
+    //             label_size,
+    //             urefs_ptr,
+    //             urefs_size,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+
+    //     FunctionIndex::Blake2b => {
+    //         let (in_ptr, in_size, out_ptr, out_size) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.blake2b,
+    //             [in_ptr, in_size, out_ptr, out_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("in_size", in_size.to_string());
+    //         scoped_instrumenter.add_property("out_size", out_size.to_string());
+    //         let input: Vec<u8> = self.bytes_from_mem(in_ptr, in_size as usize)?;
+    //         let digest = account::blake2b(&input);
+    //         if digest.len() != out_size as usize {
+    //             let err_value = u32::from(api_error::ApiError::BufferTooSmall) as i32;
+    //             return Ok(Some(RuntimeValue::I32(err_value)));
+    //         }
+    //         self.memory()
+    //             .set(out_ptr, &digest)
+    //             .map_err(|error| Error::Interpreter(error.into()))?;
+    //         Ok(Some(RuntimeValue::I32(0)))
+    //     }
+
+    //     FunctionIndex::RecordTransfer => {
+    //         // RecordTransfer is a special cased internal host function only callable by the
+    //         // mint contract and for accounting purposes it isn't represented in protocol data.
+    //         let (
+    //             maybe_to_ptr,
+    //             maybe_to_size,
+    //             source_ptr,
+    //             source_size,
+    //             target_ptr,
+    //             target_size,
+    //             amount_ptr,
+    //             amount_size,
+    //             id_ptr,
+    //             id_size,
+    //         ): (u32, u32, u32, u32, u32, u32, u32, u32, u32, u32) = Args::parse(args)?;
+    //         scoped_instrumenter.add_property("maybe_to_size", maybe_to_size.to_string());
+    //         scoped_instrumenter.add_property("source_size", source_size.to_string());
+    //         scoped_instrumenter.add_property("target_size", target_size.to_string());
+    //         scoped_instrumenter.add_property("amount_size", amount_size.to_string());
+    //         scoped_instrumenter.add_property("id_size", id_size.to_string());
+    //         let maybe_to: Option<AccountHash> = self.t_from_mem(maybe_to_ptr, maybe_to_size)?;
+    //         let source: URef = self.t_from_mem(source_ptr, source_size)?;
+    //         let target: URef = self.t_from_mem(target_ptr, target_size)?;
+    //         let amount: U512 = self.t_from_mem(amount_ptr, amount_size)?;
+    //         let id: Option<u64> = self.t_from_mem(id_ptr, id_size)?;
+    //         self.record_transfer(maybe_to, source, target, amount, id)?;
+    //         Ok(Some(RuntimeValue::I32(0)))
+    //     }
+
+    //     FunctionIndex::RecordEraInfo => {
+    //         // RecordEraInfo is a special cased internal host function only callable by the
+    //         // auction contract and for accounting purposes it isn't represented in protocol
+    //         // data.
+    //         let (era_id_ptr, era_id_size, era_info_ptr, era_info_size): (u32, u32, u32, u32) =
+    //             Args::parse(args)?;
+    //         scoped_instrumenter.add_property("era_id_size", era_id_size.to_string());
+    //         scoped_instrumenter.add_property("era_info_size", era_info_size.to_string());
+    //         let era_id: EraId = self.t_from_mem(era_id_ptr, era_id_size)?;
+    //         let era_info: EraInfo = self.t_from_mem(era_info_ptr, era_info_size)?;
+    //         self.record_era_info(era_id, era_info)?;
+    //         Ok(Some(RuntimeValue::I32(0)))
+    //     }
+    //     FunctionIndex::NewDictionaryFuncIndex => {
+    //         // args(0) = pointer to output size (output param)
+    //         let (output_size_ptr,): (u32,) = Args::parse(args)?;
+
+    //         self.charge_host_function_call(
+    //             &DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
+    //             [output_size_ptr],
+    //         )?;
+    //         let ret = self.new_dictionary(output_size_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+    //     FunctionIndex::DictionaryGetFuncIndex => {
+    //         // args(0) = pointer to uref in Wasm memory
+    //         // args(1) = size of uref in Wasm memory
+    //         // args(2) = pointer to key bytes pointer in Wasm memory
+    //         // args(3) = pointer to key bytes size in Wasm memory
+    //         // args(4) = pointer to output size (output param)
+    //         let (uref_ptr, uref_size, key_bytes_ptr, key_bytes_size, output_size_ptr): (
+    //             _,
+    //             u32,
+    //             _,
+    //             u32,
+    //             _,
+    //         ) = Args::parse(args)?;
+    //         self.charge_host_function_call(
+    //             &host_function_costs.dictionary_get,
+    //             [key_bytes_ptr, key_bytes_size, output_size_ptr],
+    //         )?;
+    //         scoped_instrumenter.add_property("key_bytes_size", key_bytes_size);
+    //         let ret = self.dictionary_get(
+    //             uref_ptr,
+    //             uref_size,
+    //             key_bytes_ptr,
+    //             key_bytes_size,
+    //             output_size_ptr,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+    //     FunctionIndex::DictionaryPutFuncIndex => {
+    //         // args(0) = pointer to uref in Wasm memory
+    //         // args(1) = size of uref in Wasm memory
+    //         // args(2) = pointer to key bytes pointer in Wasm memory
+    //         // args(3) = pointer to key bytes size in Wasm memory
+    //         // args(4) = pointer to value bytes pointer in Wasm memory
+    //         // args(5) = pointer to value bytes size in Wasm memory
+    //         let (uref_ptr, uref_size, key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size):
+    // (_, u32, _, u32, _, u32) = Args::parse(args)?;         self.charge_host_function_call(
+    //             &host_function_costs.dictionary_put,
+    //             [key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size],
+    //         )?;
+    //         scoped_instrumenter.add_property("key_bytes_size", key_bytes_size);
+    //         scoped_instrumenter.add_property("value_size", value_ptr_size);
+    //         let ret = self.dictionary_put(
+    //             uref_ptr,
+    //             uref_size,
+    //             key_bytes_ptr,
+    //             key_bytes_size,
+    //             value_ptr,
+    //             value_ptr_size,
+    //         )?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+    //     FunctionIndex::LoadCallStack => {
+    //         // args(0) (Output) Pointer to number of elements in the call stack.
+    //         // args(1) (Output) Pointer to size in bytes of the serialized call stack.
+    //         let (call_stack_len_ptr, result_size_ptr) = Args::parse(args)?;
+    //         // TODO: add cost table entry once we can upgrade safely
+    //         self.charge_host_function_call(
+    //             &HostFunction::fixed(10_000),
+    //             [call_stack_len_ptr, result_size_ptr],
+    //         )?;
+    //         let ret = self.load_call_stack(call_stack_len_ptr, result_size_ptr)?;
+    //         Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+    //     }
+    // }
 }
 
 #[cfg(test)]

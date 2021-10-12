@@ -11,7 +11,7 @@ use casper_execution_engine::{
         runtime::{self, Runtime},
         runtime_context::RuntimeContext,
     },
-    shared::{newtypes::CorrelationId, wasm_prep::Preprocessor},
+    shared::{newtypes::CorrelationId, wasm_engine::WasmEngine},
     storage::global_state::StateProvider,
 };
 use casper_types::{
@@ -37,6 +37,7 @@ pub fn exec<S, T>(
     args: RuntimeArgs,
     extra_urefs: Vec<URef>,
     call_stack: Vec<CallStackElement>,
+    wasm_engine: &WasmEngine,
 ) -> Option<(T, Vec<URef>, ExecutionEffect)>
 where
     S: StateProvider,
@@ -117,8 +118,6 @@ where
 
     let wasm_config = *DEFAULT_WASM_CONFIG;
 
-    let preprocessor = Preprocessor::new(wasm_config);
-
     let system_contract_registry = context
         .system_contract_registry()
         .expect("must have contract registry");
@@ -128,7 +127,7 @@ where
             tracking_copy,
             &account,
             correlation_id,
-            &preprocessor,
+            wasm_engine,
             &protocol_version,
             system_contract_registry,
             phase,
@@ -137,26 +136,26 @@ where
 
     let module = parity_module.take_module();
 
-    let (instance, memory) =
-        runtime::instance_and_memory(module.clone(), protocol_version, &wasm_config)
-            .expect("should be able to make wasm instance from module");
+    let instance = runtime::instance_and_memory(module.clone(), protocol_version, &wasm_engine)
+        .expect("should be able to make wasm instance from module");
 
     let mut runtime = Runtime::new(
         config,
         Default::default(),
-        memory,
         module,
+        instance,
         context,
         call_stack,
+        wasm_engine,
     );
 
-    match instance.invoke_export(entry_point_name, &[], &mut runtime) {
+    let instance_ref = runtime.instance().clone();
+
+    match instance_ref.invoke_export(entry_point_name, Vec::new(), &mut runtime) {
         Ok(_) => None,
         Err(e) => {
-            if let Some(host_error) = e.as_host_error() {
-                // `ret` Trap is a success; downcast and attempt to extract result
-                let downcasted_error = host_error.downcast_ref::<execution::Error>().unwrap();
-                match downcasted_error {
+            if let Some(exec_error) = e.as_execution_error() {
+                match exec_error {
                     execution::Error::Ret(ref ret_urefs) => {
                         let effect = runtime.context().effect();
                         let urefs = ret_urefs.clone();
