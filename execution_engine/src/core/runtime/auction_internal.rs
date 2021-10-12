@@ -211,7 +211,7 @@ where
     }
 
     fn create_purse(&mut self) -> Result<URef, Error> {
-        Runtime::create_purse(self).map_err(|exec_error| {
+        Runtime::casper_create_purse(self).map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::CreatePurseFailed)
         })
     }

@@ -1,3 +1,4 @@
+pub mod compiler;
 mod ee_1045;
 mod ee_1071;
 mod ee_1103;
@@ -36,4 +37,3 @@ mod gh_1688;
 mod regression_20210707;
 mod regression_20210831;
 mod regression_20210924;
-pub mod compiler;

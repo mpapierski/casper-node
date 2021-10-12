@@ -133,10 +133,9 @@ impl Executor {
         let entry_point_type = entry_point.entry_point_type();
         let entry_point_access = entry_point.access();
 
-        let instance = on_fail_charge!(self.wasm_engine.instance_and_memory(
-            module.clone(),
-            protocol_version,
-        ));
+        let instance = on_fail_charge!(self
+            .wasm_engine
+            .instance_and_memory(module.clone(), protocol_version,));
 
         let access_rights = {
             let keys: Vec<Key> = named_keys.values().cloned().collect();
@@ -712,7 +711,9 @@ impl Executor {
             transfers,
         );
 
-        let instance = self.wasm_engine.instance_and_memory(module.clone(), protocol_version)?;
+        let instance = self
+            .wasm_engine
+            .instance_and_memory(module.clone(), protocol_version)?;
 
         let runtime = Runtime::new(
             self.config,

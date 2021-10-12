@@ -80,7 +80,6 @@ const GLOBAL_STATE_DIR: &str = "global_state";
 pub type InMemoryWasmTestBuilder = WasmTestBuilder<InMemoryGlobalState>;
 pub type LmdbWasmTestBuilder = WasmTestBuilder<LmdbGlobalState>;
 
-
 /// Builder for simple WASM test
 pub struct WasmTestBuilder<S> {
     /// [`EngineState`] is wrapped in [`Rc`] to work around a missing [`Clone`] implementation

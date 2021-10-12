@@ -1,7 +1,15 @@
 use num_traits::Zero;
 use once_cell::sync::Lazy;
 
-use casper_engine_test_support::{AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, internal::{DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION, DEFAULT_RUN_GENESIS_REQUEST, DEFAULT_WASM_CONFIG, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder, utils}};
+use casper_engine_test_support::{
+    internal::{
+        utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+        UpgradeRequestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_PUBLIC_KEY,
+        DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT,
+        DEFAULT_PROTOCOL_VERSION, DEFAULT_RUN_GENESIS_REQUEST, DEFAULT_WASM_CONFIG,
+    },
+    AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+};
 use casper_execution_engine::{
     core::engine_state::{
         genesis::GenesisValidator, EngineConfig, GenesisAccount, DEFAULT_MAX_QUERY_DEPTH,
@@ -27,9 +35,7 @@ use casper_execution_engine::{
             SystemConfig, DEFAULT_WASMLESS_TRANSFER_COST,
         },
         wasm,
-        wasm_config::{
-            WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY,
-        },
+        wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
     },
 };
 use casper_types::{

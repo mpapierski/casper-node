@@ -8,6 +8,7 @@ mod standard_payment_internal;
 mod wasmi_args_parser;
 
 use std::{
+    borrow::Cow,
     cmp,
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::TryFrom,
@@ -41,14 +42,22 @@ use casper_types::{
     TransferResult, TransferredTo, URef, DICTIONARY_ITEM_KEY_MAX_LENGTH, U128, U256, U512,
 };
 
-use crate::{core::{
+use crate::{
+    core::{
         engine_state::{system_contract_cache::SystemContractCache, EngineConfig},
         execution::{self, Error},
         resolvers::{create_module_resolver, memory_resolver::MemoryResolver},
         runtime::scoped_instrumenter::ScopedInstrumenter,
         runtime_context::{self, RuntimeContext},
         Address,
-    }, shared::{host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY}, wasm_config::WasmConfig, wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine}}, storage::global_state::StateReader};
+    },
+    shared::{
+        host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
+        wasm_config::WasmConfig,
+        wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine},
+    },
+    storage::global_state::StateReader,
+};
 
 use super::resolvers::v1_function_index::FunctionIndex;
 
@@ -63,7 +72,6 @@ pub struct Runtime<'a, R> {
     call_stack: Vec<CallStackElement>,
     wasm_engine: &'a WasmEngine,
 }
-
 
 /// Turns `key` into a `([u8; 32], AccessRights)` tuple.
 /// Returns None if `key` is not `Key::URef` as it wouldn't have `AccessRights`
@@ -1009,7 +1017,7 @@ where
     }
 
     /// Returns bytes from the WASM memory instance.
-    fn  bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
+    fn bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
         self.memory().get(ptr, size).map_err(Into::into)
     }
 
@@ -2163,7 +2171,9 @@ where
 
         let entry_point_name = entry_point.name();
 
-        let instance = self.wasm_engine.instance_and_memory(module.clone(), protocol_version)?;
+        let instance = self
+            .wasm_engine
+            .instance_and_memory(module.clone(), protocol_version)?;
 
         let access_rights = {
             let mut keys: Vec<Key> = named_keys.values().cloned().collect();
@@ -2655,11 +2665,10 @@ where
         &mut self,
         key: Key,
         cl_value: CLValue,
-        // key_ptr: u32,
-        // key_size: u32,
-        // value_ptr: u32,
-        // value_size: u32,
-
+        /* key_ptr: u32,
+         * key_size: u32,
+         * value_ptr: u32,
+         * value_size: u32, */
     ) -> Result<(), Error> {
         //
         self.context
@@ -2957,7 +2966,7 @@ where
         Ok(purse)
     }
 
-    fn create_purse(&mut self) -> Result<URef, Error> {
+    pub(crate) fn casper_create_purse(&mut self) -> Result<URef, Error> {
         self.mint_create(self.get_mint_contract()?)
     }
 
@@ -3056,7 +3065,7 @@ where
 
     /// Transfers `amount` of motes from default purse of the account to
     /// `target` account. If that account does not exist, creates one.
-    fn transfer_to_account(
+    pub(crate) fn casper_transfer_to_account(
         &mut self,
         target: AccountHash,
         amount: U512,
@@ -3277,59 +3286,47 @@ where
         Ok(())
     }
 
-    fn get_named_arg_size(
+    pub(crate) fn casper_get_named_arg_size(
         &mut self,
-        name_ptr: u32,
-        name_size: usize,
-        size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
-        let name = String::from_utf8_lossy(&name_bytes);
-
+        name: String,
+        /* name_ptr: u32,
+         * name_size: usize,
+         * size_ptr: u32, */
+    ) -> Result<u32, ApiError> {
         let arg_size = match self.context.args().get(&name) {
             Some(arg) if arg.inner_bytes().len() > u32::max_value() as usize => {
-                return Ok(Err(ApiError::OutOfMemory));
+                return Err(ApiError::OutOfMemory);
             }
             Some(arg) => arg.inner_bytes().len() as u32,
-            None => return Ok(Err(ApiError::MissingArgument)),
+            None => return Err(ApiError::MissingArgument),
         };
 
-        let arg_size_bytes = arg_size.to_le_bytes(); // Wasm is little-endian
+        // let arg_size_bytes = arg_size.to_le_bytes(); // Wasm is little-endian
 
-        if let Err(e) = self.memory().set(size_ptr, &arg_size_bytes) {
-            return Err(Error::Interpreter(e.into()).into());
-        }
-
-        Ok(Ok(()))
+        Ok(arg_size)
     }
 
-    fn get_named_arg(
+    pub(crate) fn casper_get_named_arg(
         &mut self,
-        name_ptr: u32,
-        name_size: usize,
-        output_ptr: u32,
-        output_size: usize,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
-        let name = String::from_utf8_lossy(&name_bytes);
+        // name: Cow<'mem, str>,
+        name: &str,
+        /* name_ptr: u32,
+         * name_size: usize,
+         * output_ptr: u32,
+         * output_size: usize,
+         * ) -> Result<Result<(), ApiError>, Error> { */
+    ) -> Result<CLValue, ApiError> {
+        // let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
+        // let name = String::from_utf8_lossy(&name_bytes);
 
         let arg = match self.context.args().get(&name) {
             Some(arg) => arg,
-            None => return Ok(Err(ApiError::MissingArgument)),
+            None => return Err(ApiError::MissingArgument),
         };
 
-        if arg.inner_bytes().len() > output_size {
-            return Ok(Err(ApiError::OutOfMemory));
-        }
+        Ok(arg.clone())
 
-        if let Err(e) = self
-            .memory()
-            .set(output_ptr, &arg.inner_bytes()[..output_size])
-        {
-            return Err(Error::Interpreter(e.into()).into());
-        }
-
-        Ok(Ok(()))
+        // Ok(Ok(()))
     }
 
     fn validate_entry_point_access(
@@ -3617,7 +3614,7 @@ where
         Err(Error::Revert(status.into()))
     }
 
-     // pub fn invoke_wasm_function(&self, func: FunctionIndex, args: &[RuntimeValue]) ->
+    // pub fn invoke_wasm_function(&self, func: FunctionIndex, args: &[RuntimeValue]) ->
     // Result<Option<RuntimeValue>, Error> {
 
     // let mut scoped_instrumenter = ScopedInstrumenter::new(func);

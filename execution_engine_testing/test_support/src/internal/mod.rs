@@ -10,7 +10,21 @@ mod wasm_test_builder;
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
 
-use casper_execution_engine::{core::engine_state::{DEFAULT_MAX_QUERY_DEPTH, EngineConfig, genesis::{ExecConfig, GenesisAccount, GenesisConfig}, run_genesis_request::RunGenesisRequest}, shared::{host_function_costs::HostFunctionCosts, opcode_costs::OpcodeCosts, storage_costs::StorageCosts, system_config::SystemConfig, wasm_config::{DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY, WasmConfig}, wasm_engine::ExecutionMode}};
+use casper_execution_engine::{
+    core::engine_state::{
+        genesis::{ExecConfig, GenesisAccount, GenesisConfig},
+        run_genesis_request::RunGenesisRequest,
+        EngineConfig, DEFAULT_MAX_QUERY_DEPTH,
+    },
+    shared::{
+        host_function_costs::HostFunctionCosts,
+        opcode_costs::OpcodeCosts,
+        storage_costs::StorageCosts,
+        system_config::SystemConfig,
+        wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
+        wasm_engine::ExecutionMode,
+    },
+};
 use casper_hashing::Digest;
 use casper_types::{account::AccountHash, Motes, ProtocolVersion, PublicKey, SecretKey, U512};
 
@@ -115,7 +129,12 @@ pub static DEFAULT_WASM_CONFIG: Lazy<WasmConfig> = Lazy::new(|| {
     )
 });
 pub static DEFAULT_ENGINE_CONFIG: Lazy<EngineConfig> = Lazy::new(|| {
-    EngineConfig::new(DEFAULT_MAX_QUERY_DEPTH, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_WASM_CONFIG.clone(), *DEFAULT_SYSTEM_CONFIG)
+    EngineConfig::new(
+        DEFAULT_MAX_QUERY_DEPTH,
+        DEFAULT_MAX_ASSOCIATED_KEYS,
+        DEFAULT_WASM_CONFIG.clone(),
+        *DEFAULT_SYSTEM_CONFIG,
+    )
 });
 pub static DEFAULT_SYSTEM_CONFIG: Lazy<SystemConfig> = Lazy::new(SystemConfig::default);
 pub static DEFAULT_EXEC_CONFIG: Lazy<ExecConfig> = Lazy::new(|| {

@@ -2,17 +2,41 @@ use std::{collections::BTreeSet, convert::TryFrom};
 
 use wasmi::{Externals, MemoryRef, RuntimeArgs, RuntimeValue, Trap};
 
-use casper_types::{CLValue, ContractHash, ContractPackageHash, ContractVersion, EraId, Gas, Group, Key, StoredValue, U512, URef, account, account::AccountHash, api_error, bytesrepr::{self, FromBytes, ToBytes}, contracts::{ContractPackageStatus, EntryPoints, NamedKeys}, system::auction::EraInfo};
+use casper_types::{
+    account,
+    account::AccountHash,
+    api_error,
+    bytesrepr::{self, Bytes, FromBytes, ToBytes},
+    contracts::{ContractPackageStatus, EntryPoints, NamedKeys},
+    system::auction::EraInfo,
+    ApiError, CLValue, ContractHash, ContractPackageHash, ContractVersion, EraId, Gas, Group, Key,
+    StoredValue, URef, U512,
+};
 
 use super::{scoped_instrumenter::ScopedInstrumenter, wasmi_args_parser::Args, Error, Runtime};
-use crate::{core::{execution, resolvers::v1_function_index::FunctionIndex}, shared::host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY}, storage::global_state::StateReader};
+use crate::{
+    core::{execution, resolvers::v1_function_index::FunctionIndex},
+    shared::host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
+    storage::global_state::StateReader,
+};
 
-fn t_from_memory<T>(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<T, Error> where T: FromBytes {
-    let bytes  = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
+fn bytes_from_memory(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<Vec<u8>, Error> {
+    let bytes = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
+    Ok(bytes)
+}
+fn t_from_memory<T>(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<T, Error>
+where
+    T: FromBytes,
+{
+    let bytes = bytes_from_memory(memory_ref, offset, size)?;
     Ok(bytesrepr::deserialize(bytes)?)
 }
 
-fn cl_value_from_memory(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<CLValue, Error> {
+fn cl_value_from_memory(
+    memory_ref: &MemoryRef,
+    offset: u32,
+    size: usize,
+) -> Result<CLValue, Error> {
     t_from_memory(&memory_ref, offset, size)
 }
 
@@ -72,7 +96,7 @@ where
                     [key_ptr, key_size, value_ptr, value_size],
                 )?;
                 let memory = self.instance.interpreted_memory();
-                let key: Key =t_from_memory(&memory, key_ptr, key_size as usize)?;
+                let key: Key = t_from_memory(&memory, key_ptr, key_size as usize)?;
                 let cl_value: CLValue = t_from_memory(&memory, value_ptr, value_size as usize)?;
                 scoped_instrumenter.add_property("value_size", value_size);
                 self.casper_write(key, cl_value)?;
@@ -110,7 +134,9 @@ where
                 let uref = self.casper_new_uref(value)?;
 
                 let bytes = uref.into_bytes().map_err(Error::from)?;
-                memory.set(uref_ptr, &bytes).map_err(|e| Error::Interpreter(e.into()))?;
+                memory
+                    .set(uref_ptr, &bytes)
+                    .map_err(|e| Error::Interpreter(e.into()))?;
 
                 Ok(None)
             }
@@ -301,7 +327,7 @@ where
                     &host_function_costs.create_purse,
                     [dest_ptr, dest_size],
                 )?;
-                let purse = self.create_purse()?;
+                let purse = self.casper_create_purse()?;
                 let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
                 assert_eq!(dest_size, purse_bytes.len() as u32);
                 self.memory()
@@ -345,7 +371,7 @@ where
                     bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
                 };
 
-                let ret = match self.transfer_to_account(account_hash, amount, id)? {
+                let ret = match self.casper_transfer_to_account(account_hash, amount, id)? {
                     Ok(transferred_to) => {
                         let result_value: u32 = transferred_to as u32;
                         let result_value_bytes = result_value.to_le_bytes();
@@ -515,7 +541,9 @@ where
                 let purse = self.casper_get_main_purse()?;
                 let bytes = purse.into_bytes().map_err(Error::from)?;
                 let memory = self.memory();
-                memory.set(dest_ptr, &bytes).map_err(|e| Error::Interpreter(e.into()))?;
+                memory
+                    .set(dest_ptr, &bytes)
+                    .map_err(|e| Error::Interpreter(e.into()))?;
                 Ok(None)
             }
 
@@ -814,9 +842,25 @@ where
                     &host_function_costs.get_named_arg_size,
                     [name_ptr, name_size, size_ptr],
                 )?;
+
+                let memory = self.instance.interpreted_memory();
+                let name_bytes: Vec<u8> = bytes_from_memory(&memory, name_ptr, name_size as usize)?;
+                let name = String::from_utf8_lossy(name_bytes.as_slice());
+
                 scoped_instrumenter.add_property("name_size", name_size.to_string());
-                let ret = self.get_named_arg_size(name_ptr, name_size as usize, size_ptr)?;
-                Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+
+                let res = match self.casper_get_named_arg_size(name.to_string()) {
+                    Ok(arg_size) => {
+                        let bytes = arg_size.to_le_bytes();
+                        memory
+                            .set(size_ptr, &bytes)
+                            .map_err(|error| Error::Interpreter(error.into()))?;
+                        Ok(())
+                    }
+                    Err(api_error) => Err(api_error),
+                };
+
+                Ok(Some(RuntimeValue::I32(api_error::i32_from(res))))
             }
 
             FunctionIndex::GetRuntimeArgIndex => {
@@ -831,9 +875,30 @@ where
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size.to_string());
                 scoped_instrumenter.add_property("dest_size", dest_size.to_string());
-                let ret =
-                    self.get_named_arg(name_ptr, name_size as usize, dest_ptr, dest_size as usize)?;
-                Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
+
+                let memory = self.instance.interpreted_memory();
+                let name_bytes: Vec<u8> = bytes_from_memory(&memory, name_ptr, name_size as usize)?;
+                let name = String::from_utf8_lossy(name_bytes.as_slice());
+
+                let arg = match self.casper_get_named_arg(&name) {
+                    Ok(arg) => arg,
+                    Err(ret) => return Ok(Some(RuntimeValue::I32(api_error::i32_from(Err(ret))))),
+                };
+
+                if arg.inner_bytes().len() > dest_size as usize {
+                    return Err(execution::Error::Revert(ApiError::OutOfMemory).into());
+                }
+
+                let memory = self.instance.interpreted_memory();
+                if let Err(e) = memory.set(dest_ptr, &arg.inner_bytes()[..dest_size as usize]) {
+                    return Err(Error::Interpreter(e.into()).into());
+                }
+                // Ok(())
+                // let ret =
+                //     self.casper_get_named_arg(name_ptr, name_size as usize, dest_ptr, dest_size
+                // as usize)?;
+                let res: Result<(), ApiError> = Ok(());
+                Ok(Some(RuntimeValue::I32(api_error::i32_from(res))))
             }
 
             FunctionIndex::RemoveContractUserGroupIndex => {

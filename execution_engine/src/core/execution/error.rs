@@ -188,7 +188,9 @@ impl wasmi::HostError for Error {}
 
 /// Error indirection for wasmtime::Trap errors.
 ///
-/// wasmtime::Trap does not expose the error itself that occurred during execution, only the source of error. In our case the source would point at a variant of [`Error`]. We need the [`Error`] itself so we have to wrap it before creating a Trap object.
+/// wasmtime::Trap does not expose the error itself that occurred during execution, only the source
+/// of error. In our case the source would point at a variant of [`Error`]. We need the [`Error`]
+/// itself so we have to wrap it before creating a Trap object.
 #[derive(Error, Debug)]
 #[error("{}", source)]
 struct Indirect {
@@ -221,7 +223,8 @@ impl From<RuntimeError> for Error {
         match runtime_error.as_execution_error() {
             Some(exec_error) => exec_error.clone(),
             None => {
-                // TODO: We should translate all the possible reasons a Wasm can fail at runtime i.e. TrapCode(wasmtime) and TrapKind(wasmi)
+                // TODO: We should translate all the possible reasons a Wasm can fail at runtime
+                // i.e. TrapCode(wasmtime) and TrapKind(wasmi)
                 Self::Interpreter(runtime_error.to_string())
             }
         }

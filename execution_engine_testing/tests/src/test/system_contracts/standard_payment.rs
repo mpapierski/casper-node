@@ -244,15 +244,13 @@ fn should_run_out_of_gas_when_session_code_exceeds_gas_limit() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
 
     let start = Instant::now();
     builder.exec(exec_request);
     let stop = start.elapsed();
 
-    let transfer_result = builder.commit()
-        .finish();
+    let transfer_result = builder.commit().finish();
 
     let response = transfer_result
         .builder()

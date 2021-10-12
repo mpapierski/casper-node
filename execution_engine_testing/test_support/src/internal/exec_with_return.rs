@@ -136,7 +136,8 @@ where
 
     let module = parity_module.take_module();
 
-    let instance = wasm_engine.instance_and_memory(module.clone(), protocol_version)
+    let instance = wasm_engine
+        .instance_and_memory(module.clone(), protocol_version)
         .expect("should be able to make wasm instance from module");
 
     let mut runtime = Runtime::new(
