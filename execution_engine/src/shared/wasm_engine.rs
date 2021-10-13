@@ -15,6 +15,8 @@ use std::{
     cell::{Cell, RefCell},
     error::Error,
     fmt::{self, Display, Formatter},
+    fs,
+    path::Path,
     rc::Rc,
 };
 use thiserror::Error;
@@ -138,14 +140,23 @@ impl From<WasmiModule> for Module {
 //     fn from(wasmtime_module: wasmtime::Module) -> Self {
 //         Self::Compiled(wasmtime_module)
 //     }
-// }
+// \}
 
+/// Common error type adapter for all Wasm engines supported.
 #[derive(Error, Debug)]
 pub enum RuntimeError {
     #[error(transparent)]
     WasmiError(#[from] wasmi::Error),
     #[error(transparent)]
     WasmtimeError(#[from] wasmtime::Trap),
+    #[error("{0}")]
+    Other(String),
+}
+
+impl From<String> for RuntimeError {
+    fn from(string: String) -> Self {
+        Self::Other(string)
+    }
 }
 
 impl RuntimeError {
@@ -160,6 +171,7 @@ impl RuntimeError {
                 let error = src.downcast_ref::<execution::Error>()?;
                 Some(error)
             }
+            RuntimeError::Other(_) => None,
         }
     }
 }
@@ -820,12 +832,54 @@ pub struct WasmEngine {
     compiled_engine: wasmtime::Engine,
 }
 
+fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
+    let wasmtime_cache_root = cache_path.join("wasmtime");
+    fs::create_dir_all(&wasmtime_cache_root)
+        .map_err(|err| format!("cannot create the dirs to cache: {:?}", err))?;
+
+    // Canonicalize the path after creating the directories.
+    let wasmtime_cache_root = wasmtime_cache_root
+        .canonicalize()
+        .map_err(|err| format!("failed to canonicalize the path: {:?}", err))?;
+
+    // Write the cache config file
+    let cache_config_path = wasmtime_cache_root.join("cache-config.toml");
+    let config_content = format!(
+        "\
+[cache]
+enabled = true
+directory = \"{cache_dir}\"
+",
+        cache_dir = wasmtime_cache_root.display()
+    );
+    fs::write(&cache_config_path, config_content)
+        .map_err(|err| format!("cannot write the cache config: {:?}", err))?;
+
+    config
+        .cache_config_load(cache_config_path)
+        .map_err(|err| format!("failed to parse the config: {:?}", err))?;
+
+    Ok(())
+}
+
 fn new_compiled_engine(wasm_config: &WasmConfig) -> wasmtime::Engine {
     let mut config = wasmtime::Config::new();
+    config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
     config.async_support(false);
+    config.wasm_reference_types(false);
+    config.wasm_simd(false);
+    config.wasm_bulk_memory(false);
+    config.wasm_multi_value(false);
+    config.wasm_multi_memory(false);
+    config.wasm_module_linking(false);
+    config.wasm_threads(false);
+    setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
+        .expect("should setup wasmtime cache path");
+
     config
         .max_wasm_stack(wasm_config.max_stack_height as usize)
         .expect("should set max stack");
+
     // TODO: Tweak more
     wasmtime::Engine::new(&config).expect("should create new engine")
 }
