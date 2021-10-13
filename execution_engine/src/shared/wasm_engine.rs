@@ -865,7 +865,7 @@ directory = \"{cache_dir}\"
 fn new_compiled_engine(wasm_config: &WasmConfig) -> wasmtime::Engine {
     let mut config = wasmtime::Config::new();
     config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
-    config.async_support(false);
+    // config.async_support(false);
     config.wasm_reference_types(false);
     config.wasm_simd(false);
     config.wasm_bulk_memory(false);
