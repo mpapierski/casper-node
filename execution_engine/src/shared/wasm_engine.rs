@@ -11,14 +11,7 @@ use parity_wasm::elements::{self, MemorySection, Section};
 use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
-use std::{
-    cell::{Cell, RefCell},
-    error::Error,
-    fmt::{self, Display, Formatter},
-    fs,
-    path::Path,
-    rc::Rc,
-};
+use std::{cell::{Cell, RefCell}, error::Error, fmt::{self, Display, Formatter}, fs::{self, File}, io::Write, path::Path, rc::Rc};
 use thiserror::Error;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
@@ -825,11 +818,29 @@ fn memory_section(module: &WasmiModule) -> Option<&MemorySection> {
     None
 }
 
+#[derive(Clone)]
+struct WasmtimeEngine(wasmtime::Engine);
+
+impl fmt::Debug for WasmtimeEngine {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WasmtimeEngine").finish()
+    }
+}
+
+impl std::ops::Deref for WasmtimeEngine {
+    type Target = wasmtime::Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Wasm preprocessor.
+#[derive(Debug)]
 pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
-    compiled_engine: wasmtime::Engine,
+    compiled_engine: WasmtimeEngine,
 }
 
 fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
@@ -844,6 +855,7 @@ fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> R
 
     // Write the cache config file
     let cache_config_path = wasmtime_cache_root.join("cache-config.toml");
+
     let config_content = format!(
         "\
 [cache]
@@ -862,8 +874,10 @@ directory = \"{cache_dir}\"
     Ok(())
 }
 
-fn new_compiled_engine(wasm_config: &WasmConfig) -> wasmtime::Engine {
+fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     let mut config = wasmtime::Config::new();
+    setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
+        .expect("should setup wasmtime cache path");
     config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
     // config.async_support(false);
     config.wasm_reference_types(false);
@@ -873,15 +887,15 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> wasmtime::Engine {
     config.wasm_multi_memory(false);
     config.wasm_module_linking(false);
     config.wasm_threads(false);
-    setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
-        .expect("should setup wasmtime cache path");
+    
 
     config
         .max_wasm_stack(wasm_config.max_stack_height as usize)
         .expect("should set max stack");
 
     // TODO: Tweak more
-    wasmtime::Engine::new(&config).expect("should create new engine")
+    let wasmtime_engine = wasmtime::Engine::new(&config).expect("should create new engine");
+    WasmtimeEngine(wasmtime_engine)
 }
 
 impl WasmEngine {

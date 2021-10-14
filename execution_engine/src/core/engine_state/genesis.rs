@@ -733,7 +733,7 @@ pub enum GenesisError {
     },
 }
 
-pub(crate) struct GenesisInstaller<S>
+pub(crate) struct GenesisInstaller<'a, S>
 where
     S: StateProvider,
     S::Error: Into<execution::Error>,
@@ -746,12 +746,12 @@ where
     uref_address_generator: Rc<RefCell<AddressGenerator>>,
     hash_address_generator: Rc<RefCell<AddressGenerator>>,
     transfer_address_generator: Rc<RefCell<AddressGenerator>>,
-    executor: Executor,
+    executor: &'a Executor,
     tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
     system_module: Module,
 }
 
-impl<S> GenesisInstaller<S>
+impl<'a, S> GenesisInstaller<'a, S>
 where
     S: StateProvider,
     S::Error: Into<execution::Error>,
@@ -764,9 +764,8 @@ where
         exec_config: ExecConfig,
         tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
         system_module: Module,
+        executor: &'a Executor,
     ) -> Self {
-        let executor = Executor::new(engine_config);
-
         let phase = Phase::System;
         let genesis_config_hash_bytes = genesis_config_hash.as_ref();
         let uref_address_generator = {

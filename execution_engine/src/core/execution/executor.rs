@@ -74,6 +74,7 @@ macro_rules! on_fail_charge {
 }
 
 /// Executor object deals with execution of WASM modules.
+#[derive(Debug)]
 pub struct Executor {
     config: EngineConfig,
     wasm_engine: WasmEngine,

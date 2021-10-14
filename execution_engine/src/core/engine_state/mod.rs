@@ -113,6 +113,7 @@ pub struct EngineState<S> {
     config: EngineConfig,
     system_contract_cache: SystemContractCache,
     state: S,
+    executor: Executor,
 }
 
 impl EngineState<LmdbGlobalState> {
@@ -133,10 +134,12 @@ where
     /// Creates new engine state.
     pub fn new(state: S, config: EngineConfig) -> EngineState<S> {
         let system_contract_cache = Default::default();
+        let executor = Executor::new(config);
         EngineState {
             config,
             system_contract_cache,
             state,
+            executor,
         }
     }
 
@@ -168,9 +171,9 @@ where
         protocol_version: ProtocolVersion,
         ee_config: &ExecConfig,
     ) -> Result<GenesisSuccess, Error> {
-        let executor = Executor::new(*self.config());
+        // let executor = Executor::new(*self.config());
 
-        let wasm_engine = executor.wasm_engine();
+        let wasm_engine = self.executor.wasm_engine();
 
         // Preliminaries
         let initial_root_hash = self.state.empty_root();
@@ -193,6 +196,7 @@ where
             ee_config.clone(),
             tracking_copy,
             system_module,
+            &self.executor,
         );
 
         genesis_installer.create_mint()?;
@@ -473,7 +477,7 @@ where
         correlation_id: CorrelationId,
         mut exec_request: ExecuteRequest,
     ) -> Result<ExecutionResults, Error> {
-        let executor = Executor::new(*self.config());
+        // let executor = Executor::new(*self.config());
 
         let deploys = exec_request.take_deploys();
         let mut results = ExecutionResults::with_capacity(deploys.len());
@@ -482,7 +486,7 @@ where
             let result = match deploy_item.session {
                 ExecutableDeployItem::Transfer { .. } => self.transfer(
                     correlation_id,
-                    &executor,
+                    &self.executor,
                     exec_request.protocol_version,
                     exec_request.parent_state_hash,
                     BlockTime::new(exec_request.block_time),
@@ -491,7 +495,7 @@ where
                 ),
                 _ => self.deploy(
                     correlation_id,
-                    &executor,
+                    &self.executor,
                     exec_request.protocol_version,
                     exec_request.parent_state_hash,
                     BlockTime::new(exec_request.block_time),
@@ -1784,8 +1788,8 @@ where
         correlation_id: CorrelationId,
         get_era_validators_request: GetEraValidatorsRequest,
     ) -> Result<EraValidators, GetEraValidatorsError> {
-        let executor = Executor::new(*self.config());
-        let wasm_engine = executor.wasm_engine();
+        // let executor = Executor::new(*self.config());
+        let wasm_engine = self.executor.wasm_engine();
 
         let protocol_version = get_era_validators_request.protocol_version();
 
@@ -1819,7 +1823,7 @@ where
                 .map_err(Error::from)?
         };
 
-        let executor = Executor::new(*self.config());
+        // let executor = Executor::new(*self.config());
 
         let mut named_keys = auction_contract.named_keys().to_owned();
         let base_key = Key::from(*auction_contract_hash);
@@ -1850,7 +1854,7 @@ where
             );
             vec![system, auction]
         };
-        let (era_validators, execution_result): (Option<EraValidators>, ExecutionResult) = executor
+        let (era_validators, execution_result): (Option<EraValidators>, ExecutionResult) = self.executor
             .exec_system_contract(
                 DirectSystemContractCall::GetEraValidators,
                 system_module,
@@ -1923,9 +1927,9 @@ where
             Ok(Some(tracking_copy)) => Rc::new(RefCell::new(tracking_copy)),
         };
 
-        let executor = Executor::new(*self.config());
+        // let executor = Executor::new(*self.config());
 
-        let wasm_engine = executor.wasm_engine();
+        let wasm_engine = self.executor.wasm_engine();
 
         let system_contract_registry = tracking_copy
             .borrow_mut()
@@ -2000,7 +2004,7 @@ where
             );
             vec![system, auction]
         };
-        let (_, execution_result): (Option<()>, ExecutionResult) = executor.exec_system_contract(
+        let (_, execution_result): (Option<()>, ExecutionResult) = self.executor.exec_system_contract(
             DirectSystemContractCall::DistributeRewards,
             system_module.clone(),
             reward_args,
@@ -2051,7 +2055,7 @@ where
             );
             vec![system, auction]
         };
-        let (_, execution_result): (Option<()>, ExecutionResult) = executor.exec_system_contract(
+        let (_, execution_result): (Option<()>, ExecutionResult) = self.executor.exec_system_contract(
             DirectSystemContractCall::Slash,
             system_module.clone(),
             slash_args,
@@ -2100,7 +2104,7 @@ where
                 );
                 vec![system, auction]
             };
-            let (_, execution_result): (Option<()>, ExecutionResult) = executor
+            let (_, execution_result): (Option<()>, ExecutionResult) = self.executor
                 .exec_system_contract(
                     DirectSystemContractCall::RunAuction,
                     system_module,
