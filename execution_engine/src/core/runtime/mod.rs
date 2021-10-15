@@ -1141,15 +1141,11 @@ where
         }
     }
 
-    fn put_key(
+    pub(crate) fn casper_put_key(
         &mut self,
-        name_ptr: u32,
-        name_size: u32,
-        key_ptr: u32,
-        key_size: u32,
+        name: &str,
+        key: Key,
     ) -> Result<(), Error> {
-        let name = self.string_from_mem(name_ptr, name_size)?;
-        let key = self.key_from_mem(key_ptr, key_size)?;
         self.context.put_key(name, key).map_err(Into::into)
     }
 
@@ -3280,9 +3276,8 @@ where
     }
 
     #[cfg(feature = "test-support")]
-    fn print(&mut self, text_ptr: u32, text_size: u32) -> Result<(), Error> {
-        let text = self.string_from_mem(text_ptr, text_size)?;
-        println!("{}", text);
+    pub(crate) fn casper_print(&mut self, text: &str) -> Result<(), Error> {
+        eprintln!("{}", text);
         Ok(())
     }
 

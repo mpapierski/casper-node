@@ -199,7 +199,13 @@ where
                     [name_ptr, name_size, key_ptr, key_size],
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size);
-                self.put_key(name_ptr, name_size, key_ptr, key_size)?;
+                // {
+                    // let ref mut this = self;
+                let memory = self.instance.interpreted_memory();
+                let name: String = t_from_memory(&memory, name_ptr, name_size as usize)?;//this.string_from_mem(name_ptr, name_size)?;
+                let key: Key = t_from_memory(&memory, key_ptr, key_size as usize)?;
+                self.casper_put_key(&name, key)?;//.map_err(Into::into)?;
+                // }?;
                 Ok(None)
             }
 
@@ -829,7 +835,9 @@ where
                 let (text_ptr, text_size) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.print, [text_ptr, text_size])?;
                 scoped_instrumenter.add_property("text_size", text_size);
-                self.print(text_ptr, text_size)?;
+                let memory = self.instance.interpreted_memory();
+                let text: String = t_from_memory(&memory, text_ptr, text_size as usize)?;
+                self.casper_print(&text)?;
                 Ok(None)
             }
 

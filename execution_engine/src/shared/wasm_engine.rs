@@ -11,7 +11,7 @@ use parity_wasm::elements::{self, MemorySection, Section};
 use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
-use std::{cell::{Cell, RefCell}, error::Error, fmt::{self, Display, Formatter}, fs::{self, File}, io::Write, path::Path, rc::Rc};
+use std::{cell::{Cell, RefCell}, collections::{HashMap, hash_map::Entry}, error::Error, fmt::{self, Display, Formatter}, fs::{self, File}, io::Write, path::Path, rc::Rc, time::Instant};
 use thiserror::Error;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
@@ -79,8 +79,8 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 #[derive(Clone)]
 pub enum Module {
     Interpreted(WasmiModule),
-    // Compiled(Vec<u8>), AOT
-    Compiled(wasmtime::Module),
+    Compiled(Vec<u8>), // AOT
+    // Compiled(wasmtime::Module),
 }
 
 impl fmt::Debug for Module {
@@ -521,9 +521,9 @@ impl Instance {
                         "env",
                         "casper_get_main_purse",
                         |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr: u32| {
-                            let purse = caller.data_mut().casper_get_main_purse()?;
+                            // let purse = caller.data_mut().casper_get_main_purse()?;
 
-                            let purse_bytes = purse.into_bytes().map_err(execution::Error::from)?;
+                            // let purse_bytes = purse.into_bytes().map_err(execution::Error::from)?;
 
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
@@ -757,6 +757,98 @@ impl Instance {
                     )
                     .unwrap();
 
+                    linker
+                    .func_wrap(
+                        "env",
+                        "casper_put_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        name_ptr, name_size, key_ptr, key_size| {
+                            let host_function_costs = caller
+                                .data_mut()
+                                .wasm_engine()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            // let () = Args::parse(args)?;
+                            caller.data_mut().charge_host_function_call(
+                                &host_function_costs.put_key,
+                                [name_ptr, name_size, key_ptr, key_size],
+                            )?;
+
+
+                           
+                            // caller.data_mut().charge_host_function_call(
+                            //     &host_function_costs.write,
+                            //     [name_ptr, name_size, key_ptr, key_size],
+                            // )?;
+                            // let key = self.key_from_mem(key_ptr, key_size)?;
+                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+
+                            let name = {
+                                let mut buffer = vec![0; name_size as usize];
+                                mem.read(&caller, name_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let name: String = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                name
+                            };
+
+                            let key = {
+                                let mut buffer = vec![0; key_size as usize];
+                                mem.read(&caller, key_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let key: Key = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                key
+                            };
+
+                            let mut runtime = caller.data_mut();
+                            // runtime.casper_write(key, cl_value)?;
+                            runtime.casper_put_key(&name, key)?;
+
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                    #[cfg(feature = "test-support")]
+                    linker
+                    .func_wrap(
+                        "env",
+                        "casper_print",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, text_ptr: u32, text_size: u32| {
+                        
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+
+                            let text = {
+                                let mut buffer = vec![0; text_size as usize];
+                                mem.read(&caller, text_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let name: String = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                name
+                            };
+
+                            
+                            let mut runtime = caller.data_mut();
+                            // runtime.casper_write(key, cl_value)?;
+                            runtime.casper_print(&text)?;
+                            // eprintln!("OUT: {}", text);
+
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
                     .expect("should instantiate");
@@ -841,6 +933,7 @@ pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
     compiled_engine: WasmtimeEngine,
+    cache: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
@@ -905,6 +998,7 @@ impl WasmEngine {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
             compiled_engine: new_compiled_engine(&wasm_config),
+            cache: Default::default(),
         }
     }
 
@@ -954,13 +1048,11 @@ impl WasmEngine {
                     parity_wasm::serialize(module).expect("preprocessed wasm to bytes");
 
                 // aot compile
-                // let precompiled_bytes =
-                // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
-                // preprocess"); jit?
-                let wasmtime_module =
-                    wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
-                        .expect("should process");
-                Ok(Module::Compiled(wasmtime_module))
+                let precompiled_bytes = self.precompile(module_bytes).unwrap();
+                // let wasmtime_module =
+                //     wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
+                //         .expect("should process");
+                Ok(Module::Compiled(precompiled_bytes.to_owned()))
 
                 // let compiled_module =
                 //             wasmtime::Module::new(&self.compiled_engine,
@@ -987,10 +1079,10 @@ impl WasmEngine {
             }
             ExecutionMode::Compiled => {
                 // aot compile
-                // let precompiled_bytes =
+                let precompiled_bytes = self.precompile(wasm_bytes).unwrap();
                 // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
-                let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
-                Module::Compiled(module)
+                // let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
+                Module::Compiled(precompiled_bytes.to_owned())
                 // let compiled_module =
                 //             wasmtime::Module::new(&self.compiled_engine,
                 // &preprocessed_wasm_bytes)                 .map_err(|e|
@@ -1045,16 +1137,39 @@ impl WasmEngine {
                 // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
                 // preprocess"); Ok(Module::Compiled(precompiled_bytes))
 
-                // let compiled_module = unsafe {
-                // wasmtime::Module::deserialize(&self.compiled_engine(),
-                // &compiled_module).expect("should load precompiled module") };
-                // todo!("compiled mode")
+               // todo!("compiled mode")
                 // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
                 // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
                 // &[]).expect("should create compiled module");
+                
+                let compiled_module = self.deserialize_compiled(&compiled_module)?;
                 Ok(Instance::Compiled(compiled_module))
             }
         }
+    }
+
+    fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
+        let compiled_module = unsafe {
+            wasmtime::Module::deserialize(&self.compiled_engine(),bytes) }.unwrap();
+        Ok(compiled_module)
+    }
+
+    fn precompile(&self, bytes: &[u8]) -> Result<Vec<u8>, execution::Error> {
+        
+        let mut cache = self.cache.borrow_mut();
+        let bytes = match cache.entry(bytes.to_vec()) {
+            Entry::Occupied(o) => o.get().clone(),
+            Entry::Vacant(v) => {
+                let start = Instant::now();
+                let precompiled_bytes =
+                    self.compiled_engine.precompile_module(bytes).expect("should preprocess");
+                let stop = start.elapsed();
+                eprintln!("precompiled {} bytes in {:?}", bytes.len(), stop);
+                v.insert(precompiled_bytes).clone()
+            },
+        };
+        // );
+        Ok(bytes)
     }
 }
 

@@ -16,9 +16,7 @@ use casper_execution_engine::{
     },
     shared::{opcode_costs::DEFAULT_NOP_COST, wasm},
 };
-use casper_types::{
-    contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, system::mint, Gas, RuntimeArgs, U256, U512,
-};
+use casper_types::{Gas, Key, RuntimeArgs, U256, U512, bytesrepr::Bytes, contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, system::mint};
 use parity_wasm::{
     builder,
     elements::{Instruction, Instructions},
@@ -53,6 +51,15 @@ fn should_run_endless_loop() {
         maybe_error
     );
     eprintln!("elapsed {:?}", stop);
+
+    // let account =builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
+    // eprintln!("{:?}", account.named_keys());
+    // let keys = account.named_keys().get("buffer").unwrap();
+    
+    // let data = builder.query(None, Key::Account(*DEFAULT_ACCOUNT_ADDR), &["buffer".to_string()]).unwrap();;
+    // let buffer: Bytes = data.as_cl_value().unwrap().clone().into_t().unwrap();
+    
+
 }
 
 #[ignore]
@@ -111,6 +118,7 @@ const ARG_SEED_AMOUNT: &str = "seed_amount";
 #[test]
 fn should_run_create_200_accounts() {
     const AMOUNT: u32 = 200;
+    let seed_amount = U512::one();
 
     let accounts: Vec<AccountHash> = (1u32..=AMOUNT)
         .map(|val| {
@@ -120,13 +128,14 @@ fn should_run_create_200_accounts() {
             AccountHash::new(bytes)
         })
         .collect();
+    assert_eq!(accounts.len(), AMOUNT as usize);
 
     let exec = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         "create_accounts.wasm",
         runtime_args! {
-            ARG_ACCOUNTS => accounts,
-            ARG_SEED_AMOUNT => U512::one(),
+            ARG_ACCOUNTS => accounts.clone(),
+            ARG_SEED_AMOUNT => seed_amount,
         },
     )
     .build();
@@ -137,6 +146,13 @@ fn should_run_create_200_accounts() {
     builder.exec(exec).expect_success().commit();
     let stop = start.elapsed();
     eprintln!("elapsed {:?}", stop);
+
+    for account in accounts {
+        let account = builder.get_account(account).unwrap();
+        let main_purse = account.main_purse();
+        let balance = builder.get_purse_balance(main_purse);
+        assert_eq!(balance, seed_amount);
+    }
 }
 const ACCOUNT_1_ADDR: AccountHash = AccountHash::new([161u8; 32]);
 

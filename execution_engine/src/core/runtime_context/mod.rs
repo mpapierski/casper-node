@@ -416,13 +416,13 @@ where
     }
 
     /// Puts `key` to the map of named keys of current context.
-    pub fn put_key(&mut self, name: String, key: Key) -> Result<(), Error> {
+    pub fn put_key(&mut self, name: &str, key: Key) -> Result<(), Error> {
         // No need to perform actual validation on the base key because an account or contract (i.e.
         // the element stored under `base_key`) is allowed to add new named keys to itself.
         let named_key_value = StoredValue::CLValue(CLValue::from_t((name.clone(), key))?);
         self.validate_value(&named_key_value)?;
         self.metered_add_gs_unsafe(self.base_key(), named_key_value)?;
-        self.insert_key(name, key);
+        self.insert_key(name.to_string(), key);
         Ok(())
     }
 

@@ -42,7 +42,7 @@ where
 
     fn put_key(&mut self, name: &str, key: Key) -> Result<(), Error> {
         self.context
-            .put_key(name.to_string(), key)
+            .put_key(name, key)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::PutKey))
     }
 
