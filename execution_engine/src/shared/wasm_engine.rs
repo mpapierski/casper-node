@@ -3,7 +3,7 @@ use casper_types::{
     account::AccountHash,
     api_error,
     bytesrepr::{self, Bytes, FromBytes, ToBytes},
-    ApiError, CLValue, Gas, Key, ProtocolVersion, StoredValue, U512,
+    ApiError, CLValue, Gas, Key, ProtocolVersion, StoredValue, URef, U512,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -11,7 +11,17 @@ use parity_wasm::elements::{self, MemorySection, Section};
 use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
-use std::{cell::{Cell, RefCell}, collections::{HashMap, hash_map::Entry}, error::Error, fmt::{self, Display, Formatter}, fs::{self, File}, io::Write, path::Path, rc::Rc, time::Instant};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{hash_map::Entry, HashMap},
+    error::Error,
+    fmt::{self, Display, Formatter},
+    fs::{self, File},
+    io::Write,
+    path::Path,
+    rc::Rc,
+    time::Instant,
+};
 use thiserror::Error;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
@@ -79,8 +89,8 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 #[derive(Clone)]
 pub enum Module {
     Interpreted(WasmiModule),
-    Compiled(Vec<u8>), // AOT
-    // Compiled(wasmtime::Module),
+    Compiled(Vec<u8>), /* AOT
+                        * Compiled(wasmtime::Module), */
 }
 
 impl fmt::Debug for Module {
@@ -442,7 +452,7 @@ impl Instance {
                             // .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
                             // .map_err(|e| Error::Interpreter(e.into()).into())
 
-                            Ok(())
+                            Ok(0)
                         },
                     )
                     .unwrap();
@@ -523,7 +533,8 @@ impl Instance {
                         |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr: u32| {
                             // let purse = caller.data_mut().casper_get_main_purse()?;
 
-                            // let purse_bytes = purse.into_bytes().map_err(execution::Error::from)?;
+                            // let purse_bytes =
+                            // purse.into_bytes().map_err(execution::Error::from)?;
 
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
@@ -757,12 +768,15 @@ impl Instance {
                     )
                     .unwrap();
 
-                    linker
+                linker
                     .func_wrap(
                         "env",
                         "casper_put_key",
                         |mut caller: Caller<'_, &mut Runtime<R>>,
-                        name_ptr, name_size, key_ptr, key_size| {
+                         name_ptr,
+                         name_size,
+                         key_ptr,
+                         key_size| {
                             let host_function_costs = caller
                                 .data_mut()
                                 .wasm_engine()
@@ -775,8 +789,6 @@ impl Instance {
                                 [name_ptr, name_size, key_ptr, key_size],
                             )?;
 
-
-                           
                             // caller.data_mut().charge_host_function_call(
                             //     &host_function_costs.write,
                             //     [name_ptr, name_size, key_ptr, key_size],
@@ -816,13 +828,12 @@ impl Instance {
                     )
                     .unwrap();
 
-                    #[cfg(feature = "test-support")]
-                    linker
+                #[cfg(feature = "test-support")]
+                linker
                     .func_wrap(
                         "env",
                         "casper_print",
                         |mut caller: Caller<'_, &mut Runtime<R>>, text_ptr: u32, text_size: u32| {
-                        
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
@@ -837,7 +848,6 @@ impl Instance {
                                 name
                             };
 
-                            
                             let mut runtime = caller.data_mut();
                             // runtime.casper_write(key, cl_value)?;
                             runtime.casper_print(&text)?;
@@ -848,6 +858,95 @@ impl Instance {
                     )
                     .unwrap();
 
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_transfer_from_purse_to_purse",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         source_ptr,
+                         source_size,
+                         target_ptr,
+                         target_size,
+                         amount_ptr,
+                         amount_size,
+                         id_ptr,
+                         id_size| {
+                            let host_function_costs = caller
+                                .data_mut()
+                                .wasm_engine()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            // let () = Args::parse(args)?;
+                            caller.data_mut().charge_host_function_call(
+                                &host_function_costs.transfer_from_purse_to_purse,
+                                [
+                                    source_ptr,
+                                    source_size,
+                                    target_ptr,
+                                    target_size,
+                                    amount_ptr,
+                                    amount_size,
+                                    id_ptr,
+                                    id_size,
+                                ],
+                            )?;
+
+                            // caller.data_mut().charge_host_function_call(
+                            //     &host_function_costs.write,
+                            //     [name_ptr, name_size, key_ptr, key_size],
+                            // )?;
+                            // let key = self.key_from_mem(key_ptr, key_size)?;
+                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+
+                            let source: URef = {
+                                let mut buffer = vec![0; source_size as usize];
+                                mem.read(&caller, source_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let value = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                value
+                            };
+
+                            let target: URef = {
+                                let mut buffer = vec![0; target_size as usize];
+                                mem.read(&caller, target_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let value = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                value
+                            };
+
+                            let amount: U512 = {
+                                let mut buffer = vec![0; amount_size as usize];
+                                mem.read(&caller, amount_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let value = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                value
+                            };
+                            let id: Option<u64> = {
+                                let mut buffer = vec![0; id_size as usize];
+                                mem.read(&caller, id_ptr as usize, &mut buffer)
+                                    .map_err(|e| Trap::new("memory access"))?;
+                                let value = bytesrepr::deserialize(buffer)
+                                    .map_err(execution::Error::from)?;
+                                value
+                            };
+                            let mut runtime = caller.data_mut();
+                            // runtime.casper_write(key, cl_value)?;
+                            let ret = runtime
+                                .casper_transfer_from_purse_to_purse(source, target, amount, id)?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
 
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
@@ -928,7 +1027,7 @@ impl std::ops::Deref for WasmtimeEngine {
 }
 
 /// Wasm preprocessor.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
@@ -980,7 +1079,6 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     config.wasm_multi_memory(false);
     config.wasm_module_linking(false);
     config.wasm_threads(false);
-    
 
     config
         .max_wasm_stack(wasm_config.max_stack_height as usize)
@@ -1004,6 +1102,10 @@ impl WasmEngine {
 
     pub fn execution_mode(&self) -> &ExecutionMode {
         &self.execution_mode
+    }
+
+    pub fn execution_mode_mut(&mut self) -> &mut ExecutionMode {
+        &mut self.execution_mode
     }
 
     /// Preprocesses Wasm bytes and returns a module.
@@ -1137,11 +1239,11 @@ impl WasmEngine {
                 // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
                 // preprocess"); Ok(Module::Compiled(precompiled_bytes))
 
-               // todo!("compiled mode")
+                // todo!("compiled mode")
                 // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
                 // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
                 // &[]).expect("should create compiled module");
-                
+
                 let compiled_module = self.deserialize_compiled(&compiled_module)?;
                 Ok(Instance::Compiled(compiled_module))
             }
@@ -1149,24 +1251,25 @@ impl WasmEngine {
     }
 
     fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
-        let compiled_module = unsafe {
-            wasmtime::Module::deserialize(&self.compiled_engine(),bytes) }.unwrap();
+        let compiled_module =
+            unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), bytes) }.unwrap();
         Ok(compiled_module)
     }
 
     fn precompile(&self, bytes: &[u8]) -> Result<Vec<u8>, execution::Error> {
-        
         let mut cache = self.cache.borrow_mut();
         let bytes = match cache.entry(bytes.to_vec()) {
             Entry::Occupied(o) => o.get().clone(),
             Entry::Vacant(v) => {
                 let start = Instant::now();
-                let precompiled_bytes =
-                    self.compiled_engine.precompile_module(bytes).expect("should preprocess");
+                let precompiled_bytes = self
+                    .compiled_engine
+                    .precompile_module(bytes)
+                    .expect("should preprocess");
                 let stop = start.elapsed();
                 eprintln!("precompiled {} bytes in {:?}", bytes.len(), stop);
                 v.insert(precompiled_bytes).clone()
-            },
+            }
         };
         // );
         Ok(bytes)

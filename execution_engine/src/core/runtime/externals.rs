@@ -200,12 +200,12 @@ where
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size);
                 // {
-                    // let ref mut this = self;
+                // let ref mut this = self;
                 let memory = self.instance.interpreted_memory();
-                let name: String = t_from_memory(&memory, name_ptr, name_size as usize)?;//this.string_from_mem(name_ptr, name_size)?;
+                let name: String = t_from_memory(&memory, name_ptr, name_size as usize)?; //this.string_from_mem(name_ptr, name_size)?;
                 let key: Key = t_from_memory(&memory, key_ptr, key_size as usize)?;
-                self.casper_put_key(&name, key)?;//.map_err(Into::into)?;
-                // }?;
+                self.casper_put_key(&name, key)?; //.map_err(Into::into)?;
+                                                  // }?;
                 Ok(None)
             }
 
@@ -493,16 +493,33 @@ where
                         id_size,
                     ],
                 )?;
-                let ret = self.transfer_from_purse_to_purse(
-                    source_ptr,
-                    source_size,
-                    target_ptr,
-                    target_size,
-                    amount_ptr,
-                    amount_size,
-                    id_ptr,
-                    id_size,
-                )?;
+
+                let memory = self.instance.interpreted_memory();
+
+                // let ret = {
+                // let ref mut this = self;
+                let source: URef = {
+                    let bytes = bytes_from_memory(&memory, source_ptr, source_size as usize)?;
+                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                };
+
+                let target: URef = {
+                    let bytes = bytes_from_memory(&memory, target_ptr, target_size as usize)?;
+                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                };
+
+                let amount: U512 = {
+                    let bytes = bytes_from_memory(&memory, amount_ptr, amount_size as usize)?;
+                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                };
+
+                let id: Option<u64> = {
+                    let bytes = bytes_from_memory(&memory, id_ptr, id_size as usize)?;
+                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                };
+
+                let ret = self.casper_transfer_from_purse_to_purse(source, target, amount, id)?;
+
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 

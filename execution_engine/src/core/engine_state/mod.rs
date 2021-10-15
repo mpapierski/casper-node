@@ -1854,8 +1854,8 @@ where
             );
             vec![system, auction]
         };
-        let (era_validators, execution_result): (Option<EraValidators>, ExecutionResult) = self.executor
-            .exec_system_contract(
+        let (era_validators, execution_result): (Option<EraValidators>, ExecutionResult) =
+            self.executor.exec_system_contract(
                 DirectSystemContractCall::GetEraValidators,
                 system_module,
                 RuntimeArgs::new(),
@@ -2004,25 +2004,26 @@ where
             );
             vec![system, auction]
         };
-        let (_, execution_result): (Option<()>, ExecutionResult) = self.executor.exec_system_contract(
-            DirectSystemContractCall::DistributeRewards,
-            system_module.clone(),
-            reward_args,
-            &mut named_keys,
-            Default::default(),
-            base_key,
-            &virtual_system_account,
-            authorization_keys.clone(),
-            BlockTime::default(),
-            deploy_hash,
-            gas_limit,
-            step_request.protocol_version,
-            correlation_id,
-            Rc::clone(&tracking_copy),
-            Phase::Session,
-            SystemContractCache::clone(&self.system_contract_cache),
-            distribute_rewards_call_stack,
-        );
+        let (_, execution_result): (Option<()>, ExecutionResult) =
+            self.executor.exec_system_contract(
+                DirectSystemContractCall::DistributeRewards,
+                system_module.clone(),
+                reward_args,
+                &mut named_keys,
+                Default::default(),
+                base_key,
+                &virtual_system_account,
+                authorization_keys.clone(),
+                BlockTime::default(),
+                deploy_hash,
+                gas_limit,
+                step_request.protocol_version,
+                correlation_id,
+                Rc::clone(&tracking_copy),
+                Phase::Session,
+                SystemContractCache::clone(&self.system_contract_cache),
+                distribute_rewards_call_stack,
+            );
 
         if let Some(exec_error) = execution_result.take_error() {
             return Err(StepError::DistributeError(exec_error));
@@ -2055,25 +2056,26 @@ where
             );
             vec![system, auction]
         };
-        let (_, execution_result): (Option<()>, ExecutionResult) = self.executor.exec_system_contract(
-            DirectSystemContractCall::Slash,
-            system_module.clone(),
-            slash_args,
-            &mut named_keys,
-            Default::default(),
-            base_key,
-            &virtual_system_account,
-            authorization_keys.clone(),
-            BlockTime::default(),
-            deploy_hash,
-            gas_limit,
-            step_request.protocol_version,
-            correlation_id,
-            Rc::clone(&tracking_copy),
-            Phase::Session,
-            SystemContractCache::clone(&self.system_contract_cache),
-            slash_call_stack,
-        );
+        let (_, execution_result): (Option<()>, ExecutionResult) =
+            self.executor.exec_system_contract(
+                DirectSystemContractCall::Slash,
+                system_module.clone(),
+                slash_args,
+                &mut named_keys,
+                Default::default(),
+                base_key,
+                &virtual_system_account,
+                authorization_keys.clone(),
+                BlockTime::default(),
+                deploy_hash,
+                gas_limit,
+                step_request.protocol_version,
+                correlation_id,
+                Rc::clone(&tracking_copy),
+                Phase::Session,
+                SystemContractCache::clone(&self.system_contract_cache),
+                slash_call_stack,
+            );
 
         if let Some(exec_error) = execution_result.take_error() {
             return Err(StepError::SlashingError(exec_error));
@@ -2104,8 +2106,8 @@ where
                 );
                 vec![system, auction]
             };
-            let (_, execution_result): (Option<()>, ExecutionResult) = self.executor
-                .exec_system_contract(
+            let (_, execution_result): (Option<()>, ExecutionResult) =
+                self.executor.exec_system_contract(
                     DirectSystemContractCall::RunAuction,
                     system_module,
                     run_auction_args,

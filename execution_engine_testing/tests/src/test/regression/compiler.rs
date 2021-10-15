@@ -4,7 +4,7 @@ use num_traits::Zero;
 
 use casper_engine_test_support::{
     internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS,
         DEFAULT_RUN_GENESIS_REQUEST,
     },
     AccountHash, DEFAULT_ACCOUNT_ADDR,
@@ -16,7 +16,10 @@ use casper_execution_engine::{
     },
     shared::{opcode_costs::DEFAULT_NOP_COST, wasm},
 };
-use casper_types::{Gas, Key, RuntimeArgs, U256, U512, bytesrepr::Bytes, contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, system::mint};
+use casper_types::{
+    bytesrepr::Bytes, contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, system::mint, Gas, Key,
+    RuntimeArgs, URef, U256, U512,
+};
 use parity_wasm::{
     builder,
     elements::{Instruction, Instructions},
@@ -55,11 +58,10 @@ fn should_run_endless_loop() {
     // let account =builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
     // eprintln!("{:?}", account.named_keys());
     // let keys = account.named_keys().get("buffer").unwrap();
-    
-    // let data = builder.query(None, Key::Account(*DEFAULT_ACCOUNT_ADDR), &["buffer".to_string()]).unwrap();;
-    // let buffer: Bytes = data.as_cl_value().unwrap().clone().into_t().unwrap();
-    
 
+    // let data = builder.query(None, Key::Account(*DEFAULT_ACCOUNT_ADDR),
+    // &["buffer".to_string()]).unwrap();; let buffer: Bytes =
+    // data.as_cl_value().unwrap().clone().into_t().unwrap();
 }
 
 #[ignore]
@@ -154,6 +156,50 @@ fn should_run_create_200_accounts() {
         assert_eq!(balance, seed_amount);
     }
 }
+
+const ARG_TOTAL_PURSES: &str = "total_purses";
+
+#[ignore]
+#[test]
+fn should_run_create_200_purses() {
+    const AMOUNT: u64 = 200;
+    let seed_amount = U512::one();
+
+    let exec = ExecuteRequestBuilder::standard(
+        *DEFAULT_ACCOUNT_ADDR,
+        "create_purses.wasm",
+        runtime_args! { ARG_TOTAL_PURSES => AMOUNT, ARG_SEED_AMOUNT => seed_amount },
+    )
+    .build();
+
+    let mut builder = InMemoryWasmTestBuilder::default();
+    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    let start = Instant::now();
+    builder.exec(exec).expect_success().commit();
+    let stop = start.elapsed();
+    eprintln!("elapsed {:?}", stop);
+
+    let purses: Vec<URef> = {
+        let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
+
+        let mut purses = Vec::new();
+
+        // let main_purse = account.main_purse();
+
+        for (name, key) in account.named_keys() {
+            if name.starts_with("purse:") {
+                let uref = key.into_uref().unwrap();
+                let balance = builder.get_purse_balance(uref);
+                assert_eq!(balance, seed_amount);
+                purses.push(uref);
+            }
+        }
+
+        purses
+    };
+    assert_eq!(purses.len(), AMOUNT as usize);
+}
+
 const ACCOUNT_1_ADDR: AccountHash = AccountHash::new([161u8; 32]);
 
 #[ignore]
