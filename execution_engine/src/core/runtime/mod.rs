@@ -54,12 +54,27 @@ use crate::{
     shared::{
         host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
         wasm_config::WasmConfig,
-        wasm_engine::{ExecutionMode, Instance, InstanceRef, Module, RuntimeValue, WasmEngine},
+        wasm_engine::{
+            ExecutionMode, FunctionContext, Instance, InstanceRef, Module, RuntimeError,
+            RuntimeValue, WasmEngine,
+        },
     },
     storage::global_state::StateReader,
 };
 
 use super::resolvers::v1_function_index::FunctionIndex;
+
+fn t_from_memory<T>(
+    context: &mut impl FunctionContext,
+    offset: u32,
+    size: usize,
+) -> Result<T, Error>
+where
+    T: FromBytes,
+{
+    let bytes = context.memory_read(offset, size)?;
+    Ok(bytesrepr::deserialize(bytes)?)
+}
 
 /// Represents the runtime properties of a WASM execution.
 pub struct Runtime<'a, R> {
@@ -1141,8 +1156,29 @@ where
         }
     }
 
-    pub(crate) fn casper_put_key(&mut self, name: &str, key: Key) -> Result<(), Error> {
-        self.context.put_key(name, key).map_err(Into::into)
+    pub(crate) fn casper_put_key(
+        &mut self,
+        context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        key_ptr: u32,
+        key_size: u32,
+    ) -> Result<(), Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.put_key,
+            [name_ptr, name_size, key_ptr, key_size],
+        )?;
+
+        let name: String = {
+            let name_bytes = context.memory_read(name_ptr, name_size as usize)?;
+            bytesrepr::deserialize(name_bytes)?
+        };
+        let key = {
+            let key_bytes = context.memory_read(key_ptr, key_size as usize)?;
+            bytesrepr::deserialize(key_bytes)?
+        };
+        self.context.put_key(&name, key).map_err(Into::into)
     }
 
     fn remove_key(&mut self, name_ptr: u32, name_size: u32) -> Result<(), Error> {
@@ -1152,9 +1188,17 @@ where
     }
 
     /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
-    pub(crate) fn casper_get_main_purse(&mut self) -> Result<URef, Error> {
+    pub(crate) fn casper_get_main_purse(
+        &mut self,
+        mut context: impl FunctionContext,
+        dest_ptr: u32,
+    ) -> Result<(), Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
         let purse = self.context.get_main_purse()?;
-        Ok(purse)
+        let bytes = purse.into_bytes().map_err(Error::from)?;
+        context.memory_write(dest_ptr, &bytes)?;
+        Ok(())
     }
 
     /// Writes caller (deploy) account public key to dest_ptr in the Wasm
@@ -2645,27 +2689,57 @@ where
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
-    /// Generates new unforgable reference and adds it to the context's
-    /// access_rights set.
-    pub(crate) fn casper_new_uref(&mut self, cl_value: CLValue) -> Result<URef, Error> {
+    // /// Generates new unforgable reference and adds it to the context's
+    // /// access_rights set.
+    // pub(crate) fn casper_new_uref(&mut self, cl_value: CLValue) -> Result<URef, Error> {
+    //     let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
+    //     Ok(uref)
+    // }
+    pub(crate) fn casper_new_uref(
+        &mut self,
+        mut context: impl FunctionContext,
+        uref_ptr: u32,
+        value_ptr: u32,
+        value_size: u32,
+    ) -> Result<(), Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+
+        self.charge_host_function_call(
+            &host_function_costs.new_uref,
+            [uref_ptr, value_ptr, value_size],
+        )?;
+        // scoped_instrumenter.add_property("value_size", value_size);
+        // let memory = self.instance.interpreted_memory();
+
+        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size as usize)?;
+
         let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
-        Ok(uref)
+
+        let bytes = uref.into_bytes().map_err(Error::from)?;
+        context.memory_write(uref_ptr, &bytes)?;
+        Ok(())
     }
 
     /// Writes `value` under `key` in GlobalState.
     pub(crate) fn casper_write(
         &mut self,
-        key: Key,
-        cl_value: CLValue,
-        /* key_ptr: u32,
-         * key_size: u32,
-         * value_ptr: u32,
-         * value_size: u32, */
+        mut context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        value_ptr: u32,
+        value_size: u32,
     ) -> Result<(), Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.write,
+            [key_ptr, key_size, value_ptr, value_size],
+        )?;
+
+        let key: Key = t_from_memory(&mut context, key_ptr, key_size as usize)?;
+        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size as usize)?;
         //
-        self.context
-            .metered_write_gs(key, cl_value)
-            .map_err(Into::into)
+        self.context.metered_write_gs(key, cl_value)?;
+        Ok(())
     }
 
     /// Records a transfer.
@@ -2958,8 +3032,23 @@ where
         Ok(purse)
     }
 
-    pub(crate) fn casper_create_purse(&mut self) -> Result<URef, Error> {
+    fn create_purse(&mut self) -> Result<URef, Error> {
         self.mint_create(self.get_mint_contract()?)
+    }
+
+    pub(crate) fn casper_create_purse(&mut self, mut context: impl FunctionContext, dest_ptr: u32, dest_size: u32) -> Result<Result<(), ApiError>, Error> {
+                // args(0) = pointer to array for return value
+                // args(1) = length of array for return value
+                let host_function_costs = self.config.wasm_config().take_host_function_costs();
+                self.charge_host_function_call(
+                    &host_function_costs.create_purse,
+                    [dest_ptr, dest_size],
+                )?;
+                let purse = self.create_purse()?;
+                let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
+                assert_eq!(dest_size, purse_bytes.len() as u32);
+                context.memory_write(dest_ptr, &purse_bytes)?;
+                Ok(Ok(()))
     }
 
     /// Calls the "transfer" method on the mint contract at the given mint
@@ -3059,6 +3148,57 @@ where
     /// `target` account. If that account does not exist, creates one.
     pub(crate) fn casper_transfer_to_account(
         &mut self,
+        mut context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        amount_ptr: u32,
+        amount_size: u32,
+        id_ptr: u32,
+        id_size: u32,
+        result_ptr: u32,
+    ) -> Result<Result<(), ApiError>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.transfer_to_account,
+            [
+                key_ptr,
+                key_size,
+                amount_ptr,
+                amount_size,
+                id_ptr,
+                id_size,
+                result_ptr,
+            ],
+        )?;
+
+        let account_hash: AccountHash = {
+            let bytes = context.memory_read(key_ptr, key_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let amount: U512 = {
+            let bytes = context.memory_read(amount_ptr, amount_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let id: Option<u64> = {
+            let bytes = context.memory_read(id_ptr, id_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+
+        let ret = match self.transfer_to_account(account_hash, amount, id)? {
+            Ok(transferred_to) => {
+                let result_value: u32 = transferred_to as u32;
+                let result_value_bytes = result_value.to_le_bytes();
+                context
+                    .memory_write(result_ptr, &result_value_bytes)?;
+                Ok(())
+            }
+            Err(api_error) => Err(api_error),
+        };
+        Ok(ret)
+    }
+    /// `target` account. If that account does not exist, creates one.
+    fn transfer_to_account(
+        &mut self,
         target: AccountHash,
         amount: U512,
         id: Option<u64>,
@@ -3102,11 +3242,51 @@ where
     /// Transfers `amount` of motes from `source` purse to `target` purse.
     pub(crate) fn casper_transfer_from_purse_to_purse(
         &mut self,
-        source: URef,
-        target: URef,
-        amount: U512,
-        id: Option<u64>,
+        context: impl FunctionContext,
+        source_ptr: u32,
+        source_size: u32,
+        target_ptr: u32,
+        target_size: u32,
+        amount_ptr: u32,
+        amount_size: u32,
+        id_ptr: u32,
+        id_size: u32,
     ) -> Result<Result<(), mint::Error>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.transfer_from_purse_to_purse,
+            [
+                source_ptr,
+                source_size,
+                target_ptr,
+                target_size,
+                amount_ptr,
+                amount_size,
+                id_ptr,
+                id_size,
+            ],
+        )?;
+
+        let source: URef = {
+            let bytes = context.memory_read(source_ptr, source_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+
+        let target: URef = {
+            let bytes = context.memory_read(target_ptr, target_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+
+        let amount: U512 = {
+            let bytes = context.memory_read(amount_ptr, amount_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+
+        let id: Option<u64> = {
+            let bytes = context.memory_read(id_ptr, id_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+
         let mint_contract_key = self.get_mint_contract()?;
 
         match self.mint_transfer(mint_contract_key, None, source, target, amount, id)? {
@@ -3247,52 +3427,73 @@ where
     }
 
     #[cfg(feature = "test-support")]
-    pub(crate) fn casper_print(&mut self, text: &str) -> Result<(), Error> {
+    pub(crate) fn casper_print(
+        &mut self,
+        mut context: impl FunctionContext,
+        text_ptr: u32,
+        text_size: u32,
+    ) -> Result<(), Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(&host_function_costs.print, [text_ptr, text_size])?;
+        let text: String = t_from_memory(&mut context, text_ptr, text_size as usize)?;
         eprintln!("{}", text);
         Ok(())
     }
 
     pub(crate) fn casper_get_named_arg_size(
         &mut self,
-        name: String,
-        /* name_ptr: u32,
-         * name_size: usize,
-         * size_ptr: u32, */
-    ) -> Result<u32, ApiError> {
+        mut context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        size_ptr: u32,
+    ) -> Result<Result<(), ApiError>, Error> {
+        // args(0) = pointer to name of host runtime arg to load
+        // args(1) = size of name of the host runtime arg
+        // args(2) = pointer to a argument size (output)
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.get_named_arg_size,
+            [name_ptr, name_size, size_ptr],
+        )?;
+
+        let name_bytes = context.memory_read(name_ptr, name_size as usize)?;
+        let name = String::from_utf8_lossy(&name_bytes);
+
         let arg_size = match self.context.args().get(&name) {
             Some(arg) if arg.inner_bytes().len() > u32::max_value() as usize => {
-                return Err(ApiError::OutOfMemory);
+                return Ok(Err(ApiError::OutOfMemory))
             }
             Some(arg) => arg.inner_bytes().len() as u32,
-            None => return Err(ApiError::MissingArgument),
+            None => return Ok(Err(ApiError::MissingArgument))
         };
 
-        // let arg_size_bytes = arg_size.to_le_bytes(); // Wasm is little-endian
-
-        Ok(arg_size)
+        let arg_size_bytes = arg_size.to_le_bytes(); // Wasm is little-endian
+        context.memory_write(size_ptr, &arg_size_bytes)?;
+        Ok(Ok(()))
     }
 
     pub(crate) fn casper_get_named_arg(
         &mut self,
-        // name: Cow<'mem, str>,
-        name: &str,
-        /* name_ptr: u32,
-         * name_size: usize,
-         * output_ptr: u32,
-         * output_size: usize,
-         * ) -> Result<Result<(), ApiError>, Error> { */
-    ) -> Result<CLValue, ApiError> {
-        // let name_bytes = self.bytes_from_mem(name_ptr, name_size)?;
-        // let name = String::from_utf8_lossy(&name_bytes);
+        mut context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        output_ptr: u32,
+        output_size: u32,
+    ) -> Result<Result<(), ApiError>, Error> {
+        let name_bytes = context.memory_read(name_ptr, name_size as usize)?;
+        let name = String::from_utf8_lossy(&name_bytes);
 
         let arg = match self.context.args().get(&name) {
             Some(arg) => arg,
-            None => return Err(ApiError::MissingArgument),
+            None => return Ok(Err(ApiError::MissingArgument)),
         };
 
-        Ok(arg.clone())
+        if arg.inner_bytes().len() > output_size as usize {
+            return Ok(Err(ApiError::OutOfMemory))
+        }
 
-        // Ok(Ok(()))
+        context.memory_write(output_ptr, &arg.inner_bytes()[..output_size as usize])?;
+        Ok(Ok(()))
     }
 
     fn validate_entry_point_access(
@@ -4602,6 +4803,55 @@ where
     /// Get a reference to the runtime's wasm engine.
     pub fn wasm_engine(&self) -> &'a WasmEngine {
         self.wasm_engine
+    }
+
+    pub(crate) fn casper_transfer_from_purse_to_account(&mut self, mut context:impl FunctionContext, source_ptr:u32, source_size:u32, key_ptr:u32, key_size:u32, amount_ptr:u32, amount_size:u32, id_ptr:u32, id_size:u32, result_ptr:u32) -> Result<Result<(), ApiError>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.transfer_from_purse_to_account,
+            [
+                source_ptr,
+                source_size,
+                key_ptr,
+                key_size,
+                amount_ptr,
+                amount_size,
+                id_ptr,
+                id_size,
+                result_ptr,
+            ],
+        )?;
+        let source_purse = {
+            let bytes = context.memory_read(source_ptr, source_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let account_hash: AccountHash = {
+            let bytes = context.memory_read(key_ptr, key_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let amount: U512 = {
+            let bytes = context.memory_read(amount_ptr, amount_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let id: Option<u64> = {
+            let bytes = context.memory_read(id_ptr, id_size as usize)?;
+            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+        };
+        let ret = match self.transfer_from_purse_to_account(
+            source_purse,
+            account_hash,
+            amount,
+            id,
+        )? {
+            Ok(transferred_to) => {
+                let result_value: u32 = transferred_to as u32;
+                let result_value_bytes = result_value.to_le_bytes();
+                context.memory_write(result_ptr, &result_value_bytes)?;
+                Ok(())
+            }
+            Err(api_error) => Err(api_error),
+        };
+        Ok(ret)
     }
 }
 

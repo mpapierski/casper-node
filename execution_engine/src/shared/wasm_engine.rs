@@ -29,7 +29,8 @@ const DEFAULT_GAS_MODULE_NAME: &str = "env";
 use parity_wasm::elements::Module as WasmiModule;
 use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
 use wasmtime::{
-    AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory, MemoryType, Trap,
+    AsContext, AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory,
+    MemoryType, StoreContextMut, Trap,
 };
 
 use crate::{
@@ -248,28 +249,58 @@ impl From<Instance> for InstanceRef {
     }
 }
 
-// pub enum MemoryAdapter<'a> {
-//     Interpreted(MemoryRef),
-//     Compiled(&'a Cell<[u8]>),
-// }
+pub trait FunctionContext {
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError>;
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError>;
+}
 
-// impl<'a> MemoryAdapter<'a> {
-//     pub fn set(&mut self, offset: u32, bytes: &[u8]) -> Result<(), RuntimeError> {
-//         match self {
-//             MemoryAdapter::Interpreted(memory_ref) => memory_ref.set(offset,
-// bytes).map_err(RuntimeError::WasmiError)?,             MemoryAdapter::Compiled(_) => {
-//                 todo!("compiled");
-//             }
-//         }
-//         Ok(())
-//     }
-//     pub fn get(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
-//         match self {
-//             MemoryAdapter::Interpreted(memory_ref) => Ok(memory_ref.get(offset, size)?),
-//             MemoryAdapter::Compiled(_) => todo!(),
-//         }
-//     }
-// }
+pub struct WasmiAdapter {
+    memory: wasmi::MemoryRef,
+}
+
+impl WasmiAdapter {
+    pub fn new(memory: wasmi::MemoryRef) -> Self {
+        Self { memory }
+    }
+}
+
+impl FunctionContext for WasmiAdapter {
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+        Ok(self.memory.get(offset, size)?)
+    }
+
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
+        self.memory.set(offset, data)?;
+        Ok(())
+    }
+}
+/// Wasm caller object passed as an argument for each.
+pub struct WasmtimeAdapter<'a> {
+    data: &'a mut [u8],
+}
+
+impl<'a> FunctionContext for WasmtimeAdapter<'a> {
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+        let mut buffer = vec![0; size];
+
+        let slice = self
+            .data
+            .get(offset as usize..)
+            .and_then(|s| s.get(..buffer.len()))
+            .ok_or_else(|| Trap::new("memory access"))?;
+        buffer.copy_from_slice(slice);
+        Ok(buffer)
+    }
+
+    fn memory_write(&mut self, offset: u32, buffer: &[u8]) -> Result<(), RuntimeError> {
+        self.data
+            .get_mut(offset as usize..)
+            .and_then(|s| s.get_mut(..buffer.len()))
+            .ok_or_else(|| Trap::new("memory access"))?
+            .copy_from_slice(buffer);
+        Ok(())
+    }
+}
 
 impl Instance {
     pub fn interpreted_memory(&self) -> MemoryRef {
@@ -339,9 +370,6 @@ impl Instance {
                         "env",
                         "casper_revert",
                         |mut caller: Caller<'_, &mut Runtime<R>>, param: u32| {
-                            // println!("Got {} from WebAssembly", param);
-                            // println!("my host state is: {}", caller.data());
-                            // todo!("revert {}", param);
                             let mut runtime = caller.data_mut();
                             runtime.casper_revert(param)?;
                             Ok(()) //unreachable
@@ -368,43 +396,19 @@ impl Instance {
                          uref_ptr,
                          value_ptr,
                          value_size| {
-                            let runtime = caller.data_mut();
-
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.new_uref,
-                                [uref_ptr, value_ptr, value_size],
-                            )?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            let mut buffer = vec![0; value_size as usize];
-                            mem.read(&caller, value_ptr as usize, &mut buffer)
-                                .map_err(|e| Trap::new("memory access"))?;
-                            let cl_value =
-                                bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
-
-                            let uref = caller.data_mut().casper_new_uref(cl_value)?;
-
-                            // let data = mem.data(&caller).get_mut(uref_ptr).ok_or_else(||
-                            // Trap::new("bad ptr"))?;
-                            // uref.into_bytes().map_err(execution::Error::BytesRepr)
-                            // data.copy_from_slice(&?;
-                            // mem.data
-                            mem.write(&mut caller, uref_ptr as usize, &uref.into_bytes().unwrap())
-                                .map_err(|_| Trap::new("memory access"))?;
-
-                            // self.memory()
-                            // .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
-                            // .map_err(|e| Error::Interpreter(e.into()).into())
-
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            // runtime.casper_new_uref(
+                            //     function_context,
+                            //     uref_ptr,
+                            //     value_ptr,
+                            //     value_size,
+                            // )?;
+                            // FunctionIndex::NewFuncIndex
                             Ok(())
                         },
                     )
@@ -415,112 +419,40 @@ impl Instance {
                         "env",
                         "casper_create_purse",
                         |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr: u32, dest_size: u32| {
-                            let runtime = caller.data_mut();
-
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.create_purse,
-                                [dest_ptr, dest_size],
-                            )?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            // let mut buffer = vec![0; value_size as usize];
-                            // mem.read(&caller, value_ptr as usize, &mut buffer).map_err(|e|
-                            // Trap::new("memory access"))?;
-                            // let cl_value =
-                            // bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
-
-                            let uref = caller.data_mut().casper_create_purse()?;
-
-                            // let data = mem.data(&caller).get_mut(uref_ptr).ok_or_else(||
-                            // Trap::new("bad ptr"))?;
-                            // uref.into_bytes().map_err(execution::Error::BytesRepr)
-                            // data.copy_from_slice(&?;
-                            // mem.data
-                            mem.write(&mut caller, dest_ptr as usize, &uref.into_bytes().unwrap())
-                                .map_err(|_| Trap::new("memory access"))?;
-
-                            // self.memory()
-                            // .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
-                            // .map_err(|e| Error::Interpreter(e.into()).into())
-
-                            Ok(0)
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            let ret =runtime.casper_create_purse(function_context, dest_ptr, dest_size)?;
+                            Ok(api_error::i32_from(ret))
                         },
                     )
                     .unwrap();
-
-                // et (dest_ptr, dest_size) = Args::parse(args)?;
-                // self.charge_host_function_call(
-                //     &host_function_costs.create_purse,
-                //     [dest_ptr, dest_size],
-                // )?;
-                // let purse = self.create_purse()?;
-                // let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
-                // assert_eq!(dest_size, purse_bytes.len() as u32);
-                // self.memory()
-                //     .set(dest_ptr, &purse_bytes)
-                //     .map_err(|e| Error::Interpreter(e.into()))?;
-                //     // Ok(Some(RuntimeValue::I32(0)))
-
-                //     Ok(())
-                // }).unwrap();
 
                 linker
                     .func_wrap(
                         "env",
                         "casper_write",
                         |mut caller: Caller<'_, &mut Runtime<R>>,
-                         key_ptr,
-                         key_size,
-                         value_ptr,
-                         value_size| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.write,
-                                [key_ptr, key_size, value_ptr, value_size],
-                            )?;
-                            // let key = self.key_from_mem(key_ptr, key_size)?;
-                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
-
+                         key_ptr: u32,
+                         key_size: u32,
+                         value_ptr: u32,
+                         value_size: u32| {
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            let key = {
-                                let mut buffer = vec![0; key_size as usize];
-                                mem.read(&caller, key_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let key: Key = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                key
-                            };
-
-                            let cl_value = {
-                                let mut buffer = vec![0; value_size as usize];
-                                mem.read(&caller, value_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let key: CLValue = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                key
-                            };
-
-                            let mut runtime = caller.data_mut();
-                            runtime.casper_write(key, cl_value)?;
-
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            runtime.casper_write(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                value_ptr,
+                                value_size,
+                            )?;
                             Ok(())
                         },
                     )
@@ -531,35 +463,13 @@ impl Instance {
                         "env",
                         "casper_get_main_purse",
                         |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr: u32| {
-                            // let purse = caller.data_mut().casper_get_main_purse()?;
-
-                            // let purse_bytes =
-                            // purse.into_bytes().map_err(execution::Error::from)?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.get_main_purse,
-                                [dest_ptr],
-                            )?;
-                            let uref = caller.data_mut().casper_get_main_purse()?;
-
-                            // let data = mem.data(&caller).get_mut(uref_ptr).ok_or_else(||
-                            // Trap::new("bad ptr"))?;
-                            // uref.into_bytes().map_err(execution::Error::BytesRepr)
-                            // data.copy_from_slice(&?;
-                            // mem.data
-                            mem.write(&mut caller, dest_ptr as usize, &uref.into_bytes().unwrap())
-                                .map_err(|_| Trap::new("memory access"))?;
-
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            runtime.casper_get_main_purse(function_context, dest_ptr)?;
                             Ok(())
                         },
                     )
@@ -573,44 +483,16 @@ impl Instance {
                          name_ptr: u32,
                          name_size: u32,
                          size_ptr: u32| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.get_named_arg_size,
-                                [name_ptr, name_size, size_ptr],
-                            )?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
 
-                            let name = {
-                                let mut buffer = vec![0; name_size as usize];
-                                mem.read(&caller, name_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                // let name_bytes: Vec<u8> =
-                                // bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
-                                let name = String::from_utf8_lossy(buffer.as_slice()).to_string();
-                                name
-                            };
-
-                            let res = match caller.data_mut().casper_get_named_arg_size(name) {
-                                Ok(arg_size) => {
-                                    let bytes = arg_size.to_le_bytes();
-                                    mem.write(&mut caller, size_ptr as usize, &bytes)
-                                        .map_err(|_| Trap::new("memory access"))?;
-                                    Ok(())
-                                }
-                                Err(api_error) => Err(api_error),
-                            };
-
-                            // Ok(Some(RuntimeValue::I32(api_error::i32_from(res))))\
-                            Ok(api_error::i32_from(res))
+                            // let ret =
+                            let ret = runtime.casper_get_named_arg_size(function_context, name_ptr, name_size, size_ptr)?;
+                            Ok(api_error::i32_from(ret))
                         },
                     )
                     .unwrap();
@@ -624,61 +506,14 @@ impl Instance {
                          name_size: u32,
                          dest_ptr: u32,
                          dest_size: u32| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.get_named_arg,
-                                [name_ptr, name_size, dest_ptr, dest_size],
-                            )?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            let name = {
-                                let mut buffer = vec![0; name_size as usize];
-                                mem.read(&caller, name_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                // let name_bytes: Vec<u8> =
-                                // bytesrepr::deserialize(buffer).map_err(execution::Error::from)?;
-                                let name = String::from_utf8_lossy(buffer.as_slice()).to_string();
-                                name
-                            };
-
-                            let res = match caller.data_mut().casper_get_named_arg(&name) {
-                                Ok(arg) => {
-                                    // let bytes = arg_size.to_le_bytes();
-
-                                    if arg.inner_bytes().len() > dest_size as usize {
-                                        return Err(execution::Error::Revert(
-                                            ApiError::OutOfMemory,
-                                        )
-                                        .into());
-                                    }
-
-                                    // let memory = self.instance.interpreted_memory();
-                                    // if let Err(e) = memory.set(dest_ptr, )
-                                    // {
-                                    //     return Err(Error::Interpreter(e.into()).into());
-                                    // }
-                                    mem.write(
-                                        &mut caller,
-                                        dest_ptr as usize,
-                                        &arg.inner_bytes()[..dest_size as usize],
-                                    )
-                                    .map_err(|_| Trap::new("memory access"))?;
-                                    Ok(())
-                                }
-                                Err(api_error) => Err(api_error),
-                            };
-
-                            // Ok(Some(RuntimeValue::I32(api_error::i32_from(res))))\
-                            Ok(api_error::i32_from(res))
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            let ret = runtime.casper_get_named_arg(function_context, name_ptr, name_size, dest_ptr, dest_size)?;
+                            Ok(api_error::i32_from(ret))
                         },
                     )
                     .unwrap();
@@ -688,7 +523,6 @@ impl Instance {
                         "env",
                         "casper_transfer_to_account",
                         |mut caller: Caller<'_, &mut Runtime<R>>,
-
                          key_ptr: u32,
                          key_size: u32,
                          amount_ptr: u32,
@@ -696,74 +530,20 @@ impl Instance {
                          id_ptr: u32,
                          id_size: u32,
                          result_ptr: u32| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-                            let account_hash: AccountHash = {
-                                let mut buffer = vec![0; key_size as usize];
-                                mem.read(&caller, key_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                bytesrepr::deserialize(buffer).map_err(execution::Error::from)?
-                            };
-
-                            let amount: U512 = {
-                                let mut buffer = vec![0; amount_size as usize];
-                                mem.read(&caller, amount_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                bytesrepr::deserialize(buffer).map_err(execution::Error::from)?
-                            };
-
-                            let id: Option<u64> = {
-                                let mut buffer = vec![0; id_size as usize];
-                                mem.read(&caller, id_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                bytesrepr::deserialize(buffer).map_err(execution::Error::from)?
-                            };
-                            // let () =
-                            // Args::parse(args)?;
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.transfer_to_account,
-                                [
-                                    key_ptr,
-                                    key_size,
-                                    amount_ptr,
-                                    amount_size,
-                                    id_ptr,
-                                    id_size,
-                                    result_ptr,
-                                ],
-                            )?;
-
-                            let ret = match caller.data_mut().casper_transfer_to_account(
-                                account_hash,
-                                amount,
-                                id,
-                            )? {
-                                Ok(transferred_to) => {
-                                    let result_value: u32 = transferred_to as u32;
-                                    let result_value_bytes = result_value.to_le_bytes();
-                                    // let bytes = arg_size.to_le_bytes();
-                                    mem.write(
-                                        &mut caller,
-                                        result_ptr as usize,
-                                        &result_value_bytes,
-                                    )
-                                    .map_err(|_| Trap::new("memory access"))?;
-                                    Ok(())
-                                }
-                                Err(api_error) => Err(api_error),
-                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            let ret = runtime.casper_transfer_to_account(function_context, key_ptr,
+                                key_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                                result_ptr)?;
                             Ok(api_error::i32_from(ret))
-                            // Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
-                            // todo!("transfer")
-                            // Ok(0)
                         },
                     )
                     .unwrap();
@@ -777,52 +557,20 @@ impl Instance {
                          name_size,
                          key_ptr,
                          key_size| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            // let () = Args::parse(args)?;
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.put_key,
-                                [name_ptr, name_size, key_ptr, key_size],
-                            )?;
-
-                            // caller.data_mut().charge_host_function_call(
-                            //     &host_function_costs.write,
-                            //     [name_ptr, name_size, key_ptr, key_size],
-                            // )?;
-                            // let key = self.key_from_mem(key_ptr, key_size)?;
-                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
 
-                            let name = {
-                                let mut buffer = vec![0; name_size as usize];
-                                mem.read(&caller, name_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let name: String = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                name
-                            };
+                            runtime.casper_put_key(function_context,
+                                name_ptr,
+                                name_size,
+                                key_ptr,
+                                key_size)?;
 
-                            let key = {
-                                let mut buffer = vec![0; key_size as usize];
-                                mem.read(&caller, key_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let key: Key = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                key
-                            };
-
-                            let mut runtime = caller.data_mut();
-                            // runtime.casper_write(key, cl_value)?;
-                            runtime.casper_put_key(&name, key)?;
-
+                                
                             Ok(())
                         },
                     )
@@ -838,21 +586,9 @@ impl Instance {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            let text = {
-                                let mut buffer = vec![0; text_size as usize];
-                                mem.read(&caller, text_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let name: String = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                name
-                            };
-
-                            let mut runtime = caller.data_mut();
-                            // runtime.casper_write(key, cl_value)?;
-                            runtime.casper_print(&text)?;
-                            // eprintln!("OUT: {}", text);
-
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            runtime.casper_print(function_context, text_ptr, text_size)?;
                             Ok(())
                         },
                     )
@@ -871,80 +607,23 @@ impl Instance {
                          amount_size,
                          id_ptr,
                          id_size| {
-                            let host_function_costs = caller
-                                .data_mut()
-                                .wasm_engine()
-                                .wasm_config()
-                                .take_host_function_costs();
-
-                            // let () = Args::parse(args)?;
-                            caller.data_mut().charge_host_function_call(
-                                &host_function_costs.transfer_from_purse_to_purse,
-                                [
-                                    source_ptr,
-                                    source_size,
-                                    target_ptr,
-                                    target_size,
-                                    amount_ptr,
-                                    amount_size,
-                                    id_ptr,
-                                    id_size,
-                                ],
-                            )?;
-
-                            // caller.data_mut().charge_host_function_call(
-                            //     &host_function_costs.write,
-                            //     [name_ptr, name_size, key_ptr, key_size],
-                            // )?;
-                            // let key = self.key_from_mem(key_ptr, key_size)?;
-                            // let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
-
                             let mem = match caller.get_export("memory") {
                                 Some(Extern::Memory(mem)) => mem,
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-
-                            let source: URef = {
-                                let mut buffer = vec![0; source_size as usize];
-                                mem.read(&caller, source_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let value = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                value
-                            };
-
-                            let target: URef = {
-                                let mut buffer = vec![0; target_size as usize];
-                                mem.read(&caller, target_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let value = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                value
-                            };
-
-                            let amount: U512 = {
-                                let mut buffer = vec![0; amount_size as usize];
-                                mem.read(&caller, amount_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let value = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                value
-                            };
-                            let id: Option<u64> = {
-                                let mut buffer = vec![0; id_size as usize];
-                                mem.read(&caller, id_ptr as usize, &mut buffer)
-                                    .map_err(|e| Trap::new("memory access"))?;
-                                let value = bytesrepr::deserialize(buffer)
-                                    .map_err(execution::Error::from)?;
-                                value
-                            };
-                            let mut runtime = caller.data_mut();
-                            // runtime.casper_write(key, cl_value)?;
-                            let ret = runtime
-                                .casper_transfer_from_purse_to_purse(source, target, amount, id)?;
-
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            let ret = runtime.casper_transfer_from_purse_to_purse(function_context,
+                                source_ptr,
+                         source_size,
+                         target_ptr,
+                         target_size,
+                         amount_ptr,
+                         amount_size,
+                         id_ptr,
+                         id_size)?;
                             Ok(api_error::i32_from(ret))
-                        },
+                         }
                     )
                     .unwrap();
 

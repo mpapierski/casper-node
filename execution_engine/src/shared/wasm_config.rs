@@ -74,6 +74,11 @@ impl WasmConfig {
         self.host_function_costs
     }
 
+    /// Get a reference to the host function costs.
+    pub fn host_function_costs(&self) -> &HostFunctionCosts {
+        &self.host_function_costs
+    }
+
     /// Get a reference to the wasm config's execution mode.
     pub fn execution_mode(&self) -> &ExecutionMode {
         &self.execution_mode
