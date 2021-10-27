@@ -333,11 +333,6 @@ impl Instance {
                 Ok(result)
             }
             Instance::Compiled(mut compiled_module) => {
-                struct WasmtimeRuntime {
-                    casper_runtime: Runtime,
-                    memory: Memory,
-                };
-
                 let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
 
                 let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
@@ -914,9 +909,6 @@ impl Instance {
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
                     .expect("should instantiate");
-
-                let memory = instance.get_export(&mut store, "memory");
-                store.data_mut().memory = memory;
 
                     let exported_func = instance
                     .get_typed_func::<(), (), _>(&mut store, func_name)

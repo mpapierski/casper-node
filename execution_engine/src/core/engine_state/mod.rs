@@ -150,7 +150,8 @@ where
 
     /// Updates current engine config with a new instance.
     pub fn update_config(&mut self, new_config: EngineConfig) {
-        self.config = new_config
+        self.config = new_config;
+        self.executor = Executor::new(new_config);
     }
 
     /// Commits genesis process.

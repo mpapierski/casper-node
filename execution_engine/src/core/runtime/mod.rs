@@ -1141,7 +1141,7 @@ where
         }
 
         // For all practical purposes following cast is assumed to be safe
-        let bytes_size: u32 = key_bytes.len().try_into().ok_or(OutOfMemory);
+        let bytes_size: u32 = key_bytes.len() as u32;
         let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
         if let Err(error) = self.memory().set(bytes_written_ptr, &size_bytes) {
             return Err(Error::Interpreter(error.into()).into());
@@ -3463,7 +3463,7 @@ where
 
     pub(crate) fn casper_get_named_arg_size(
         &mut self,
-        // mut context: impl FunctionContext,
+        mut context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
         size_ptr: u32,
