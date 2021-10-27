@@ -46,7 +46,7 @@ impl PauseState {
     }
 }
 
-pub(super) struct ScopedInstrumenter {
+pub(crate) struct ScopedInstrumenter {
     start: Instant,
     pause_state: PauseState,
     function_index: FunctionIndex,
@@ -54,7 +54,7 @@ pub(super) struct ScopedInstrumenter {
 }
 
 impl ScopedInstrumenter {
-    pub(super) fn new(function_index: FunctionIndex) -> Self {
+    pub(crate) fn new(function_index: FunctionIndex) -> Self {
         ScopedInstrumenter {
             start: Instant::now(),
             pause_state: PauseState::new(),
@@ -63,17 +63,17 @@ impl ScopedInstrumenter {
         }
     }
 
-    pub(super) fn add_property<T: ToString>(&mut self, key: &'static str, value: T) {
+    pub fn add_property<T: ToString>(&mut self, key: &'static str, value: T) {
         assert!(self.properties.insert(key, value.to_string()).is_none());
     }
 
     /// Can be called once only to effectively pause the running timer.  `unpause` can likewise be
     /// called once if the timer has already been paused.
-    pub(super) fn pause(&mut self) {
+    pub fn pause(&mut self) {
         self.pause_state.activate();
     }
 
-    pub(super) fn unpause(&mut self) {
+    pub fn unpause(&mut self) {
         self.pause_state.complete();
     }
 

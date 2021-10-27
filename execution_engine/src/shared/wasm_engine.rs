@@ -3,15 +3,19 @@ use casper_types::{
     account::AccountHash,
     api_error,
     bytesrepr::{self, Bytes, FromBytes, ToBytes},
-    ApiError, CLValue, Gas, Key, ProtocolVersion, StoredValue, URef, U512,
+    contracts::ContractPackageStatus,
+    ApiError, CLValue, ContractPackageHash, ContractVersion, Gas, Key, ProtocolVersion,
+    StoredValue, URef, U512,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
+use once_cell::sync::Lazy;
 use parity_wasm::elements::{self, MemorySection, Section};
 use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
+    borrow::Cow,
     cell::{Cell, RefCell},
     collections::{hash_map::Entry, HashMap},
     error::Error,
@@ -20,6 +24,7 @@ use std::{
     io::Write,
     path::Path,
     rc::Rc,
+    sync::{Mutex, Once},
     time::Instant,
 };
 use thiserror::Error;
@@ -36,8 +41,14 @@ use wasmtime::{
 use crate::{
     core::{
         execution,
-        resolvers::{create_module_resolver, memory_resolver::MemoryResolver},
-        runtime::Runtime,
+        resolvers::{
+            create_module_resolver, memory_resolver::MemoryResolver,
+            v1_function_index::FunctionIndex,
+        },
+        runtime::{
+            scoped_instrumenter::{self, ScopedInstrumenter},
+            Runtime,
+        },
     },
     storage::global_state::StateReader,
 };
@@ -89,16 +100,23 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 /// can be made later
 #[derive(Clone)]
 pub enum Module {
+    /// TODO: We might not need it anymore. We use "do nothing" bytes for replacing wasm modules
+    Noop,
     Interpreted(WasmiModule),
-    Compiled(Vec<u8>), /* AOT
-                        * Compiled(wasmtime::Module), */
+    Compiled {
+        /// Used to carry on original Wasm module for easy further processing.
+        wasmi_module: WasmiModule,
+        /// Ahead of time compiled artifact.
+        compiled_artifact: Vec<u8>,
+    },
 }
 
 impl fmt::Debug for Module {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Noop => f.debug_tuple("Noop").finish(),
             Self::Interpreted(arg0) => f.debug_tuple("Interpreted").field(arg0).finish(),
-            Self::Compiled(arg0) => f.debug_tuple("Compiled").finish(),
+            Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
         }
     }
 }
@@ -118,10 +136,9 @@ impl Module {
     /// appropriate [`WasmEngine`] method.
     pub fn into_interpreted(self) -> WasmiModule {
         match self {
+            Module::Noop => unimplemented!("Attempting to get interpreted module from noop"),
             Module::Interpreted(parity_wasm) => parity_wasm,
-            Module::Compiled(_) => {
-                todo!("serialize compiled module")
-            }
+            Module::Compiled { wasmi_module, .. } => wasmi_module,
         }
     }
 
@@ -221,21 +238,29 @@ impl Into<wasmi::RuntimeValue> for RuntimeValue {
 /// Warmed up instance of a wasm module used for execution.
 #[derive(Clone)]
 pub enum Instance {
+    // TODO: We might not need it. Actually trying to execute a noop is a programming error.
+    Noop,
     Interpreted(ModuleRef, MemoryRef),
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
-    Compiled(wasmtime::Module),
+    Compiled {
+        /// Raw Wasmi module used only for further processing.
+        module: WasmiModule,
+        /// This is compiled module used for execution.
+        compiled_module: wasmtime::Module,
+    },
 }
 
 impl fmt::Debug for Instance {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Noop => f.debug_tuple("Noop").finish(),
             Self::Interpreted(arg0, arg1) => f
                 .debug_tuple("Interpreted")
                 .field(arg0)
                 .field(arg1)
                 .finish(),
-            Self::Compiled(_arg0) => f.debug_tuple("Compiled").finish(),
+            Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
         }
     }
 }
@@ -305,8 +330,9 @@ impl<'a> FunctionContext for WasmtimeAdapter<'a> {
 impl Instance {
     pub fn interpreted_memory(&self) -> MemoryRef {
         match self {
+            Instance::Noop => unimplemented!("Unable to get interpreted memory from noop module"),
             Instance::Interpreted(_, memory_ref) => memory_ref.clone(),
-            Instance::Compiled(_) => unreachable!("available only from wasmi externals"),
+            Instance::Compiled { .. } => unreachable!("available only from wasmi externals"),
         }
     }
     /// Invokes exported function
@@ -322,6 +348,9 @@ impl Instance {
         R::Error: Into<execution::Error>,
     {
         match self.clone() {
+            Instance::Noop => {
+                unimplemented!("Unable to execute export {} on noop instance", func_name)
+            }
             Instance::Interpreted(module_ref, memory_ref) => {
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
                     args.into_iter().map(|value| value.into()).collect();
@@ -332,7 +361,10 @@ impl Instance {
                 let result = wasmi_result.map(RuntimeValue::from);
                 Ok(result)
             }
-            Instance::Compiled(mut compiled_module) => {
+            Instance::Compiled {
+                module,
+                mut compiled_module,
+            } => {
                 let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
 
                 let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
@@ -365,21 +397,33 @@ impl Instance {
                     .define("env", "memory", wasmtime::Extern::from(memory))
                     .unwrap();
 
+                // let mem_ref = &memory;
+                let mut mem_ref: Option<Memory> = None;
+
                 linker
                     .func_wrap(
                         "env",
                         "casper_read_value",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
-                         key_ptr: u32,
-                         key_size: u32,
-                         output_size_ptr: u32| {
+                        move |mut caller: Caller<'_, &mut Runtime<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              output_size_ptr: u32| {
                             let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
+                                Some(Extern::Memory(mem)) => Some(mem),
+                                Some(_) => return Err(Trap::new("failed to find host memory")),
+                                None => None,
                             };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mem_ref = mem.as_ref().or(mem_ref.as_ref()).ok_or_else(|| {
+                                Trap::new("failed to find host memory in casper_read_value")
+                            })?;
+                            let (data, runtime) = mem_ref.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime.read(function_context, key_ptr, key_size, output_size_ptr)?;
+                            let ret = runtime.read(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                output_size_ptr,
+                            )?;
                             Ok(api_error::i32_from(ret))
                         },
                     )
@@ -389,16 +433,19 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_add",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
-                         key_ptr: u32,
-                         key_size: u32,
-                         value_ptr: u32,
-                         value_size: u32| {
+                        move |mut caller: Caller<'_, &mut Runtime<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              value_ptr: u32,
+                              value_size: u32| {
                             let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
+                                Some(Extern::Memory(mem)) => Some(mem),
                                 _ => return Err(Trap::new("failed to find host memory")),
                             };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mem_ref = mem.as_ref().or(mem_ref.as_ref()).ok_or_else(|| {
+                                Trap::new("failed to find host memory in casper_read_value")
+                            })?;
+                            let (data, runtime) = mem_ref.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
                             runtime.casper_add(
                                 function_context,
@@ -435,7 +482,8 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime.is_valid_uref(function_context, uref_ptr, uref_size)?;
+                            let ret =
+                                runtime.is_valid_uref(function_context, uref_ptr, uref_size)?;
                             Ok(i32::from(ret))
                         },
                     )
@@ -530,8 +578,11 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime
-                                .set_action_threshold(function_context, permission_level, permission_threshold as u8)?;
+                            let ret = runtime.set_action_threshold(
+                                function_context,
+                                permission_level,
+                                permission_threshold as u8,
+                            )?;
                             Ok(ret)
                         },
                     )
@@ -906,11 +957,520 @@ impl Instance {
                     )
                     .unwrap();
 
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_transfer_from_purse_to_account",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         source_ptr,
+                         source_size,
+                         key_ptr,
+                         key_size,
+                         amount_ptr,
+                         amount_size,
+                         id_ptr,
+                         id_size,
+                         result_ptr| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+                            let ret = runtime.casper_transfer_from_purse_to_account(
+                                function_context,
+                                source_ptr,
+                                source_size,
+                                key_ptr,
+                                key_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                                result_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_balance",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         ptr: u32,
+                         ptr_size: u32,
+                         output_size_ptr: u32| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.get_balance,
+                                [ptr, ptr_size, output_size_ptr],
+                            )?;
+                            let ret = runtime.get_balance_host_buffer(
+                                function_context,
+                                ptr,
+                                ptr_size as usize,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_read_host_buffer",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         dest_ptr,
+                         dest_size,
+                         bytes_written_ptr| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.read_host_buffer,
+                                [dest_ptr, dest_size, bytes_written_ptr],
+                            )?;
+                            // scoped_instrumenter.add_property("dest_size", dest_size);
+                            let ret = runtime.read_host_buffer(
+                                function_context,
+                                dest_ptr,
+                                dest_size as usize,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_system_contract",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         system_contract_index,
+                         dest_ptr,
+                         dest_size| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.get_system_contract,
+                                [system_contract_index, dest_ptr, dest_size],
+                            )?;
+                            let ret = runtime.get_system_contract(
+                                function_context,
+                                system_contract_index,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_load_named_keys",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         total_keys_ptr,
+                         result_size_ptr| {
+                            let mut scoped_instrumenter =
+                                ScopedInstrumenter::new(FunctionIndex::LoadNamedKeysFuncIndex);
+
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.load_named_keys,
+                                [total_keys_ptr, result_size_ptr],
+                            )?;
+                            let ret = runtime.load_named_keys(
+                                function_context,
+                                total_keys_ptr,
+                                result_size_ptr,
+                                &mut scoped_instrumenter,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_create_contract_package_at_hash",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         hash_dest_ptr,
+                         access_dest_ptr,
+                         is_locked: u32| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.create_contract_package_at_hash,
+                                [hash_dest_ptr, access_dest_ptr],
+                            )?;
+                            let package_status = ContractPackageStatus::new(is_locked != 0);
+                            let (hash_addr, access_addr) =
+                                runtime.create_contract_package_at_hash(package_status)?;
+
+                            runtime.function_address(
+                                &mut function_context,
+                                hash_addr,
+                                hash_dest_ptr,
+                            )?;
+                            runtime.function_address(
+                                &mut function_context,
+                                access_addr,
+                                access_dest_ptr,
+                            )?;
+
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_create_contract_user_group",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         package_key_ptr: u32,
+                         package_key_size: u32,
+                         label_ptr: u32,
+                         label_size: u32,
+                         num_new_urefs: u32,
+                         existing_urefs_ptr: u32,
+                         existing_urefs_size: u32,
+                         output_size_ptr: u32| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let ret = runtime.casper_create_contract_user_group(
+                                function_context,
+                                package_key_ptr,
+                                package_key_size,
+                                label_ptr,
+                                label_size,
+                                num_new_urefs,
+                                existing_urefs_ptr,
+                                existing_urefs_size,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_provision_contract_user_group_uref",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         package_ptr,
+                         package_size,
+                         label_ptr,
+                         label_size,
+                         value_size_ptr| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.provision_contract_user_group_uref,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    value_size_ptr,
+                                ],
+                            )?;
+                            let ret = runtime.provision_contract_user_group_uref(
+                                function_context,
+                                package_ptr,
+                                package_size,
+                                label_ptr,
+                                label_size,
+                                value_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_contract_user_group",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         package_key_ptr,
+                         package_key_size,
+                         label_ptr,
+                         label_size| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let ret = runtime.casper_remove_contract_user_group(
+                                function_context,
+                                package_key_ptr,
+                                package_key_size,
+                                label_ptr,
+                                label_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_contract_user_group_urefs",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         package_ptr,
+                         package_size,
+                         label_ptr,
+                         label_size,
+                         urefs_ptr,
+                         urefs_size| {
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.remove_contract_user_group_urefs,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    urefs_ptr,
+                                    urefs_size,
+                                ],
+                            )?;
+                            let ret = runtime.remove_contract_user_group_urefs(
+                                function_context,
+                                package_ptr,
+                                package_size,
+                                label_ptr,
+                                label_size,
+                                urefs_ptr,
+                                urefs_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_call_versioned_contract",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         contract_package_hash_ptr,
+                         contract_package_hash_size,
+                         contract_version_ptr,
+                         contract_package_size,
+                         entry_point_name_ptr,
+                         entry_point_name_size,
+                         args_ptr,
+                         args_size,
+                         result_size_ptr| {
+                            let mut scoped_instrumenter =
+                                ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.call_versioned_contract,
+                                [
+                                    contract_package_hash_ptr,
+                                    contract_package_hash_size,
+                                    contract_version_ptr,
+                                    contract_package_size,
+                                    entry_point_name_ptr,
+                                    entry_point_name_size,
+                                    args_ptr,
+                                    args_size,
+                                    result_size_ptr,
+                                ],
+                            )?;
+
+                            // TODO: Move
+
+                            let contract_package_hash: ContractPackageHash = {
+                                let contract_package_hash_bytes = function_context
+                                    .memory_read(
+                                        contract_package_hash_ptr,
+                                        contract_package_hash_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_package_hash_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let contract_version: Option<ContractVersion> = {
+                                let contract_version_bytes = function_context
+                                    .memory_read(
+                                        contract_version_ptr,
+                                        contract_package_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_version_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let entry_point_name: String = {
+                                let entry_point_name_bytes = function_context
+                                    .memory_read(
+                                        entry_point_name_ptr,
+                                        entry_point_name_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(entry_point_name_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let args_bytes: Vec<u8> = function_context
+                                .memory_read(args_ptr, args_size as usize)
+                                .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+
+                            let ret = runtime.call_versioned_contract_host_buffer(
+                                function_context,
+                                contract_package_hash,
+                                contract_version,
+                                entry_point_name,
+                                args_bytes,
+                                result_size_ptr,
+                                &mut scoped_instrumenter,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add_contract_version",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         contract_package_hash_ptr,
+                         contract_package_hash_size,
+                         version_ptr,
+                         entry_points_ptr,
+                         entry_points_size,
+                         named_keys_ptr,
+                         named_keys_size,
+                         output_ptr,
+                         output_size,
+                         bytes_written_ptr| {
+                            let mut scoped_instrumenter =
+                                ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
+                            let mem = match caller.get_export("memory") {
+                                Some(Extern::Memory(mem)) => mem,
+                                _ => return Err(Trap::new("failed to find host memory")),
+                            };
+                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
+                            let mut function_context = WasmtimeAdapter { data };
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            let ret = runtime.casper_add_contract_version(
+                                function_context,
+                                contract_package_hash_ptr,
+                                contract_package_hash_size,
+                                version_ptr,
+                                entry_points_ptr,
+                                entry_points_size,
+                                named_keys_ptr,
+                                named_keys_size,
+                                output_ptr,
+                                output_size,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
                     .expect("should instantiate");
 
-                    let exported_func = instance
+                match instance.get_export(&mut store, "memory") {
+                    Some(Extern::Memory(mem)) => mem_ref = Some(mem),
+                    Some(_) | None => {}
+                };
+
+                let exported_func = instance
                     .get_typed_func::<(), (), _>(&mut store, func_name)
                     .expect("should get typed func");
                 exported_func
@@ -1025,14 +1585,21 @@ directory = \"{cache_dir}\"
     Ok(())
 }
 
+// TODO: There are some issues with multithreaded test runner and how we set up the cache. We should
+// figure out better way to deal with this initialization.
+static GLOBAL_CACHE_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
 fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     let mut config = wasmtime::Config::new();
 
-    if wasm_config.execution_mode == ExecutionMode::Compiled {
-        // This should solve nondeterministic issue with access to the directory when running EE in non-compiled mode
+    // This should solve nondeterministic issue with access to the directory when running EE in
+    // non-compiled mode
+    {
+        let _global_cache_guard = GLOBAL_CACHE_MUTEX.lock().unwrap();
         setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
-        .expect("should setup wasmtime cache path");
+            .expect("should setup wasmtime cache path");
     }
+
     config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
     // config.async_support(false);
     config.wasm_reference_types(false);
@@ -1092,32 +1659,34 @@ impl WasmEngine {
         )
         .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
 
+        if memory_section(&module).is_none() {
+            // `pwasm_utils::externalize_mem` expects a memory section to exist in the
+            // module, and panics otherwise.
+            return Err(PreprocessingError::MissingMemorySection);
+        }
+
+        let module = pwasm_utils::externalize_mem(module, None, self.wasm_config.max_memory);
+
+        let module = stack_height::inject_limiter(module, self.wasm_config.max_stack_height)
+            .map_err(|_| PreprocessingError::StackLimiter)?;
+
         match self.execution_mode {
-            ExecutionMode::Interpreted => {
-                if memory_section(&module).is_none() {
-                    // `pwasm_utils::externalize_mem` expects a memory section to exist in the
-                    // module, and panics otherwise.
-                    return Err(PreprocessingError::MissingMemorySection);
-                }
-                let module =
-                    pwasm_utils::externalize_mem(module, None, self.wasm_config.max_memory);
-
-                let module =
-                    stack_height::inject_limiter(module, self.wasm_config.max_stack_height)
-                        .map_err(|_| PreprocessingError::StackLimiter)?;
-
-                Ok(module.into())
-            }
+            ExecutionMode::Interpreted => Ok(module.into()),
             ExecutionMode::Compiled => {
+                // TODO: Gas injected module is used here but we might want to use `module` instead
+                // with other preprocessing done.
                 let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module).expect("preprocessed wasm to bytes");
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
                 // aot compile
-                let precompiled_bytes = self.precompile(module_bytes).unwrap();
+                let precompiled_bytes = self.precompile(&preprocessed_wasm_bytes).unwrap();
                 // let wasmtime_module =
                 //     wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
                 //         .expect("should process");
-                Ok(Module::Compiled(precompiled_bytes.to_owned()))
+                Ok(Module::Compiled {
+                    wasmi_module: module,
+                    compiled_artifact: precompiled_bytes.to_owned(),
+                })
 
                 // let compiled_module =
                 //             wasmtime::Module::new(&self.compiled_engine,
@@ -1136,18 +1705,19 @@ impl WasmEngine {
 
     /// Creates module specific for execution mode.
     pub fn module_from_bytes(&self, wasm_bytes: &[u8]) -> Result<Module, PreprocessingError> {
+        let parity_module = deserialize_interpreted(wasm_bytes)?;
+
         let module = match self.execution_mode {
-            ExecutionMode::Interpreted => {
-                let parity_module = parity_wasm::deserialize_buffer::<WasmiModule>(wasm_bytes)
-                    .map_err(PreprocessingError::from)?;
-                Module::Interpreted(parity_module)
-            }
+            ExecutionMode::Interpreted => Module::Interpreted(parity_module),
             ExecutionMode::Compiled => {
                 // aot compile
                 let precompiled_bytes = self.precompile(wasm_bytes).unwrap();
                 // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
                 // let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
-                Module::Compiled(precompiled_bytes.to_owned())
+                Module::Compiled {
+                    wasmi_module: parity_module,
+                    compiled_artifact: precompiled_bytes.to_owned(),
+                }
                 // let compiled_module =
                 //             wasmtime::Module::new(&self.compiled_engine,
                 // &preprocessed_wasm_bytes)                 .map_err(|e|
@@ -1181,6 +1751,7 @@ impl WasmEngine {
     ) -> Result<Instance, execution::Error> {
         // match wasm_engine.execution_mode() {
         match wasm_module {
+            Module::Noop => Ok(Instance::Noop),
             Module::Interpreted(wasmi_module) => {
                 // let wasmi_module = wasm_module.try_into_interpreted().expect("expected
                 // interpreted wasm module");
@@ -1196,7 +1767,10 @@ impl WasmEngine {
                 let memory = resolver.memory_ref()?;
                 Ok(Instance::Interpreted(instance, memory))
             }
-            Module::Compiled(compiled_module) => {
+            Module::Compiled {
+                wasmi_module,
+                compiled_artifact,
+            } => {
                 // aot compile
                 // let precompiled_bytes =
                 // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
@@ -1207,8 +1781,11 @@ impl WasmEngine {
                 // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
                 // &[]).expect("should create compiled module");
 
-                let compiled_module = self.deserialize_compiled(&compiled_module)?;
-                Ok(Instance::Compiled(compiled_module))
+                let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+                Ok(Instance::Compiled {
+                    module: wasmi_module,
+                    compiled_module,
+                })
             }
         }
     }
