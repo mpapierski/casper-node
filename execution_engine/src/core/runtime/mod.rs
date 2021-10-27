@@ -1099,15 +1099,18 @@ where
         }
     }
 
-    fn is_valid_uref(&mut self, uref_ptr: u32, uref_size: u32) -> Result<bool, Error> {
-        let bytes = self.bytes_from_mem(uref_ptr, uref_size as usize)?;
-        let uref: URef = bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?;
+    pub(crate) fn is_valid_uref(&mut self, context: impl FunctionContext, uref_ptr: u32, uref_size: u32) -> Result<bool, Error> {
+        let uref: URef = {
+            let uref_bytes = context.memory_read(uref_ptr, uref_size as usize)?;
+            bytesrepr::deserialize(uref_bytes).map_err(Error::BytesRepr)?
+        };
         Ok(self.context.validate_uref(&uref).is_ok())
     }
 
     /// Load the uref known by the given name into the Wasm memory
-    fn load_key(
+    pub(crate) fn load_key(
         &mut self,
+        context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
         output_ptr: u32,
@@ -1138,7 +1141,7 @@ where
         }
 
         // For all practical purposes following cast is assumed to be safe
-        let bytes_size = key_bytes.len() as u32;
+        let bytes_size: u32 = key_bytes.len().try_into().ok_or(OutOfMemory);
         let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
         if let Err(error) = self.memory().set(bytes_written_ptr, &size_bytes) {
             return Err(Error::Interpreter(error.into()).into());
@@ -1147,7 +1150,7 @@ where
         Ok(Ok(()))
     }
 
-    fn has_key(&mut self, name_ptr: u32, name_size: u32) -> Result<i32, Error> {
+    pub(crate) fn has_key(&mut self, context: impl FunctionContext, name_ptr: u32, name_size: u32) -> Result<i32, Error> {
         let name = self.string_from_mem(name_ptr, name_size)?;
         if self.context.named_keys_contains_key(&name) {
             Ok(0)
@@ -1181,8 +1184,11 @@ where
         self.context.put_key(&name, key).map_err(Into::into)
     }
 
-    fn remove_key(&mut self, name_ptr: u32, name_size: u32) -> Result<(), Error> {
-        let name = self.string_from_mem(name_ptr, name_size)?;
+    pub(crate) fn remove_key(&mut self, context: impl FunctionContext, name_ptr: u32, name_size: u32) -> Result<(), Error> {
+        let name: String = {
+            let name_bytes = context.memory_read(name_ptr, name_size as usize)?;
+            bytesrepr::deserialize(name_bytes)?
+        };
         self.context.remove_key(&name)?;
         Ok(())
     }
@@ -1203,7 +1209,7 @@ where
 
     /// Writes caller (deploy) account public key to dest_ptr in the Wasm
     /// memory.
-    fn get_caller(&mut self, output_size: u32) -> Result<Result<(), ApiError>, Error> {
+    pub(crate) fn get_caller(&mut self, mut context: impl FunctionContext, output_size: u32) -> Result<Result<(), ApiError>, Error> {
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -1218,7 +1224,7 @@ where
 
         // Write output
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(output_size, &output_size_bytes) {
+        if let Err(error) = context.memory_write(output_size, &output_size_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
         Ok(Ok(()))
@@ -1251,14 +1257,13 @@ where
     }
 
     /// Writes current blocktime to dest_ptr in Wasm memory.
-    fn get_blocktime(&self, dest_ptr: u32) -> Result<(), Error> {
+    pub(crate) fn get_blocktime(&self, mut context: impl FunctionContext, dest_ptr: u32) -> Result<(), Error> {
         let blocktime = self
             .context
             .get_blocktime()
             .into_bytes()
             .map_err(Error::BytesRepr)?;
-        self.memory()
-            .set(dest_ptr, &blocktime)
+        context.memory_write(dest_ptr, &blocktime)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
@@ -2791,15 +2796,22 @@ where
     }
 
     /// Adds `value` to the cell that `key` points at.
-    fn add(
+    pub(crate) fn casper_add(
         &mut self,
+        mut context: impl FunctionContext,
         key_ptr: u32,
         key_size: u32,
         value_ptr: u32,
         value_size: u32,
     ) -> Result<(), Error> {
-        let key = self.key_from_mem(key_ptr, key_size)?;
-        let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+        let key: Key = {
+            let key_bytes = context.memory_read(key_ptr, key_size as usize)?;
+            bytesrepr::deserialize(key_bytes)?
+        };
+        let cl_value: CLValue = {
+            let cl_value_bytes = context.memory_read(value_ptr, value_size as usize)?;
+            bytesrepr::deserialize(cl_value_bytes)?
+        };
         self.context
             .metered_add_gs(key, cl_value)
             .map_err(Into::into)
@@ -2810,8 +2822,9 @@ where
     /// module exports. If contract wants to pass data to the host, it has
     /// to tell it [the host] where this data lives in the exported memory
     /// (pass its pointer and length).
-    fn read(
+    pub(crate) fn read(
         &mut self,
+      mut  context: impl FunctionContext,
         key_ptr: u32,
         key_size: u32,
         output_size_ptr: u32,
@@ -2821,7 +2834,11 @@ where
             return Ok(Err(ApiError::HostBufferFull));
         }
 
-        let key = self.key_from_mem(key_ptr, key_size)?;
+        let key: Key = {
+            // self.memory.get ->
+            let key_bytes = context.memory_read(key_ptr, key_size as usize)?;
+            bytesrepr::deserialize(key_bytes)?
+        };
         let cl_value = match self.context.read_gs(&key)? {
             Some(stored_value) => CLValue::try_from(stored_value).map_err(Error::TypeMismatch)?,
             None => return Ok(Err(ApiError::ValueNotFound)),
@@ -2833,22 +2850,23 @@ where
         }
 
         let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(output_size_ptr, &value_bytes) {
+        if let Err(error) = context.memory_write(output_size_ptr, &value_bytes) {
             return Err(Error::Interpreter(error.into()).into());
         }
 
         Ok(Ok(()))
     }
 
-    fn add_associated_key(
+    pub(crate) fn add_associated_key(
         &mut self,
+        context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
     ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
-            let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
+            let source_serialized = context.memory_read(account_hash_ptr, account_hash_size as usize)?;
             // Account hash deserialized
             let source: AccountHash =
                 bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
@@ -2868,14 +2886,15 @@ where
         }
     }
 
-    fn remove_associated_key(
+    pub(crate) fn remove_associated_key(
         &mut self,
+        context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
     ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
-            let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
+            let source_serialized = context.memory_read(account_hash_ptr, account_hash_size as usize)?;
             // Account hash deserialized
             let source: AccountHash =
                 bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
@@ -2888,15 +2907,16 @@ where
         }
     }
 
-    fn update_associated_key(
+    pub(crate) fn update_associated_key(
         &mut self,
+        context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
     ) -> Result<i32, Error> {
         let account_hash = {
             // Account hash as serialized bytes
-            let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
+            let source_serialized = context.memory_read(account_hash_ptr, account_hash_size)?;
             // Account hash deserialized
             let source: AccountHash =
                 bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
@@ -2916,8 +2936,9 @@ where
         }
     }
 
-    fn set_action_threshold(
+    pub(crate) fn set_action_threshold(
         &mut self,
+        context: impl FunctionContext,
         action_type_value: u32,
         threshold_value: u8,
     ) -> Result<i32, Error> {
@@ -3442,7 +3463,7 @@ where
 
     pub(crate) fn casper_get_named_arg_size(
         &mut self,
-        mut context: impl FunctionContext,
+        // mut context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
         size_ptr: u32,

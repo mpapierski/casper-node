@@ -69,9 +69,9 @@ where
                 let (key_ptr, key_size, output_size_ptr) = Args::parse(args)?;
                 self.charge_host_function_call(
                     &host_function_costs.read_value,
-                    [key_ptr, key_size, output_size],
+                    [key_ptr, key_size, output_size_ptr],
                 )?;
-                let ret = self.read(key_ptr, key_size, output_size_ptr)?;
+                let ret = self.read(function_context, key_ptr, key_size, output_size_ptr)?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -112,7 +112,7 @@ where
                     &host_function_costs.add,
                     [key_ptr, key_size, value_ptr, value_size],
                 )?;
-                self.add(key_ptr, key_size, value_ptr, value_size)?;
+                self.casper_add(function_context, key_ptr, key_size, value_ptr, value_size)?;
                 Ok(None)
             }
 
@@ -151,6 +151,7 @@ where
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size);
                 let ret = self.load_key(
+                    function_context,
                     name_ptr,
                     name_size,
                     output_ptr,
@@ -169,7 +170,7 @@ where
                     [name_ptr, name_size],
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size);
-                let result = self.has_key(name_ptr, name_size)?;
+                let result = self.has_key(function_context, name_ptr, name_size)?;
                 Ok(Some(RuntimeValue::I32(result)))
             }
 
@@ -193,7 +194,7 @@ where
                     [name_ptr, name_size],
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size);
-                self.remove_key(name_ptr, name_size)?;
+                self.remove_key(function_context, name_ptr, name_size)?;
                 Ok(None)
             }
 
@@ -201,7 +202,7 @@ where
                 // args(0) = pointer where a size of serialized bytes will be stored
                 let (output_size,) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.get_caller, [output_size])?;
-                let ret = self.get_caller(output_size)?;
+                let ret = self.get_caller(function_context, output_size)?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -209,7 +210,7 @@ where
                 // args(0) = pointer to Wasm memory where to write.
                 let (dest_ptr,) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.get_blocktime, [dest_ptr])?;
-                self.get_blocktime(dest_ptr)?;
+                self.get_blocktime(function_context, dest_ptr)?;
                 Ok(None)
             }
 
@@ -228,7 +229,7 @@ where
                     [uref_ptr, uref_size],
                 )?;
                 Ok(Some(RuntimeValue::I32(i32::from(
-                    self.is_valid_uref(uref_ptr, uref_size)?,
+                    self.is_valid_uref(function_context, uref_ptr, uref_size)?,
                 ))))
             }
 
@@ -248,6 +249,7 @@ where
                     [account_hash_ptr, account_hash_size, weight_value as Cost],
                 )?;
                 let value = self.add_associated_key(
+                    function_context,
                     account_hash_ptr,
                     account_hash_size as usize,
                     weight_value,
@@ -264,7 +266,7 @@ where
                     [account_hash_ptr, account_hash_size],
                 )?;
                 let value =
-                    self.remove_associated_key(account_hash_ptr, account_hash_size as usize)?;
+                    self.remove_associated_key(function_context, account_hash_ptr, account_hash_size as usize)?;
                 Ok(Some(RuntimeValue::I32(value)))
             }
 
@@ -278,6 +280,7 @@ where
                     [account_hash_ptr, account_hash_size, weight_value as Cost],
                 )?;
                 let value = self.update_associated_key(
+                    function_context,
                     account_hash_ptr,
                     account_hash_size as usize,
                     weight_value,
@@ -293,7 +296,7 @@ where
                     &host_function_costs.set_action_threshold,
                     [action_type_value, threshold_value as Cost],
                 )?;
-                let value = self.set_action_threshold(action_type_value, threshold_value)?;
+                let value = self.set_action_threshold(function_context, action_type_value, threshold_value)?;
                 Ok(Some(RuntimeValue::I32(value)))
             }
 
@@ -344,7 +347,7 @@ where
                     id_size,
                     result_ptr,
                 ) = Args::parse(args)?;
-                let ret = self.casper_transfer_from_purse_to_account(fuction_context, snource_ptr, source_size, key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr)?;
+                let ret = self.casper_transfer_from_purse_to_account(function_context, source_ptr, source_size, key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr)?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
