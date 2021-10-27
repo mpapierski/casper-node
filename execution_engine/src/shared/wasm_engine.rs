@@ -894,7 +894,7 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_transfer_from_purse_to_account",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          source_ptr,
                          source_size,
                          key_ptr,
@@ -904,12 +904,7 @@ impl Instance {
                          id_ptr,
                          id_size,
                          result_ptr| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
                             let ret = runtime.casper_transfer_from_purse_to_account(
                                 function_context,
                                 source_ptr,
@@ -931,16 +926,11 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_get_balance",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          ptr: u32,
                          ptr_size: u32,
                          output_size_ptr: u32| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -965,16 +955,11 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_read_host_buffer",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          dest_ptr,
                          dest_size,
                          bytes_written_ptr| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -999,16 +984,11 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_get_system_contract",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          system_contract_index,
                          dest_ptr,
                          dest_size| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1032,18 +1012,13 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_load_named_keys",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          total_keys_ptr,
                          result_size_ptr| {
                             let mut scoped_instrumenter =
                                 ScopedInstrumenter::new(FunctionIndex::LoadNamedKeysFuncIndex);
 
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1067,16 +1042,11 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_create_contract_package_at_hash",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          hash_dest_ptr,
                          access_dest_ptr,
                          is_locked: u32| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (mut function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1109,7 +1079,7 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_create_contract_user_group",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          package_key_ptr: u32,
                          package_key_size: u32,
                          label_ptr: u32,
@@ -1118,12 +1088,7 @@ impl Instance {
                          existing_urefs_ptr: u32,
                          existing_urefs_size: u32,
                          output_size_ptr: u32| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let ret = runtime.casper_create_contract_user_group(
                                 function_context,
@@ -1146,18 +1111,13 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_provision_contract_user_group_uref",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          package_ptr,
                          package_size,
                          label_ptr,
                          label_size,
                          value_size_ptr| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1188,18 +1148,12 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_remove_contract_user_group",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          package_key_ptr,
                          package_key_size,
                          label_ptr,
                          label_size| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
-
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
                             let ret = runtime.casper_remove_contract_user_group(
                                 function_context,
                                 package_key_ptr,
@@ -1216,19 +1170,14 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_remove_contract_user_group_urefs",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          package_ptr,
                          package_size,
                          label_ptr,
                          label_size,
                          urefs_ptr,
                          urefs_size| {
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1262,7 +1211,7 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_call_versioned_contract",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          contract_package_hash_ptr,
                          contract_package_hash_size,
                          contract_version_ptr,
@@ -1274,12 +1223,7 @@ impl Instance {
                          result_size_ptr| {
                             let mut scoped_instrumenter =
                                 ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1353,7 +1297,7 @@ impl Instance {
                     .func_wrap(
                         "env",
                         "casper_add_contract_version",
-                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                        |mut caller: Caller<'_, WasmtimeContext<'_, '_, R>>,
                          contract_package_hash_ptr,
                          contract_package_hash_size,
                          version_ptr,
@@ -1366,12 +1310,7 @@ impl Instance {
                          bytes_written_ptr| {
                             let mut scoped_instrumenter =
                                 ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
-                            let mem = match caller.get_export("memory") {
-                                Some(Extern::Memory(mem)) => mem,
-                                _ => return Err(Trap::new("failed to find host memory")),
-                            };
-                            let (data, runtime) = mem.data_and_store_mut(&mut caller);
-                            let mut function_context = WasmtimeAdapter { data };
+                            let (function_context , runtime) = WasmtimeContext::adapter_and_runtime(&mut caller);
 
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
