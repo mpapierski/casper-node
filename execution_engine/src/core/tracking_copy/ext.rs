@@ -245,7 +245,7 @@ where
     }
 
     fn get_system_module(&mut self, preprocessor: &WasmEngine) -> Result<Module, Self::Error> {
-        Ok(wasm::do_nothing_module(preprocessor)?)
+        Ok(Module::Noop)
     }
 
     fn get_system_contracts(

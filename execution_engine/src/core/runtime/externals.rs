@@ -18,7 +18,7 @@ use crate::{
     core::{execution, resolvers::v1_function_index::FunctionIndex},
     shared::{
         host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
-        wasm_engine::WasmiAdapter,
+        wasm_engine::{FunctionContext, WasmiAdapter},
     },
     storage::global_state::StateReader,
 };
@@ -84,6 +84,7 @@ where
                     [total_keys_ptr, result_size_ptr],
                 )?;
                 let ret = self.load_named_keys(
+                    function_context,
                     total_keys_ptr,
                     result_size_ptr,
                     &mut scoped_instrumenter,
@@ -228,9 +229,11 @@ where
                     &host_function_costs.is_valid_uref,
                     [uref_ptr, uref_size],
                 )?;
-                Ok(Some(RuntimeValue::I32(i32::from(
-                    self.is_valid_uref(function_context, uref_ptr, uref_size)?,
-                ))))
+                Ok(Some(RuntimeValue::I32(i32::from(self.is_valid_uref(
+                    function_context,
+                    uref_ptr,
+                    uref_size,
+                )?))))
             }
 
             FunctionIndex::RevertFuncIndex => {
@@ -265,8 +268,11 @@ where
                     &host_function_costs.remove_associated_key,
                     [account_hash_ptr, account_hash_size],
                 )?;
-                let value =
-                    self.remove_associated_key(function_context, account_hash_ptr, account_hash_size as usize)?;
+                let value = self.remove_associated_key(
+                    function_context,
+                    account_hash_ptr,
+                    account_hash_size as usize,
+                )?;
                 Ok(Some(RuntimeValue::I32(value)))
             }
 
@@ -296,7 +302,11 @@ where
                     &host_function_costs.set_action_threshold,
                     [action_type_value, threshold_value as Cost],
                 )?;
-                let value = self.set_action_threshold(function_context, action_type_value, threshold_value)?;
+                let value = self.set_action_threshold(
+                    function_context,
+                    action_type_value,
+                    threshold_value,
+                )?;
                 Ok(Some(RuntimeValue::I32(value)))
             }
 
@@ -322,7 +332,16 @@ where
                 // args(6) = pointer to a value where new value will be set
                 let (key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr) =
                     Args::parse(args)?;
-                let ret = self.casper_transfer_to_account(function_context, key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr)?;
+                let ret = self.casper_transfer_to_account(
+                    function_context,
+                    key_ptr,
+                    key_size,
+                    amount_ptr,
+                    amount_size,
+                    id_ptr,
+                    id_size,
+                    result_ptr,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -347,7 +366,18 @@ where
                     id_size,
                     result_ptr,
                 ) = Args::parse(args)?;
-                let ret = self.casper_transfer_from_purse_to_account(function_context, source_ptr, source_size, key_ptr, key_size, amount_ptr, amount_size, id_ptr, id_size, result_ptr)?;
+                let ret = self.casper_transfer_from_purse_to_account(
+                    function_context,
+                    source_ptr,
+                    source_size,
+                    key_ptr,
+                    key_size,
+                    amount_ptr,
+                    amount_size,
+                    id_ptr,
+                    id_size,
+                    result_ptr,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -370,14 +400,17 @@ where
                     id_ptr,
                     id_size,
                 ) = Args::parse(args)?;
-                let ret = self.casper_transfer_from_purse_to_purse(function_context, source_ptr,
+                let ret = self.casper_transfer_from_purse_to_purse(
+                    function_context,
+                    source_ptr,
                     source_size,
                     target_ptr,
                     target_size,
                     amount_ptr,
                     amount_size,
                     id_ptr,
-                    id_size)?;
+                    id_size,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -390,7 +423,12 @@ where
                     &host_function_costs.get_balance,
                     [ptr, ptr_size, output_size_ptr],
                 )?;
-                let ret = self.get_balance_host_buffer(ptr, ptr_size as usize, output_size_ptr)?;
+                let ret = self.get_balance_host_buffer(
+                    function_context,
+                    ptr,
+                    ptr_size as usize,
+                    output_size_ptr,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -411,7 +449,12 @@ where
                     &host_function_costs.get_system_contract,
                     [system_contract_index, dest_ptr, dest_size],
                 )?;
-                let ret = self.get_system_contract(system_contract_index, dest_ptr, dest_size)?;
+                let ret = self.get_system_contract(
+                    function_context,
+                    system_contract_index,
+                    dest_ptr,
+                    dest_size,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -430,7 +473,12 @@ where
                     [dest_ptr, dest_size, bytes_written_ptr],
                 )?;
                 scoped_instrumenter.add_property("dest_size", dest_size);
-                let ret = self.read_host_buffer(dest_ptr, dest_size as usize, bytes_written_ptr)?;
+                let ret = self.read_host_buffer(
+                    function_context,
+                    dest_ptr,
+                    dest_size as usize,
+                    bytes_written_ptr,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -447,8 +495,8 @@ where
                 let (hash_addr, access_addr) =
                     self.create_contract_package_at_hash(package_status)?;
 
-                self.function_address(hash_addr, hash_dest_ptr)?;
-                self.function_address(access_addr, access_dest_ptr)?;
+                self.function_address(&mut function_context, hash_addr, hash_dest_ptr)?;
+                self.function_address(&mut function_context, access_addr, access_dest_ptr)?;
                 Ok(None)
             }
 
@@ -471,34 +519,21 @@ where
                     existing_urefs_size,
                     output_size_ptr,
                 ) = Args::parse(args)?;
-                self.charge_host_function_call(
-                    &host_function_costs.create_contract_user_group,
-                    [
-                        package_key_ptr,
-                        package_key_size,
-                        label_ptr,
-                        label_size,
-                        num_new_urefs,
-                        existing_urefs_ptr,
-                        existing_urefs_size,
-                        output_size_ptr,
-                    ],
-                )?;
-                scoped_instrumenter
-                    .add_property("existing_urefs_size", existing_urefs_size.to_string());
-                scoped_instrumenter.add_property("label_size", label_size.to_string());
 
-                let contract_package_hash: ContractPackageHash =
-                    self.t_from_mem(package_key_ptr, package_key_size)?;
-                let label: String = self.t_from_mem(label_ptr, label_size)?;
-                let existing_urefs: BTreeSet<URef> =
-                    self.t_from_mem(existing_urefs_ptr, existing_urefs_size)?;
-
-                let ret = self.create_contract_user_group(
-                    contract_package_hash,
-                    label,
+                scoped_instrumenter.add_property(
+                    "existing_urefs_size",
+                    u32::from(existing_urefs_size).to_string(),
+                );
+                scoped_instrumenter.add_property("label_size", u32::from(label_size).to_string());
+                let ret = self.casper_create_contract_user_group(
+                    function_context,
+                    package_key_ptr,
+                    package_key_size,
+                    label_ptr,
+                    label_size,
                     num_new_urefs,
-                    existing_urefs,
+                    existing_urefs_ptr,
+                    existing_urefs_size,
                     output_size_ptr,
                 )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
@@ -526,38 +561,24 @@ where
                     output_size,
                     bytes_written_ptr,
                 ) = Args::parse(args)?;
-                self.charge_host_function_call(
-                    &host_function_costs.add_contract_version,
-                    [
-                        contract_package_hash_ptr,
-                        contract_package_hash_size,
-                        version_ptr,
-                        entry_points_ptr,
-                        entry_points_size,
-                        named_keys_ptr,
-                        named_keys_size,
-                        output_ptr,
-                        output_size,
-                        bytes_written_ptr,
-                    ],
-                )?;
+                scoped_instrumenter.add_property(
+                    "entry_points_size",
+                    u32::from(entry_points_size).to_string(),
+                );
                 scoped_instrumenter
-                    .add_property("entry_points_size", entry_points_size.to_string());
-                scoped_instrumenter.add_property("named_keys_size", named_keys_size.to_string());
-
-                let contract_package_hash: ContractPackageHash =
-                    self.t_from_mem(contract_package_hash_ptr, contract_package_hash_size)?;
-                let entry_points: EntryPoints =
-                    self.t_from_mem(entry_points_ptr, entry_points_size)?;
-                let named_keys: NamedKeys = self.t_from_mem(named_keys_ptr, named_keys_size)?;
-                let ret = self.add_contract_version(
-                    contract_package_hash,
-                    entry_points,
-                    named_keys,
-                    output_ptr,
-                    output_size as usize,
-                    bytes_written_ptr,
+                    .add_property("named_keys_size", u32::from(named_keys_size).to_string());
+                let ret = self.casper_add_contract_version(
+                    function_context,
+                    contract_package_hash_ptr,
+                    contract_package_hash_size,
                     version_ptr,
+                    entry_points_ptr,
+                    entry_points_size,
+                    named_keys_ptr,
+                    named_keys_size,
+                    output_ptr,
+                    output_size,
+                    bytes_written_ptr,
                 )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
@@ -603,35 +624,21 @@ where
                     args_size,
                     result_size_ptr,
                 ) = Args::parse(args)?;
-                self.charge_host_function_call(
-                    &host_function_costs.call_contract,
-                    [
-                        contract_hash_ptr,
-                        contract_hash_size,
-                        entry_point_name_ptr,
-                        entry_point_name_size,
-                        args_ptr,
-                        args_size,
-                        result_size_ptr,
-                    ],
-                )?;
-                scoped_instrumenter
-                    .add_property("entry_point_name_size", entry_point_name_size.to_string());
-                scoped_instrumenter.add_property("args_size", args_size.to_string());
 
-                let contract_hash: ContractHash =
-                    self.t_from_mem(contract_hash_ptr, contract_hash_size)?;
-                let entry_point_name: String =
-                    self.t_from_mem(entry_point_name_ptr, entry_point_name_size)?;
-                let args_bytes: Vec<u8> = {
-                    let args_size: u32 = args_size;
-                    self.bytes_from_mem(args_ptr, args_size as usize)?
-                };
+                scoped_instrumenter.add_property(
+                    "entry_point_name_size",
+                    u32::from(entry_point_name_size).to_string(),
+                );
+                scoped_instrumenter.add_property("args_size", u32::from(args_size).to_string());
 
-                let ret = self.call_contract_host_buffer(
-                    contract_hash,
-                    &entry_point_name,
-                    args_bytes,
+                let ret = self.casper_call_contract(
+                    function_context,
+                    contract_hash_ptr,
+                    contract_hash_size,
+                    entry_point_name_ptr,
+                    entry_point_name_size,
+                    args_ptr,
+                    args_size,
                     result_size_ptr,
                     &mut scoped_instrumenter,
                 )?;
@@ -677,18 +684,35 @@ where
                     .add_property("entry_point_name_size", entry_point_name_size.to_string());
                 scoped_instrumenter.add_property("args_size", args_size.to_string());
 
-                let contract_package_hash: ContractPackageHash =
-                    self.t_from_mem(contract_package_hash_ptr, contract_package_hash_size)?;
-                let contract_version: Option<ContractVersion> =
-                    self.t_from_mem(contract_version_ptr, contract_package_size)?;
-                let entry_point_name: String =
-                    self.t_from_mem(entry_point_name_ptr, entry_point_name_size)?;
-                let args_bytes: Vec<u8> = {
-                    let args_size: u32 = args_size;
-                    self.bytes_from_mem(args_ptr, args_size as usize)?
+                // TODO: Move
+
+                let contract_package_hash: ContractPackageHash = {
+                    let contract_package_hash_bytes = function_context
+                        .memory_read(
+                            contract_package_hash_ptr,
+                            contract_package_hash_size as usize,
+                        )
+                        .map_err(|e| Error::Interpreter(e.to_string()))?;
+                    bytesrepr::deserialize(contract_package_hash_bytes).map_err(Error::BytesRepr)?
                 };
+                let contract_version: Option<ContractVersion> = {
+                    let contract_version_bytes = function_context
+                        .memory_read(contract_version_ptr, contract_package_size as usize)
+                        .map_err(|e| Error::Interpreter(e.to_string()))?;
+                    bytesrepr::deserialize(contract_version_bytes).map_err(Error::BytesRepr)?
+                };
+                let entry_point_name: String = {
+                    let entry_point_name_bytes = function_context
+                        .memory_read(entry_point_name_ptr, entry_point_name_size as usize)
+                        .map_err(|e| Error::Interpreter(e.to_string()))?;
+                    bytesrepr::deserialize(entry_point_name_bytes).map_err(Error::BytesRepr)?
+                };
+                let args_bytes: Vec<u8> = function_context
+                    .memory_read(args_ptr, args_size as usize)
+                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
 
                 let ret = self.call_versioned_contract_host_buffer(
+                    function_context,
                     contract_package_hash,
                     contract_version,
                     entry_point_name,
@@ -713,7 +737,12 @@ where
                 // args(2) = pointer to a argument size (output)
                 let (name_ptr, name_size, size_ptr): (_, u32, _) = Args::parse(args)?;
                 scoped_instrumenter.add_property("name_size", name_size.to_string());
-                let ret = self.casper_get_named_arg_size(function_context, name_ptr, name_size, size_ptr)?;
+                let ret = self.casper_get_named_arg_size(
+                    function_context,
+                    name_ptr,
+                    name_size,
+                    size_ptr,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -722,7 +751,7 @@ where
                 // args(1) = size of serialized argument name
                 // args(2) = pointer to output pointer where host will write argument bytes
                 // args(3) = size of available data under output pointer
-                   // args(0) = pointer to serialized argument name
+                // args(0) = pointer to serialized argument name
                 // args(1) = size of serialized argument name
                 // args(2) = pointer to output pointer where host will write argument bytes
                 // args(3) = size of available data under output pointer
@@ -733,7 +762,13 @@ where
                 )?;
                 scoped_instrumenter.add_property("name_size", name_size.to_string());
                 scoped_instrumenter.add_property("dest_size", dest_size.to_string());
-                let ret = self.casper_get_named_arg(function_context, name_ptr, name_size, dest_ptr, dest_size)?;
+                let ret = self.casper_get_named_arg(
+                    function_context,
+                    name_ptr,
+                    name_size,
+                    dest_ptr,
+                    dest_size,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -743,15 +778,15 @@ where
                 // args(2) = pointer to serialized group label
                 // args(3) = size of serialized group label
                 let (package_key_ptr, package_key_size, label_ptr, label_size) = Args::parse(args)?;
-                self.charge_host_function_call(
-                    &host_function_costs.remove_contract_user_group,
-                    [package_key_ptr, package_key_size, label_ptr, label_size],
-                )?;
-                scoped_instrumenter.add_property("label_size", label_size.to_string());
-                let package_key = self.t_from_mem(package_key_ptr, package_key_size)?;
-                let label: Group = self.t_from_mem(label_ptr, label_size)?;
 
-                let ret = self.remove_contract_user_group(package_key, label)?;
+                scoped_instrumenter.add_property("label_size", u32::from(label_size).to_string());
+                let ret = self.casper_remove_contract_user_group(
+                    function_context,
+                    package_key_ptr,
+                    package_key_size,
+                    label_ptr,
+                    label_size,
+                )?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
 
@@ -775,6 +810,7 @@ where
                 )?;
                 scoped_instrumenter.add_property("label_size", label_size.to_string());
                 let ret = self.provision_contract_user_group_uref(
+                    function_context,
                     package_ptr,
                     package_size,
                     label_ptr,
@@ -807,6 +843,7 @@ where
                 scoped_instrumenter.add_property("label_size", label_size.to_string());
                 scoped_instrumenter.add_property("urefs_size", urefs_size.to_string());
                 let ret = self.remove_contract_user_group_urefs(
+                    function_context,
                     package_ptr,
                     package_size,
                     label_ptr,
