@@ -368,6 +368,42 @@ impl Instance {
                 linker
                     .func_wrap(
                         "env",
+                        "casper_read_value",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         output_size_ptr: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.read(key_ptr, key_size as usize, output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         value_ptr: u32,
+                         value_size: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.add(
+                                key_ptr,
+                                key_size as usize,
+                                value_ptr,
+                                value_size as usize,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
                         "casper_revert",
                         |mut caller: Caller<'_, &mut Runtime<R>>, param: u32| {
                             let mut runtime = caller.data_mut();
@@ -376,6 +412,113 @@ impl Instance {
                         },
                     )
                     .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_is_valid_uref",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, uref_ptr: u32, uref_size: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.is_valid_uref(uref_ptr, uref_size as usize)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add_associated_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32,
+                         weight: i32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.add_associated_key(
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_associated_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.remove_associated_key(
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_update_associated_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32,
+                         weight: i32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.update_associated_key(
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_set_action_threshold",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         permission_level: u32,
+                         permission_threshold: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime
+                                .set_action_threshold(permission_level, permission_threshold)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_caller",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, output_size_ptr: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.get_caller(output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_blocktime",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, dest_ptr: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.get_blocktime(dest_ptr)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
                 linker
                     .func_wrap(
                         "env",
@@ -425,7 +568,11 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret =runtime.casper_create_purse(function_context, dest_ptr, dest_size)?;
+                            let ret = runtime.casper_create_purse(
+                                function_context,
+                                dest_ptr,
+                                dest_size,
+                            )?;
                             Ok(api_error::i32_from(ret))
                         },
                     )
@@ -491,7 +638,12 @@ impl Instance {
                             let function_context = WasmtimeAdapter { data };
 
                             // let ret =
-                            let ret = runtime.casper_get_named_arg_size(function_context, name_ptr, name_size, size_ptr)?;
+                            let ret = runtime.casper_get_named_arg_size(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                size_ptr,
+                            )?;
                             Ok(api_error::i32_from(ret))
                         },
                     )
@@ -512,7 +664,13 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime.casper_get_named_arg(function_context, name_ptr, name_size, dest_ptr, dest_size)?;
+                            let ret = runtime.casper_get_named_arg(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                dest_ptr,
+                                dest_size,
+                            )?;
                             Ok(api_error::i32_from(ret))
                         },
                     )
@@ -536,13 +694,51 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime.casper_transfer_to_account(function_context, key_ptr,
+                            let ret = runtime.casper_transfer_to_account(
+                                function_context,
+                                key_ptr,
                                 key_size,
                                 amount_ptr,
                                 amount_size,
                                 id_ptr,
                                 id_size,
-                                result_ptr)?;
+                                result_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_has_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, name_ptr: u32, name_size: u32| {
+                            let runtime = caller.data_mut();
+                            let ret = runtime.has_key(name_ptr, name_size as usize)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>,
+                         name_ptr: u32,
+                         name_size: u32,
+                         output_ptr: u32,
+                         output_size: u32,
+                         bytes_written: u32| {
+                            let mut runtime = caller.data_mut();
+                            let ret = runtime.load_key(
+                                name_ptr,
+                                name_size,
+                                output_ptr,
+                                output_size as usize,
+                                bytes_written,
+                            )?;
                             Ok(api_error::i32_from(ret))
                         },
                     )
@@ -564,13 +760,26 @@ impl Instance {
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
 
-                            runtime.casper_put_key(function_context,
+                            runtime.casper_put_key(
+                                function_context,
                                 name_ptr,
                                 name_size,
                                 key_ptr,
-                                key_size)?;
+                                key_size,
+                            )?;
 
-                                
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_key",
+                        |mut caller: Caller<'_, &mut Runtime<R>>, name_ptr: u32, name_size: u32| {
+                            let mut runtime = caller.data_mut();
+                            let ret = runtime.remove_key(name_ptr, name_size as usize)?;
                             Ok(())
                         },
                     )
@@ -613,17 +822,19 @@ impl Instance {
                             };
                             let (data, runtime) = mem.data_and_store_mut(&mut caller);
                             let function_context = WasmtimeAdapter { data };
-                            let ret = runtime.casper_transfer_from_purse_to_purse(function_context,
+                            let ret = runtime.casper_transfer_from_purse_to_purse(
+                                function_context,
                                 source_ptr,
-                         source_size,
-                         target_ptr,
-                         target_size,
-                         amount_ptr,
-                         amount_size,
-                         id_ptr,
-                         id_size)?;
+                                source_size,
+                                target_ptr,
+                                target_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                            )?;
                             Ok(api_error::i32_from(ret))
-                         }
+                        },
                     )
                     .unwrap();
 
