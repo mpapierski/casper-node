@@ -13,7 +13,10 @@ use casper_types::{
     StoredValue, URef, U512,
 };
 
-use super::{scoped_instrumenter::ScopedInstrumenter, wasmi_args_parser::Args, Error, Runtime};
+use super::{
+    bytes_from_memory, scoped_instrumenter::ScopedInstrumenter, t_from_memory,
+    wasmi_args_parser::Args, Error, Runtime,
+};
 use crate::{
     core::{execution, resolvers::v1_function_index::FunctionIndex},
     shared::{
@@ -23,25 +26,10 @@ use crate::{
     storage::global_state::StateReader,
 };
 
-fn bytes_from_memory(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<Vec<u8>, Error> {
-    let bytes = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
-    Ok(bytes)
-}
-fn t_from_memory<T>(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<T, Error>
-where
-    T: FromBytes,
-{
-    let bytes = bytes_from_memory(memory_ref, offset, size)?;
-    Ok(bytesrepr::deserialize(bytes)?)
-}
-
-fn cl_value_from_memory(
-    memory_ref: &MemoryRef,
-    offset: u32,
-    size: usize,
-) -> Result<CLValue, Error> {
-    t_from_memory(&memory_ref, offset, size)
-}
+/*fn bytes_from_memory(memory_ref: &MemoryRef, offset: u32, size: usize) -> Result<Vec<u8>, Error> {
+let bytes = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
+Ok(bytes)
+}*/
 
 impl<'a, R> Externals for Runtime<'a, R>
 where
@@ -436,7 +424,7 @@ where
                 // args(0) = pointer to Wasm memory where to write.
                 let (dest_ptr,) = Args::parse(args)?;
                 self.charge_host_function_call(&host_function_costs.get_phase, [dest_ptr])?;
-                self.get_phase(dest_ptr)?;
+                self.get_phase(function_context, dest_ptr)?;
                 Ok(None)
             }
 
@@ -599,8 +587,10 @@ where
                         contract_hash_size,
                     ],
                 )?;
-                let contract_package_hash = self.t_from_mem(package_key_ptr, package_key_size)?;
-                let contract_hash = self.t_from_mem(contract_hash_ptr, contract_hash_size)?;
+                let contract_package_hash =
+                    t_from_memory(&mut function_context, package_key_ptr, package_key_size)?;
+                let contract_hash =
+                    t_from_memory(&mut function_context, contract_hash_ptr, contract_hash_size)?;
 
                 let result = self.disable_contract_version(contract_package_hash, contract_hash)?;
 
@@ -862,7 +852,7 @@ where
                 )?;
                 scoped_instrumenter.add_property("in_size", in_size.to_string());
                 scoped_instrumenter.add_property("out_size", out_size.to_string());
-                let input: Vec<u8> = self.bytes_from_mem(in_ptr, in_size as usize)?;
+                let input: Vec<u8> = bytes_from_memory(&mut function_context, in_ptr, in_size)?;
                 let digest = account::blake2b(&input);
                 if digest.len() != out_size as usize {
                     let err_value = u32::from(api_error::ApiError::BufferTooSmall) as i32;
@@ -894,11 +884,12 @@ where
                 scoped_instrumenter.add_property("target_size", target_size.to_string());
                 scoped_instrumenter.add_property("amount_size", amount_size.to_string());
                 scoped_instrumenter.add_property("id_size", id_size.to_string());
-                let maybe_to: Option<AccountHash> = self.t_from_mem(maybe_to_ptr, maybe_to_size)?;
-                let source: URef = self.t_from_mem(source_ptr, source_size)?;
-                let target: URef = self.t_from_mem(target_ptr, target_size)?;
-                let amount: U512 = self.t_from_mem(amount_ptr, amount_size)?;
-                let id: Option<u64> = self.t_from_mem(id_ptr, id_size)?;
+                let maybe_to: Option<AccountHash> =
+                    t_from_memory(&mut function_context, maybe_to_ptr, maybe_to_size)?;
+                let source: URef = t_from_memory(&mut function_context, source_ptr, source_size)?;
+                let target: URef = t_from_memory(&mut function_context, target_ptr, target_size)?;
+                let amount: U512 = t_from_memory(&mut function_context, amount_ptr, amount_size)?;
+                let id: Option<u64> = t_from_memory(&mut function_context, id_ptr, id_size)?;
                 self.record_transfer(maybe_to, source, target, amount, id)?;
                 Ok(Some(RuntimeValue::I32(0)))
             }
@@ -911,8 +902,9 @@ where
                     Args::parse(args)?;
                 scoped_instrumenter.add_property("era_id_size", era_id_size.to_string());
                 scoped_instrumenter.add_property("era_info_size", era_info_size.to_string());
-                let era_id: EraId = self.t_from_mem(era_id_ptr, era_id_size)?;
-                let era_info: EraInfo = self.t_from_mem(era_info_ptr, era_info_size)?;
+                let era_id: EraId = t_from_memory(&mut function_context, era_id_ptr, era_id_size)?;
+                let era_info: EraInfo =
+                    t_from_memory(&mut function_context, era_info_ptr, era_info_size)?;
                 self.record_era_info(era_id, era_info)?;
                 Ok(Some(RuntimeValue::I32(0)))
             }
@@ -924,7 +916,7 @@ where
                     &DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
                     [output_size_ptr],
                 )?;
-                let ret = self.new_dictionary(output_size_ptr)?;
+                let ret = self.new_dictionary(function_context, output_size_ptr)?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
             FunctionIndex::DictionaryGetFuncIndex => {
@@ -946,6 +938,7 @@ where
                 )?;
                 scoped_instrumenter.add_property("key_bytes_size", key_bytes_size);
                 let ret = self.dictionary_get(
+                    function_context,
                     uref_ptr,
                     uref_size,
                     key_bytes_ptr,
@@ -969,6 +962,7 @@ where
                 scoped_instrumenter.add_property("key_bytes_size", key_bytes_size);
                 scoped_instrumenter.add_property("value_size", value_ptr_size);
                 let ret = self.dictionary_put(
+                    function_context,
                     uref_ptr,
                     uref_size,
                     key_bytes_ptr,
@@ -987,7 +981,8 @@ where
                     &HostFunction::fixed(10_000),
                     [call_stack_len_ptr, result_size_ptr],
                 )?;
-                let ret = self.load_call_stack(call_stack_len_ptr, result_size_ptr)?;
+                let ret =
+                    self.load_call_stack(function_context, call_stack_len_ptr, result_size_ptr)?;
                 Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
         }

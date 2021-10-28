@@ -64,16 +64,25 @@ use crate::{
 
 use super::resolvers::v1_function_index::FunctionIndex;
 
-fn t_from_memory<T>(
+pub fn bytes_from_memory(
     context: &mut impl FunctionContext,
     offset: u32,
-    size: usize,
+    size: u32,
+) -> Result<Vec<u8>, Error> {
+    Ok(context.memory_read(offset, size as usize)?)
+}
+
+pub fn t_from_memory<T>(
+    context: &mut impl FunctionContext,
+    offset: u32,
+    size: u32,
 ) -> Result<T, Error>
 where
     T: FromBytes,
 {
-    let bytes = context.memory_read(offset, size)?;
-    Ok(bytesrepr::deserialize(bytes)?)
+    Ok(bytesrepr::deserialize(bytes_from_memory(
+        context, offset, size,
+    )?)?)
 }
 
 /// Represents the runtime properties of a WASM execution.
@@ -86,6 +95,7 @@ pub struct Runtime<'a, R> {
     context: RuntimeContext<'a, R>,
     call_stack: Vec<CallStackElement>,
     wasm_engine: &'a WasmEngine,
+    pub wasmtime_memory: Option<wasmtime::Memory>,
 }
 
 /// Turns `key` into a `([u8; 32], AccessRights)` tuple.
@@ -991,6 +1001,7 @@ where
             context,
             call_stack,
             wasm_engine,
+            wasmtime_memory: None,
         }
     }
 
@@ -1031,28 +1042,28 @@ where
         &self.call_stack
     }
 
-    /// Returns bytes from the WASM memory instance.
+    /*/// Returns bytes from the WASM memory instance.
     fn bytes_from_mem(&self, ptr: u32, size: usize) -> Result<Vec<u8>, Error> {
         self.memory().get(ptr, size).map_err(Into::into)
-    }
+    }*/
 
     fn memory(&self) -> MemoryRef {
         self.instance.interpreted_memory()
     }
 
-    /// Returns a deserialized type from the WASM memory instance.
+    /*/// Returns a deserialized type from the WASM memory instance.
     fn t_from_mem<T: FromBytes>(&self, ptr: u32, size: u32) -> Result<T, Error> {
         let bytes = self.bytes_from_mem(ptr, size as usize)?;
         bytesrepr::deserialize(bytes).map_err(Into::into)
-    }
+    }*/
 
-    /// Reads key (defined as `key_ptr` and `key_size` tuple) from Wasm memory.
+    /*/// Reads key (defined as `key_ptr` and `key_size` tuple) from Wasm memory.
     fn key_from_mem(&mut self, key_ptr: u32, key_size: u32) -> Result<Key, Error> {
         let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
         bytesrepr::deserialize(bytes).map_err(Into::into)
-    }
+    }*/
 
-    /// Reads `CLValue` (defined as `cl_value_ptr` and `cl_value_size` tuple) from Wasm memory.
+    /*/// Reads `CLValue` (defined as `cl_value_ptr` and `cl_value_size` tuple) from Wasm memory.
     fn cl_value_from_mem(
         &mut self,
         cl_value_ptr: u32,
@@ -1060,13 +1071,13 @@ where
     ) -> Result<CLValue, Error> {
         let bytes = self.bytes_from_mem(cl_value_ptr, cl_value_size as usize)?;
         bytesrepr::deserialize(bytes).map_err(Into::into)
-    }
+    }*/
 
     /// Returns a deserialized string from the WASM memory instance.
-    fn string_from_mem(&self, ptr: u32, size: u32) -> Result<String, Error> {
+    /*fn string_from_mem(&self, ptr: u32, size: u32) -> Result<String, Error> {
         let bytes = self.bytes_from_mem(ptr, size as usize)?;
         bytesrepr::deserialize(bytes).map_err(|e| Error::BytesRepr(e).into())
-    }
+    }*/
 
     fn get_module_from_entry_points(
         &mut self,
@@ -1101,7 +1112,7 @@ where
 
     pub(crate) fn is_valid_uref(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         uref_ptr: u32,
         uref_size: u32,
     ) -> Result<bool, Error> {
@@ -1115,14 +1126,14 @@ where
     /// Load the uref known by the given name into the Wasm memory
     pub(crate) fn load_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
         output_ptr: u32,
         output_size: usize,
         bytes_written_ptr: u32,
     ) -> Result<Result<(), ApiError>, Error> {
-        let name = self.string_from_mem(name_ptr, name_size)?;
+        let name: String = t_from_memory(&mut context, name_ptr, name_size)?;
 
         // Get a key and serialize it
         let key = match self.context.named_keys_get(&name) {
@@ -1141,27 +1152,27 @@ where
         }
 
         // Set serialized Key bytes into the output buffer
-        if let Err(error) = self.memory().set(output_ptr, &key_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(output_ptr, &key_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         // For all practical purposes following cast is assumed to be safe
         let bytes_size: u32 = key_bytes.len() as u32;
         let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(bytes_written_ptr, &size_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(bytes_written_ptr, &size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
 
     pub(crate) fn has_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
     ) -> Result<i32, Error> {
-        let name = self.string_from_mem(name_ptr, name_size)?;
+        let name: String = t_from_memory(&mut context, name_ptr, name_size)?;
         if self.context.named_keys_contains_key(&name) {
             Ok(0)
         } else {
@@ -1243,9 +1254,9 @@ where
 
         // Write output
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = context.memory_write(output_size, &output_size_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(output_size, &output_size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
         Ok(Ok(()))
     }
 
@@ -1267,12 +1278,12 @@ where
     }
 
     /// Writes runtime context's phase to dest_ptr in the Wasm memory.
-    fn get_phase(&mut self, dest_ptr: u32) -> Result<(), Error> {
+    fn get_phase(&mut self, mut context: impl FunctionContext, dest_ptr: u32) -> Result<(), Error> {
         let phase = self.context.phase();
         let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
-        self.memory()
-            .set(dest_ptr, &bytes)
-            .map_err(|e| Error::Interpreter(e.into()).into())
+        context
+            .memory_write(dest_ptr, &bytes)
+            .map_err(|e| Error::Interpreter(e.into()))
     }
 
     /// Writes current blocktime to dest_ptr in Wasm memory.
@@ -1292,8 +1303,9 @@ where
     }
 
     /// Load the uref known by the given name into the Wasm memory
-    fn load_call_stack(
+    pub fn load_call_stack(
         &mut self,
+        mut context: impl FunctionContext,
         // (Output) Pointer to number of elements in the call stack.
         call_stack_len_ptr: u32,
         // (Output) Pointer to size in bytes of the serialized call stack.
@@ -1307,9 +1319,9 @@ where
         let call_stack_len = call_stack.len() as u32;
         let call_stack_len_bytes = call_stack_len.to_le_bytes();
 
-        if let Err(error) = self.memory().set(call_stack_len_ptr, &call_stack_len_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(call_stack_len_ptr, &call_stack_len_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         if call_stack_len == 0 {
             return Ok(Ok(()));
@@ -1324,12 +1336,9 @@ where
 
         let call_stack_cl_value_bytes_len_bytes = call_stack_cl_value_bytes_len.to_le_bytes();
 
-        if let Err(error) = self
-            .memory()
-            .set(result_size_ptr, &call_stack_cl_value_bytes_len_bytes)
-        {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(result_size_ptr, &call_stack_cl_value_bytes_len_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
@@ -2301,6 +2310,7 @@ where
             context,
             call_stack,
             wasm_engine: self.wasm_engine,
+            wasmtime_memory: None,
         };
 
         let instance_ref = runtime.instance().clone();
@@ -2370,7 +2380,7 @@ where
 
     fn call_contract_host_buffer(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         contract_hash: ContractHash,
         entry_point_name: &str,
         args_bytes: Vec<u8>,
@@ -2460,7 +2470,7 @@ where
         };
         let args_bytes: Vec<u8> = {
             let args_size: u32 = args_size;
-            self.bytes_from_mem(args_ptr, args_size as usize)?
+            bytes_from_memory(&mut context, args_ptr, args_size)?
         };
 
         let ret = self.call_contract_host_buffer(
@@ -2490,9 +2500,9 @@ where
         }
 
         let result_size_bytes = result_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = context.memory_write(result_size_ptr, &result_size_bytes) {
-            return Err(Error::Interpreter(error.into()));
-        }
+        context
+            .memory_write(result_size_ptr, &result_size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
@@ -2520,9 +2530,9 @@ where
 
         let total_keys = self.context.named_keys().len() as u32;
         let total_keys_bytes = total_keys.to_le_bytes();
-        if let Err(error) = context.memory_write(total_keys_ptr, &total_keys_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(total_keys_ptr, &total_keys_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         if total_keys == 0 {
             // No need to do anything else, we leave host buffer empty.
@@ -2538,9 +2548,9 @@ where
         }
 
         let length_bytes = length.to_le_bytes();
-        if let Err(error) = context.memory_write(result_size_ptr, &length_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(result_size_ptr, &length_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
@@ -2632,9 +2642,9 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = context.memory_write(output_size_ptr, &output_size_bytes) {
-            return Err(Error::Interpreter(error.into()));
-        }
+        context
+            .memory_write(output_size_ptr, &output_size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         // Write updated package to the global state
         self.context
@@ -2889,7 +2899,7 @@ where
     /// `dest_ptr` pointer).
     pub(crate) fn function_address(
         &mut self,
-        context: &mut impl FunctionContext,
+        mut context: &mut impl FunctionContext,
         hash_bytes: [u8; 32],
         dest_ptr: u32,
     ) -> Result<(), Error> {
@@ -2920,7 +2930,7 @@ where
         // scoped_instrumenter.add_property("value_size", value_size);
         // let memory = self.instance.interpreted_memory();
 
-        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size as usize)?;
+        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size)?;
 
         let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
 
@@ -2944,8 +2954,8 @@ where
             [key_ptr, key_size, value_ptr, value_size],
         )?;
 
-        let key: Key = t_from_memory(&mut context, key_ptr, key_size as usize)?;
-        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size as usize)?;
+        let key: Key = t_from_memory(&mut context, key_ptr, key_size)?;
+        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size)?;
         //
         self.context.metered_write_gs(key, cl_value)?;
         Ok(())
@@ -3063,7 +3073,7 @@ where
 
     pub(crate) fn add_associated_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
@@ -3093,7 +3103,7 @@ where
 
     pub(crate) fn remove_associated_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
     ) -> Result<i32, Error> {
@@ -3115,7 +3125,7 @@ where
 
     pub(crate) fn update_associated_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         account_hash_ptr: u32,
         account_hash_size: usize,
         weight_value: u8,
@@ -3144,7 +3154,7 @@ where
 
     pub(crate) fn set_action_threshold(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         action_type_value: u32,
         threshold_value: u8,
     ) -> Result<i32, Error> {
@@ -3470,7 +3480,7 @@ where
     /// Transfers `amount` of motes from `source` purse to `target` purse.
     pub(crate) fn casper_transfer_from_purse_to_purse(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         source_ptr: u32,
         source_size: u32,
         target_ptr: u32,
@@ -3666,7 +3676,7 @@ where
     ) -> Result<(), Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(&host_function_costs.print, [text_ptr, text_size])?;
-        let text: String = t_from_memory(&mut context, text_ptr, text_size as usize)?;
+        let text: String = t_from_memory(&mut context, text_ptr, text_size)?;
         eprintln!("{}", text);
         Ok(())
     }
@@ -3873,9 +3883,9 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(output_size_ptr, &output_size_bytes) {
-            return Err(Error::Interpreter(error.into()));
-        }
+        context
+            .memory_write(output_size_ptr, &output_size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         // Write updated package to the global state
         self.context
@@ -3952,7 +3962,11 @@ where
     }
 
     /// Creates a dictionary
-    fn new_dictionary(&mut self, output_size_ptr: u32) -> Result<Result<(), ApiError>, Error> {
+    fn new_dictionary(
+        &mut self,
+        mut context: impl FunctionContext,
+        output_size_ptr: u32,
+    ) -> Result<Result<(), ApiError>, Error> {
         // check we can write to the host buffer
         if let Err(err) = self.check_host_buffer() {
             return Ok(Err(err));
@@ -3970,9 +3984,9 @@ where
         }
         // Write return value size to output location
         let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(output_size_ptr, &output_size_bytes) {
-            return Err(Error::Interpreter(error.into()));
-        }
+        context
+            .memory_write(output_size_ptr, &output_size_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
@@ -3980,6 +3994,7 @@ where
     /// Reads the `value` under a `key` in a dictionary
     fn dictionary_get(
         &mut self,
+        mut context: impl FunctionContext,
         uref_ptr: u32,
         uref_size: u32,
         dictionary_item_key_bytes_ptr: u32,
@@ -3991,10 +4006,11 @@ where
             return Ok(Err(err));
         }
 
-        let uref: URef = self.t_from_mem(uref_ptr, uref_size)?;
-        let dictionary_item_key_bytes = self.bytes_from_mem(
+        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
+        let dictionary_item_key_bytes = bytes_from_memory(
+            &mut context,
             dictionary_item_key_bytes_ptr,
-            dictionary_item_key_bytes_size as usize,
+            dictionary_item_key_bytes_size,
         )?;
 
         let dictionary_item_key = if let Ok(item_key) = String::from_utf8(dictionary_item_key_bytes)
@@ -4015,16 +4031,17 @@ where
         }
 
         let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = self.memory().set(output_size_ptr, &value_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
+        context
+            .memory_write(output_size_ptr, &value_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
     }
 
     /// Writes a `key`, `value` pair in a dictionary
-    fn dictionary_put(
+    pub fn dictionary_put(
         &mut self,
+        mut context: impl FunctionContext,
         uref_ptr: u32,
         uref_size: u32,
         key_ptr: u32,
@@ -4032,8 +4049,9 @@ where
         value_ptr: u32,
         value_size: u32,
     ) -> Result<Result<(), ApiError>, Error> {
-        let uref: URef = self.t_from_mem(uref_ptr, uref_size)?;
-        let dictionary_item_key_bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
+        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
+        let dictionary_item_key_bytes =
+            bytes_from_memory(&mut context, key_ptr, key_size)?;
         if dictionary_item_key_bytes.len() > DICTIONARY_ITEM_KEY_MAX_LENGTH {
             return Ok(Err(ApiError::DictionaryItemKeyExceedsLength));
         }
@@ -4043,7 +4061,7 @@ where
         } else {
             return Ok(Err(ApiError::InvalidDictionaryItemKey));
         };
-        let cl_value = self.cl_value_from_mem(value_ptr, value_size)?;
+        let cl_value = t_from_memory(&mut context, value_ptr, value_size)?;
         self.context
             .dictionary_put(uref, &dictionary_item_key, cl_value)?;
         Ok(Ok(()))
