@@ -122,7 +122,12 @@ where
                 self.charge_host_function_call(&host_function_costs.ret, [value_ptr, value_size])?;
                 scoped_instrumenter.add_property("value_size", value_size);
                 Err(self
-                    .ret(value_ptr, value_size as usize, &mut scoped_instrumenter)
+                    .ret(
+                        function_context,
+                        value_ptr,
+                        value_size,
+                        &mut scoped_instrumenter,
+                    )
                     .into())
             }
 

@@ -1347,16 +1347,14 @@ where
     /// type is `Trap`, indicating that this function will always kill the current Wasm instance.
     pub(crate) fn ret(
         &mut self,
+        context: impl FunctionContext,
         value_ptr: u32,
-        value_size: usize,
+        value_size: u32,
         scoped_instrumenter: &mut ScopedInstrumenter,
     ) -> Error {
         const UREF_COUNT: &str = "uref_count";
         self.host_buffer = None;
-        let mem_get = self
-            .memory()
-            .get(value_ptr, value_size)
-            .map_err(|e| Error::Interpreter(e.into()));
+        let mem_get = context.memory_read(value_ptr, value_size as usize);
         match mem_get {
             Ok(buf) => {
                 // Set the result field in the runtime and return the proper element of the `Error`

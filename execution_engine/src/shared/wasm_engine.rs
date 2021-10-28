@@ -466,7 +466,7 @@ impl Instance {
                         "env",
                         "casper_ret",
                         |mut caller: Caller<&mut Runtime<R>>, value_ptr: u32, value_size: u32| {
-                            let (_function_context, runtime) =
+                            let (function_context, runtime) =
                                 caller_adapter_and_runtime(&mut caller);
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -476,9 +476,10 @@ impl Instance {
                             )?;
                             let mut scoped_instrumenter =
                                 ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
-                            let error = caller.data_mut().ret(
+                            let error = runtime.ret(
+                                function_context,
                                 value_ptr,
-                                value_size as usize,
+                                value_size,
                                 &mut scoped_instrumenter,
                             );
                             Result::<(), _>::Err(error.into())
@@ -1415,7 +1416,7 @@ impl Instance {
                 linker
                     .func_wrap(
                         "env",
-                        "casper_dictionary_new",
+                        "casper_new_dictionary",
                         |mut caller: Caller<&mut Runtime<R>>, output_size_ptr: u32| {
                             let (function_context, runtime) =
                                 caller_adapter_and_runtime(&mut caller);
@@ -1508,7 +1509,7 @@ impl Instance {
                          in_size: u32,
                          out_ptr: u32,
                          out_size: u32| {
-                            let (function_context, runtime) =
+                            let (mut function_context, runtime) =
                                 caller_adapter_and_runtime(&mut caller);
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
@@ -1521,13 +1522,18 @@ impl Instance {
                             scoped_instrumenter.add_property("in_size", in_size.to_string());
                             scoped_instrumenter.add_property("out_size", out_size.to_string());
                             let digest = account::blake2b(
-                                function_context.memory_read(in_ptr, in_size as usize)?,
+                                function_context
+                                    .memory_read(in_ptr, in_size as usize)
+                                    .map_err(|e| execution::Error::Interpreter(e.into()))?,
                             );
                             if digest.len() != out_size as usize {
                                 let err_value =
                                     u32::from(api_error::ApiError::BufferTooSmall) as i32;
                                 return Ok(err_value);
                             }
+                            function_context
+                                .memory_write(out_ptr, &digest)
+                                .map_err(|e| execution::Error::Interpreter(e.into()))?;
                             Ok(0_i32)
                         },
                     )
