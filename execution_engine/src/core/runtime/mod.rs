@@ -1345,7 +1345,7 @@ where
 
     /// Return some bytes from the memory and terminate the current `sub_call`. Note that the return
     /// type is `Trap`, indicating that this function will always kill the current Wasm instance.
-    fn ret(
+    pub(crate) fn ret(
         &mut self,
         value_ptr: u32,
         value_size: usize,

@@ -462,7 +462,7 @@ impl Instance {
                     .unwrap();
 
                 // Couldn't get this to work...
-                /*linker
+                linker
                     .func_wrap(
                         "env",
                         "casper_ret",
@@ -477,15 +477,28 @@ impl Instance {
                             )?;
                             let mut scoped_instrumenter =
                                 ScopedInstrumenter::new(FunctionIndex::CallVersionedContract);
-                            caller.data_mut().simple_ret(
+                            let error = caller.data_mut().ret(
                                 value_ptr,
                                 value_size as usize,
                                 &mut scoped_instrumenter,
                             );
-                            Ok(())
+
+                            Result::<(), _>::Err(error.into())
+                            // as_result?;
+
+                            // let trap = wasmtime::Trap::from(error);
+
+                            // Ok(())
+                            // Err(trap)
+                            // Ok(())
+
+                            // result?;
+                            // Ok(()) // unreachable
+                            // Err(Trap::from(error.into()).into())
+                            // Err(Trap::from(error))
                         },
                     )
-                    .unwrap();*/
+                    .unwrap();
 
                 linker
                     .func_wrap(
