@@ -1278,7 +1278,7 @@ where
     }
 
     /// Writes runtime context's phase to dest_ptr in the Wasm memory.
-    fn get_phase(&mut self, mut context: impl FunctionContext, dest_ptr: u32) -> Result<(), Error> {
+    pub fn get_phase(&mut self, mut context: impl FunctionContext, dest_ptr: u32) -> Result<(), Error> {
         let phase = self.context.phase();
         let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
         context
@@ -3962,7 +3962,7 @@ where
     }
 
     /// Creates a dictionary
-    fn new_dictionary(
+    pub fn new_dictionary(
         &mut self,
         mut context: impl FunctionContext,
         output_size_ptr: u32,
@@ -3992,7 +3992,7 @@ where
     }
 
     /// Reads the `value` under a `key` in a dictionary
-    fn dictionary_get(
+    pub fn dictionary_get(
         &mut self,
         mut context: impl FunctionContext,
         uref_ptr: u32,
