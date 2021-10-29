@@ -1278,7 +1278,11 @@ where
     }
 
     /// Writes runtime context's phase to dest_ptr in the Wasm memory.
-    pub fn get_phase(&mut self, mut context: impl FunctionContext, dest_ptr: u32) -> Result<(), Error> {
+    pub fn get_phase(
+        &mut self,
+        mut context: impl FunctionContext,
+        dest_ptr: u32,
+    ) -> Result<(), Error> {
         let phase = self.context.phase();
         let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
         context
@@ -4048,8 +4052,7 @@ where
         value_size: u32,
     ) -> Result<Result<(), ApiError>, Error> {
         let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
-        let dictionary_item_key_bytes =
-            bytes_from_memory(&mut context, key_ptr, key_size)?;
+        let dictionary_item_key_bytes = bytes_from_memory(&mut context, key_ptr, key_size)?;
         if dictionary_item_key_bytes.len() > DICTIONARY_ITEM_KEY_MAX_LENGTH {
             return Ok(Err(ApiError::DictionaryItemKeyExceedsLength));
         }

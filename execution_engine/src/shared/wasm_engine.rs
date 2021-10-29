@@ -7,6 +7,7 @@ use casper_types::{
     ApiError, CLValue, ContractPackageHash, ContractVersion, Gas, Key, ProtocolVersion,
     StoredValue, URef, U512,
 };
+use itertools::Itertools;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use once_cell::sync::Lazy;
@@ -20,12 +21,12 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     error::Error,
     fmt::{self, Display, Formatter},
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io::Write,
     path::Path,
     rc::Rc,
     sync::{Mutex, Once},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 
@@ -103,10 +104,15 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 pub enum Module {
     /// TODO: We might not need it anymore. We use "do nothing" bytes for replacing wasm modules
     Noop,
-    Interpreted(WasmiModule),
+    Interpreted {
+        original_bytes: Vec<u8>,
+        wasmi_module: WasmiModule,
+    },
     Compiled {
+        original_bytes: Vec<u8>,
         /// Used to carry on original Wasm module for easy further processing.
         wasmi_module: WasmiModule,
+        precompile_time: Option<Duration>,
         /// Ahead of time compiled artifact.
         compiled_artifact: Vec<u8>,
     },
@@ -116,7 +122,9 @@ impl fmt::Debug for Module {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Noop => f.debug_tuple("Noop").finish(),
-            Self::Interpreted(arg0) => f.debug_tuple("Interpreted").field(arg0).finish(),
+            Self::Interpreted { wasmi_module, .. } => {
+                f.debug_tuple("Interpreted").field(wasmi_module).finish()
+            }
             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
         }
     }
@@ -124,8 +132,8 @@ impl fmt::Debug for Module {
 
 impl Module {
     pub fn try_into_interpreted(self) -> Result<WasmiModule, Self> {
-        if let Self::Interpreted(v) = self {
-            Ok(v)
+        if let Self::Interpreted { wasmi_module, .. } = self {
+            Ok(wasmi_module)
         } else {
             Err(self)
         }
@@ -138,7 +146,10 @@ impl Module {
     pub fn into_interpreted(self) -> WasmiModule {
         match self {
             Module::Noop => unimplemented!("Attempting to get interpreted module from noop"),
-            Module::Interpreted(parity_wasm) => parity_wasm,
+            Module::Interpreted {
+                original_bytes,
+                wasmi_module,
+            } => wasmi_module,
             Module::Compiled { wasmi_module, .. } => wasmi_module,
         }
     }
@@ -152,17 +163,48 @@ impl Module {
     // }
 }
 
-impl From<WasmiModule> for Module {
-    fn from(wasmi_module: WasmiModule) -> Self {
-        Self::Interpreted(wasmi_module)
+#[derive(Debug)]
+pub enum LogProperty {
+    Size(usize),
+    PrecompileTime(Duration),
+    Runtime(Duration),
+    EntryPoint(String),
+    Finish,
+}
+
+impl Display for LogProperty {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            LogProperty::Size(value) => write!(f, "size={}", value),
+            LogProperty::PrecompileTime(value) => {
+                write!(f, "precompile_time_us={}", value.as_micros())
+            }
+            LogProperty::Runtime(value) => write!(f, "runtime_us={}", value.as_micros()),
+            LogProperty::EntryPoint(value) => write!(f, "entrypoint={}", value),
+            LogProperty::Finish => write!(f, "finish"),
+        }
     }
 }
 
-// impl From<wasmtime::Module> for Module {
-//     fn from(wasmtime_module: wasmtime::Module) -> Self {
-//         Self::Compiled(wasmtime_module)
-//     }
-// \}
+pub fn record_performance_log(wasm_bytes: &[u8], log_property: Vec<LogProperty>) {
+    let mut f = OpenOptions::new()
+        .read(false)
+        .append(true)
+        .create(true)
+        .open("performance_log.txt")
+        .expect("should open file");
+
+    let wasm_id = account::blake2b(wasm_bytes);
+
+    let properties = log_property
+        .into_iter()
+        .map(|prop| prop.to_string())
+        .join(",");
+
+    let data = format!("{},{}\n", base16::encode_lower(&wasm_id), properties);
+    f.write(data.as_bytes()).expect("should write");
+    f.sync_all().expect("should sync");
+}
 
 /// Common error type adapter for all Wasm engines supported.
 #[derive(Error, Debug)]
@@ -241,10 +283,17 @@ impl Into<wasmi::RuntimeValue> for RuntimeValue {
 pub enum Instance {
     // TODO: We might not need it. Actually trying to execute a noop is a programming error.
     Noop,
-    Interpreted(ModuleRef, MemoryRef),
+    Interpreted {
+        original_bytes: Vec<u8>,
+        module: ModuleRef,
+        memory: MemoryRef,
+    },
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
     Compiled {
+        /// For metrics
+        original_bytes: Vec<u8>,
+        precompile_time: Option<Duration>,
         /// Raw Wasmi module used only for further processing.
         module: WasmiModule,
         /// This is compiled module used for execution.
@@ -256,10 +305,10 @@ impl fmt::Debug for Instance {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Self::Noop => f.debug_tuple("Noop").finish(),
-            Self::Interpreted(arg0, arg1) => f
+            Self::Interpreted { module, memory, .. } => f
                 .debug_tuple("Interpreted")
-                .field(arg0)
-                .field(arg1)
+                .field(module)
+                .field(memory)
                 .finish(),
             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
         }
@@ -342,7 +391,7 @@ impl Instance {
     pub fn interpreted_memory(&self) -> MemoryRef {
         match self {
             Instance::Noop => unimplemented!("Unable to get interpreted memory from noop module"),
-            Instance::Interpreted(_, memory_ref) => memory_ref.clone(),
+            Instance::Interpreted { memory, .. } => memory.clone(),
             Instance::Compiled { .. } => unreachable!("available only from wasmi externals"),
         }
     }
@@ -362,20 +411,49 @@ impl Instance {
             Instance::Noop => {
                 unimplemented!("Unable to execute export {} on noop instance", func_name)
             }
-            Instance::Interpreted(module_ref, memory_ref) => {
+            Instance::Interpreted {
+                original_bytes,
+                module,
+                memory,
+            } => {
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
                     args.into_iter().map(|value| value.into()).collect();
+
+                // record_performance_log(&original_bytes,
+                // LogProperty::EntryPoint(func_name.to_string()));
+
                 // get the runtime value
-                let wasmi_result =
-                    module_ref.invoke_export(func_name, wasmi_args.as_slice(), runtime)?;
+
+                let start = Instant::now();
+
+                let wasmi_result = module.invoke_export(func_name, wasmi_args.as_slice(), runtime);
+
+                let stop = start.elapsed();
+                record_performance_log(
+                    &original_bytes,
+                    vec![
+                        LogProperty::Size(original_bytes.len()),
+                        LogProperty::EntryPoint(func_name.to_string()),
+                        LogProperty::PrecompileTime(Duration::default()),
+                        LogProperty::Runtime(stop),
+                    ],
+                );
+
+                let wasmi_result = wasmi_result?;
+
                 // wasmi's runtime value into our runtime value
                 let result = wasmi_result.map(RuntimeValue::from);
                 Ok(result)
             }
             Instance::Compiled {
+                original_bytes,
                 module,
                 mut compiled_module,
+                precompile_time,
             } => {
+                // record_performance_log(&original_bytes,
+                // LogProperty::EntryPoint(func_name.to_string()));
+
                 let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
 
                 let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
@@ -1539,6 +1617,8 @@ impl Instance {
                     )
                     .unwrap();
 
+                let start = Instant::now();
+
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
                     .expect("should instantiate");
@@ -1546,9 +1626,28 @@ impl Instance {
                 let exported_func = instance
                     .get_typed_func::<(), (), _>(&mut store, func_name)
                     .expect("should get typed func");
-                exported_func
+
+                let ret = exported_func
                     .call(&mut store, ())
-                    .map_err(RuntimeError::from)?;
+                    .map_err(RuntimeError::from);
+
+                let stop = start.elapsed();
+
+                record_performance_log(
+                    &original_bytes,
+                    vec![
+                        LogProperty::Size(original_bytes.len()),
+                        LogProperty::EntryPoint(func_name.to_string()),
+                        LogProperty::PrecompileTime(precompile_time.unwrap_or_default()),
+                        LogProperty::Runtime(stop),
+                    ],
+                );
+
+                // record_performance_log(&original_bytes, LogProperty::Runtime(stop));
+                // record_performance_log(&original_bytes, LogProperty::Finish);
+
+                ret?;
+
                 Ok(Some(RuntimeValue::I64(0)))
             }
         }
@@ -1618,13 +1717,15 @@ impl std::ops::Deref for WasmtimeEngine {
     }
 }
 
+// NOTE: Imitates persistent on disk cache for precompiled artifacts
+static GLOBAL_CACHE: Lazy<Mutex<RefCell<HashMap<Vec<u8>, Vec<u8>>>>> = Lazy::new(Default::default);
+
 /// Wasm preprocessor.
 #[derive(Debug, Clone)]
 pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
     compiled_engine: WasmtimeEngine,
-    cache: RefCell<HashMap<Vec<u8>, Vec<u8>>>,
 }
 
 fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
@@ -1699,7 +1800,6 @@ impl WasmEngine {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
             compiled_engine: new_compiled_engine(&wasm_config),
-            cache: Default::default(),
         }
     }
 
@@ -1744,7 +1844,10 @@ impl WasmEngine {
             .map_err(|_| PreprocessingError::StackLimiter)?;
 
         match self.execution_mode {
-            ExecutionMode::Interpreted => Ok(module.into()),
+            ExecutionMode::Interpreted => Ok(Module::Interpreted {
+                original_bytes: module_bytes.to_vec(),
+                wasmi_module: module,
+            }),
             ExecutionMode::Compiled => {
                 // TODO: Gas injected module is used here but we might want to use `module` instead
                 // with other preprocessing done.
@@ -1752,12 +1855,16 @@ impl WasmEngine {
                     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
                 // aot compile
-                let precompiled_bytes = self.precompile(&preprocessed_wasm_bytes).unwrap();
+                let (precompiled_bytes, duration) = self
+                    .precompile(module_bytes, &preprocessed_wasm_bytes)
+                    .unwrap();
                 // let wasmtime_module =
                 //     wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
                 //         .expect("should process");
                 Ok(Module::Compiled {
+                    original_bytes: module_bytes.to_vec(),
                     wasmi_module: module,
+                    precompile_time: duration,
                     compiled_artifact: precompiled_bytes.to_owned(),
                 })
 
@@ -1781,14 +1888,20 @@ impl WasmEngine {
         let parity_module = deserialize_interpreted(wasm_bytes)?;
 
         let module = match self.execution_mode {
-            ExecutionMode::Interpreted => Module::Interpreted(parity_module),
+            ExecutionMode::Interpreted => Module::Interpreted {
+                wasmi_module: parity_module,
+                original_bytes: wasm_bytes.to_vec(),
+            },
             ExecutionMode::Compiled => {
                 // aot compile
-                let precompiled_bytes = self.precompile(wasm_bytes).unwrap();
+                let (precompiled_bytes, duration) =
+                    self.precompile(wasm_bytes, wasm_bytes).unwrap();
                 // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
                 // let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
                 Module::Compiled {
+                    original_bytes: wasm_bytes.to_vec(),
                     wasmi_module: parity_module,
+                    precompile_time: duration,
                     compiled_artifact: precompiled_bytes.to_owned(),
                 }
                 // let compiled_module =
@@ -1825,7 +1938,10 @@ impl WasmEngine {
         // match wasm_engine.execution_mode() {
         match wasm_module {
             Module::Noop => Ok(Instance::Noop),
-            Module::Interpreted(wasmi_module) => {
+            Module::Interpreted {
+                original_bytes,
+                wasmi_module,
+            } => {
                 // let wasmi_module = wasm_module.try_into_interpreted().expect("expected
                 // interpreted wasm module");
                 let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
@@ -1838,11 +1954,17 @@ impl WasmEngine {
                 }
                 let instance = not_started_module.not_started_instance().clone();
                 let memory = resolver.memory_ref()?;
-                Ok(Instance::Interpreted(instance, memory))
+                Ok(Instance::Interpreted {
+                    original_bytes,
+                    module: instance,
+                    memory,
+                })
             }
             Module::Compiled {
+                original_bytes,
                 wasmi_module,
                 compiled_artifact,
+                precompile_time,
             } => {
                 // aot compile
                 // let precompiled_bytes =
@@ -1856,8 +1978,10 @@ impl WasmEngine {
 
                 let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
                 Ok(Instance::Compiled {
+                    original_bytes,
                     module: wasmi_module,
                     compiled_module,
+                    precompile_time,
                 })
             }
         }
@@ -1869,23 +1993,29 @@ impl WasmEngine {
         Ok(compiled_module)
     }
 
-    fn precompile(&self, bytes: &[u8]) -> Result<Vec<u8>, execution::Error> {
-        let mut cache = self.cache.borrow_mut();
-        let bytes = match cache.entry(bytes.to_vec()) {
-            Entry::Occupied(o) => o.get().clone(),
+    fn precompile(
+        &self,
+        original_bytes: &[u8],
+        bytes: &[u8],
+    ) -> Result<(Vec<u8>, Option<Duration>), RuntimeError> {
+        let cache = GLOBAL_CACHE.lock().unwrap();
+        let mut cache = cache.borrow_mut();
+        // let mut cache = GLOBAL_CACHE.lborrow_mut();
+        let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
+            Entry::Occupied(o) => (o.get().clone(), None),
             Entry::Vacant(v) => {
                 let start = Instant::now();
                 let precompiled_bytes = self
                     .compiled_engine
                     .precompile_module(bytes)
-                    .expect("should preprocess");
+                    .map_err(|e| RuntimeError::Other(e.to_string()))?;
                 let stop = start.elapsed();
-                eprintln!("precompiled {} bytes in {:?}", bytes.len(), stop);
-                v.insert(precompiled_bytes).clone()
+                // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
+                let artifact = v.insert(precompiled_bytes).clone();
+                (artifact, Some(stop))
             }
         };
-        // );
-        Ok(bytes)
+        Ok((bytes, maybe_duration))
     }
 }
 

@@ -151,7 +151,6 @@ fn should_execute_do_minimum_session() {
         proposer_balance_before + minimum_deploy_payment,
         proposer_balance_after
     );
-    eprintln!("elapsed {:?}", stop);
 }
 
 #[ignore]

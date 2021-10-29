@@ -267,7 +267,6 @@ fn should_run_out_of_gas_when_session_code_exceeds_gas_limit() {
         session_gas_limit,
         "cost should equal gas limit"
     );
-    eprintln!("elapsed {:?}", stop);
 }
 
 #[ignore]

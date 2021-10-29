@@ -53,15 +53,6 @@ fn should_run_endless_loop() {
         "{:?}",
         maybe_error
     );
-    eprintln!("elapsed {:?}", stop);
-
-    // let account =builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
-    // eprintln!("{:?}", account.named_keys());
-    // let keys = account.named_keys().get("buffer").unwrap();
-
-    // let data = builder.query(None, Key::Account(*DEFAULT_ACCOUNT_ADDR),
-    // &["buffer".to_string()]).unwrap();; let buffer: Bytes =
-    // data.as_cl_value().unwrap().clone().into_t().unwrap();
 }
 
 #[ignore]
@@ -147,7 +138,6 @@ fn should_run_create_200_accounts() {
     let start = Instant::now();
     builder.exec(exec).expect_success().commit();
     let stop = start.elapsed();
-    eprintln!("elapsed {:?}", stop);
 
     for account in accounts {
         let account = builder.get_account(account).unwrap();
@@ -174,10 +164,7 @@ fn should_run_create_200_purses() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
-    let start = Instant::now();
     builder.exec(exec).expect_success().commit();
-    let stop = start.elapsed();
-    eprintln!("elapsed {:?}", stop);
 
     let purses: Vec<URef> = {
         let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
@@ -237,5 +224,4 @@ fn simple_transfer() {
     let start1 = Instant::now();
     builder.exec(exec1).expect_success().commit();
     let stop1 = start1.elapsed();
-    eprintln!("elapsed {:?}", stop1);
 }

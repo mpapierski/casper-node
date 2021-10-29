@@ -29,6 +29,4 @@ fn should_revert() {
             if api_error == ApiError::User(100) => {}
         _ => panic!("should be an error but {:?}", maybe_error),
     }
-
-    eprintln!("elapsed {:?}", stop);
 }
