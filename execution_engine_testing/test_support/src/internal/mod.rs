@@ -64,11 +64,14 @@ pub const DEFAULT_GAS_PRICE: u64 = 1;
 pub const ENV_EXECUTION_MODE: &str = "CASPER_EXECUTION_MODE";
 pub const ENV_EXECUTION_MODE_COMPILED: &str = "compiled";
 pub const ENV_EXECUTION_MODE_INTERPRETED: &str = "interpreted";
+pub const ENV_EXECUTION_MODE_JIT: &str = "jit";
 
 fn execution_mode_from_env() -> ExecutionMode {
     match std::env::var_os(ENV_EXECUTION_MODE) {
         Some(value) if value == ENV_EXECUTION_MODE_INTERPRETED => ExecutionMode::Interpreted,
         Some(value) if value == ENV_EXECUTION_MODE_COMPILED => ExecutionMode::Compiled,
+        Some(value) if value == ENV_EXECUTION_MODE_JIT => ExecutionMode::JustInTime,
+        Some(value) => panic!("Unknown execution mode: {:?}", value),
         Some(_) | None => ExecutionMode::Interpreted,
     }
 }

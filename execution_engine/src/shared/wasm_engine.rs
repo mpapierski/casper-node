@@ -63,6 +63,8 @@ pub enum ExecutionMode {
     Interpreted = 1,
     /// Runs Wasm modules in a compiled mode.
     Compiled = 2,
+    /// Runs Wasm modules in a JIT mode.
+    JustInTime = 3,
 }
 
 impl ToBytes for ExecutionMode {
@@ -116,6 +118,12 @@ pub enum Module {
         /// Ahead of time compiled artifact.
         compiled_artifact: Vec<u8>,
     },
+    Jitted {
+        original_bytes: Vec<u8>,
+        wasmi_module: WasmiModule,
+        precompile_time: Option<Duration>,
+        module: wasmtime::Module,
+    },
 }
 
 impl fmt::Debug for Module {
@@ -126,6 +134,7 @@ impl fmt::Debug for Module {
                 f.debug_tuple("Interpreted").field(wasmi_module).finish()
             }
             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
+            Self::Jitted { .. } => f.debug_tuple("Jitted").finish(),
         }
     }
 }
@@ -151,6 +160,7 @@ impl Module {
                 wasmi_module,
             } => wasmi_module,
             Module::Compiled { wasmi_module, .. } => wasmi_module,
+            Module::Jitted { wasmi_module, .. } => wasmi_module,
         }
     }
 
@@ -1874,6 +1884,24 @@ impl WasmEngine {
                 // PreprocessingError::Deserialize(e.to_string()))?;
                 //     Ok(compiled_module.into())
             }
+            ExecutionMode::JustInTime => {
+                let start = Instant::now();
+
+                let preprocessed_wasm_bytes =
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+                let compiled_module =
+                    wasmtime::Module::new(&self.compiled_engine, preprocessed_wasm_bytes)
+                        .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+
+                let stop = start.elapsed();
+
+                Ok(Module::Jitted {
+                    original_bytes: module_bytes.to_vec(),
+                    wasmi_module: module,
+                    precompile_time: Some(stop),
+                    module: compiled_module,
+                })
+            }
         }
         // let module = deserialize_interpreted(module_bytes)?;
     }
@@ -1912,6 +1940,17 @@ impl WasmEngine {
                 // let compiled_module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes)
                 //     .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
                 // Module::Compiled(compiled_module)
+            }
+            ExecutionMode::JustInTime => {
+                let start = Instant::now();
+                let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
+                let stop = start.elapsed();
+                Module::Jitted {
+                    original_bytes: wasm_bytes.to_vec(),
+                    wasmi_module: parity_module,
+                    precompile_time: Some(stop),
+                    module,
+                }
             }
         };
         Ok(module)
@@ -1977,6 +2016,31 @@ impl WasmEngine {
                 // &[]).expect("should create compiled module");
 
                 let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+                Ok(Instance::Compiled {
+                    original_bytes,
+                    module: wasmi_module,
+                    compiled_module,
+                    precompile_time,
+                })
+            }
+            Module::Jitted {
+                original_bytes,
+                wasmi_module,
+                // compiled_artifact,
+                precompile_time,
+                module: compiled_module,
+            } => {
+                // aot compile
+                // let precompiled_bytes =
+                // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
+                // preprocess"); Ok(Module::Compiled(precompiled_bytes))
+
+                // todo!("compiled mode")
+                // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
+                // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
+                // &[]).expect("should create compiled module");
+
+                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
                 Ok(Instance::Compiled {
                     original_bytes,
                     module: wasmi_module,
