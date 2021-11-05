@@ -13,7 +13,7 @@ use clap::{crate_version, App, Arg};
 
 use casper_engine_test_support::{
     DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, DEFAULT_PAYMENT,
-}};
+};
 use casper_execution_engine::core::engine_state::EngineConfig;
 use casper_hashing::Digest;
 use casper_types::{runtime_args, RuntimeArgs, U512, DeployHash};
