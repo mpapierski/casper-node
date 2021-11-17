@@ -369,7 +369,7 @@ pub enum PeerMsg {
     /// Download and save the trie under this
     GetTrie(Digest),
     TrieDownloaded {
-        trie: Trie<Key, StoredValue>,
+        trie: Box<Trie<Key, StoredValue>>,
         peer: SocketAddr,
         elapsed: Duration,
         len_in_bytes: usize,
@@ -672,7 +672,7 @@ fn spawn_peer(
                     };
                     base_send
                         .send(Ok(PeerMsg::TrieDownloaded {
-                            trie,
+                            trie: Box::new(trie),
                             peer: address,
                             elapsed: start.elapsed(),
                             len_in_bytes,
