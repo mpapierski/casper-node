@@ -461,6 +461,13 @@ impl<T: FromBytes> FromBytes for VecDeque<T> {
     }
 }
 
+/// Append a bytes representation of `text` to `writer` without intermediate allocations.
+pub fn append_string(writer: &mut Vec<u8>, text: &str) {
+    let text_bytes = text.as_bytes();
+    writer.extend((text_bytes.len() as u32).to_le_bytes());
+    writer.extend_from_slice(text_bytes);
+}
+
 macro_rules! impl_to_from_bytes_for_array {
     ($($N:literal)+) => {
         $(
@@ -1138,7 +1145,7 @@ pub(crate) fn vec_u8_to_bytes(vec: &Vec<u8>) -> Result<Vec<u8>, Error> {
 ///
 /// This function adds a length prefix in the beginning.
 #[inline(always)]
-fn u8_slice_serialized_length(bytes: &[u8]) -> usize {
+pub(crate) fn u8_slice_serialized_length(bytes: &[u8]) -> usize {
     U32_SERIALIZED_LENGTH + bytes.len()
 }
 

@@ -31,7 +31,8 @@ pub use self::{
 use crate::{
     bytesrepr::{self, FromBytes, ToBytes},
     contracts::NamedKeys,
-    AccessRights, URef, BLAKE2B_DIGEST_LENGTH,
+    tagged::Tagged,
+    AccessRights, Key, URef, BLAKE2B_DIGEST_LENGTH,
 };
 
 /// Represents an Account in the global state.
@@ -250,11 +251,65 @@ impl Account {
 impl ToBytes for Account {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
-        result.append(&mut self.account_hash.to_bytes()?);
-        result.append(&mut self.named_keys.to_bytes()?);
-        result.append(&mut self.main_purse.to_bytes()?);
-        result.append(&mut self.associated_keys.to_bytes()?);
-        result.append(&mut self.action_thresholds.to_bytes()?);
+        //         result.append(&mut self.account_hash.to_bytes()?);
+        result.extend_from_slice(self.account_hash.as_bytes());
+        //         result.append(&mut self.named_keys.to_bytes()?);
+        result.extend((self.named_keys().len() as u32).to_le_bytes());
+        for (key, value) in self.named_keys() {
+            let key_bytes = key.as_bytes();
+            result.extend((key_bytes.len() as u32).to_le_bytes());
+            result.extend_from_slice(key_bytes);
+            //
+            result.push(value.tag());
+            match value {
+                Key::Account(account_hash) => {
+                    result.extend_from_slice(account_hash.as_bytes());
+                }
+                Key::Hash(hash) => {
+                    result.extend_from_slice(hash);
+                }
+                Key::URef(uref) => {
+                    result.extend_from_slice(&uref.addr());
+                    result.push(uref.access_rights().bits());
+                }
+                Key::Transfer(addr) => {
+                    result.extend_from_slice(addr.as_bytes());
+                }
+                Key::DeployInfo(addr) => {
+                    result.extend_from_slice(addr.as_bytes());
+                }
+                Key::EraInfo(era_id) => {
+                    result.extend_from_slice(&era_id.to_le_bytes());
+                }
+                Key::Balance(uref_addr) => {
+                    result.extend_from_slice(uref_addr);
+                }
+                Key::Bid(account_hash) => {
+                    result.extend_from_slice(account_hash.as_bytes());
+                }
+                Key::Withdraw(account_hash) => {
+                    result.extend_from_slice(account_hash.as_bytes());
+                }
+                Key::Dictionary(addr) => {
+                    result.extend_from_slice(addr);
+                }
+                Key::SystemContractRegistry => {
+                    result.extend_from_slice(&[0u8; 32]);
+                }
+            }
+        }
+        //         result.append(&mut self.main_purse.to_bytes()?);
+        result.extend_from_slice(&self.main_purse.addr());
+        result.push(self.main_purse.access_rights().bits());
+        //         result.append(&mut self.associated_keys.to_bytes()?);
+        result.extend_from_slice(&(self.associated_keys().len() as u32).to_le_bytes());
+        for (key, weight) in self.associated_keys().iter() {
+            result.extend_from_slice(key.as_bytes());
+            result.push(weight.value());
+        }
+        //         result.append(&mut self.action_thresholds.to_bytes()?);
+        result.push(self.action_thresholds().deployment.value());
+        result.push(self.action_thresholds().key_management.value());
         Ok(result)
     }
 
@@ -266,6 +321,26 @@ impl ToBytes for Account {
             + self.action_thresholds.serialized_length()
     }
 }
+
+// impl ToBytes for Account {
+//     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+//         let mut result = bytesrepr::allocate_buffer(self)?;
+//         result.append(&mut self.account_hash.to_bytes()?);
+//         result.append(&mut self.named_keys.to_bytes()?);
+//         result.append(&mut self.main_purse.to_bytes()?);
+//         result.append(&mut self.associated_keys.to_bytes()?);
+//         result.append(&mut self.action_thresholds.to_bytes()?);
+//         Ok(result)
+//     }
+
+//     fn serialized_length(&self) -> usize {
+//         self.account_hash.serialized_length()
+//             + self.named_keys.serialized_length()
+//             + self.main_purse.serialized_length()
+//             + self.associated_keys.serialized_length()
+//             + self.action_thresholds.serialized_length()
+//     }
+// }
 
 impl FromBytes for Account {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {

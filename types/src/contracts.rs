@@ -23,7 +23,7 @@ use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Seria
 use crate::{
     account,
     account::TryFromSliceForAccountHashError,
-    bytesrepr::{self, FromBytes, ToBytes, U32_SERIALIZED_LENGTH},
+    bytesrepr::{self, append_string, FromBytes, ToBytes, U32_SERIALIZED_LENGTH},
     contract_wasm::ContractWasmHash,
     uref,
     uref::URef,
@@ -266,6 +266,11 @@ impl ContractVersionKey {
     /// Returns the contract version within the protocol major version.
     pub fn contract_version(self) -> ContractVersion {
         self.1
+    }
+
+    pub(crate) fn as_bytes(&self, writer: &mut Vec<u8>) {
+        writer.extend(self.0.to_le_bytes());
+        writer.extend(self.1.to_le_bytes());
     }
 }
 
@@ -623,6 +628,13 @@ impl ContractPackageStatus {
             ContractPackageStatus::Unlocked
         }
     }
+
+    pub(crate) fn as_bytes(&self, writer: &mut Vec<u8>) {
+        match self {
+            ContractPackageStatus::Locked => writer.push(true as u8),
+            ContractPackageStatus::Unlocked => writer.push(false as u8),
+        }
+    }
 }
 
 impl Default for ContractPackageStatus {
@@ -847,11 +859,29 @@ impl ToBytes for ContractPackage {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
 
-        result.append(&mut self.access_key.to_bytes()?);
-        result.append(&mut self.versions.to_bytes()?);
-        result.append(&mut self.disabled_versions.to_bytes()?);
-        result.append(&mut self.groups.to_bytes()?);
-        result.append(&mut self.lock_status.to_bytes()?);
+        self.access_key().as_bytes(&mut result);
+        // versions
+        result.extend((self.versions.len() as u32).to_le_bytes());
+        for (contract_key, contract_hash) in self.versions() {
+            contract_key.as_bytes(&mut result);
+            result.extend_from_slice(contract_hash.as_bytes());
+        }
+        // disabled versions
+        result.extend((self.disabled_versions.len() as u32).to_le_bytes());
+        for contract_key in self.disabled_versions() {
+            contract_key.as_bytes(&mut result);
+        }
+        // groups
+        result.extend((self.groups.len() as u32).to_le_bytes());
+        for (group, urefs) in self.groups() {
+            append_string(&mut result, group.value());
+            result.extend((urefs.len() as u32).to_le_bytes());
+            for uref in urefs {
+                uref.as_bytes(&mut result);
+            }
+        }
+        // lock status
+        self.lock_status.as_bytes(&mut result);
 
         Ok(result)
     }
@@ -864,6 +894,28 @@ impl ToBytes for ContractPackage {
             + self.lock_status.serialized_length()
     }
 }
+
+// impl ToBytes for ContractPackage {
+//     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+//         let mut result = bytesrepr::allocate_buffer(self)?;
+
+//         result.append(&mut self.access_key.to_bytes()?);
+//         result.append(&mut self.versions.to_bytes()?);
+//         result.append(&mut self.disabled_versions.to_bytes()?);
+//         result.append(&mut self.groups.to_bytes()?);
+//         result.append(&mut self.lock_status.to_bytes()?);
+
+//         Ok(result)
+//     }
+
+//     fn serialized_length(&self) -> usize {
+//         self.access_key.serialized_length()
+//             + self.versions.serialized_length()
+//             + self.disabled_versions.serialized_length()
+//             + self.groups.serialized_length()
+//             + self.lock_status.serialized_length()
+//     }
+// }
 
 impl FromBytes for ContractPackage {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
@@ -945,6 +997,25 @@ impl EntryPoints {
     /// Takes all entry points.
     pub fn take_entry_points(self) -> Vec<EntryPoint> {
         self.0.into_iter().map(|(_name, value)| value).collect()
+    }
+
+    /// Returns number of entry points.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Returns an iterator over entry points.
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &EntryPoint)> {
+        self.0.iter()
+    }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.extend((self.0.len() as u32).to_le_bytes());
+        for (name, entry_point) in self.0.iter() {
+            bytesrepr::append_string(writer, name);
+            entry_point.write_bytes(writer)?;
+        }
+        Ok(())
     }
 }
 
@@ -1083,11 +1154,15 @@ impl Contract {
 impl ToBytes for Contract {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
-        result.append(&mut self.contract_package_hash.to_bytes()?);
-        result.append(&mut self.contract_wasm_hash.to_bytes()?);
-        result.append(&mut self.named_keys.to_bytes()?);
-        result.append(&mut self.entry_points.to_bytes()?);
-        result.append(&mut self.protocol_version.to_bytes()?);
+        result.extend_from_slice(self.contract_package_hash.as_bytes());
+        result.extend_from_slice(self.contract_wasm_hash.as_bytes());
+        result.extend((self.named_keys().len() as u32).to_le_bytes());
+        for (key, value) in self.named_keys() {
+            bytesrepr::append_string(&mut result, key);
+            value.write_bytes(&mut result);
+        }
+        self.entry_points().write_bytes(&mut result)?;
+        self.protocol_version.write_bytes(&mut result);
         Ok(result)
     }
 
@@ -1100,6 +1175,25 @@ impl ToBytes for Contract {
     }
 }
 
+// impl ToBytes for Contract {
+//     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+//         let mut result = bytesrepr::allocate_buffer(self)?;
+//         result.append(&mut self.contract_package_hash.to_bytes()?);
+//         result.append(&mut self.contract_wasm_hash.to_bytes()?);
+//         result.append(&mut self.named_keys.to_bytes()?);
+//         result.append(&mut self.entry_points.to_bytes()?);
+//         result.append(&mut self.protocol_version.to_bytes()?);
+//         Ok(result)
+//     }
+
+//     fn serialized_length(&self) -> usize {
+//         ToBytes::serialized_length(&self.entry_points)
+//             + ToBytes::serialized_length(&self.contract_package_hash)
+//             + ToBytes::serialized_length(&self.contract_wasm_hash)
+//             + ToBytes::serialized_length(&self.protocol_version)
+//             + ToBytes::serialized_length(&self.named_keys)
+//     }
+// }
 impl FromBytes for Contract {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (contract_package_hash, bytes) = FromBytes::from_bytes(bytes)?;
@@ -1141,6 +1235,12 @@ pub enum EntryPointType {
     Session = 0,
     /// Runs within contract's context
     Contract = 1,
+}
+
+impl EntryPointType {
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+        writer.push(*self as u8);
+    }
 }
 
 impl ToBytes for EntryPointType {
@@ -1250,6 +1350,21 @@ impl EntryPoint {
     pub fn entry_point_type(&self) -> EntryPointType {
         self.entry_point_type
     }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        bytesrepr::append_string(writer, &self.name);
+        // result.append(&mut self.args.to_bytes()?);
+        writer.extend((self.args.len() as u32).to_le_bytes());
+        for arg in self.args() {
+            arg.write_bytes(writer)?;
+        }
+        self.ret().append_bytes(writer)?;
+        // result.append(&mut entry_point.access.to_bytes()?);
+        self.access().write_bytes(writer);
+        // result.append(&mut entry_point.entry_point_type.to_bytes()?);
+        self.entry_point_type().write_bytes(writer);
+        Ok(())
+    }
 }
 
 impl Default for EntryPoint {
@@ -1329,6 +1444,19 @@ impl EntryPointAccess {
         let list: Vec<Group> = labels.iter().map(|s| Group(String::from(*s))).collect();
         EntryPointAccess::Groups(list)
     }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+        match self {
+            EntryPointAccess::Public => writer.push(ENTRYPOINTACCESS_PUBLIC_TAG),
+            EntryPointAccess::Groups(groups) => {
+                writer.push(ENTRYPOINTACCESS_GROUPS_TAG);
+                writer.extend((groups.len() as u32).to_le_bytes());
+                for group in groups {
+                    bytesrepr::append_string(writer, group.value())
+                }
+            }
+        }
+    }
 }
 
 impl ToBytes for EntryPointAccess {
@@ -1396,6 +1524,12 @@ impl Parameter {
     /// Get a reference to the parameter's name.
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        bytesrepr::append_string(writer, self.name());
+        self.cl_type.append_bytes(writer)?;
+        Ok(())
     }
 }
 
@@ -1664,5 +1798,29 @@ mod tests {
         let json_string = serde_json::to_string_pretty(&contract_hash).unwrap();
         let decoded = serde_json::from_str(&json_string).unwrap();
         assert_eq!(contract_hash, decoded)
+    }
+}
+
+#[cfg(test)]
+mod prop_tests {
+    use proptest::prelude::*;
+
+    use crate::{bytesrepr, gens};
+
+    proptest! {
+        // #![proptest_config(ProptestConfig {
+        //     cases: 1024,
+        //     .. ProptestConfig::default()
+        // })]
+
+        #[test]
+        fn test_value_contract(contract in gens::contract_arb()) {
+            bytesrepr::test_serialization_roundtrip(&contract);
+        }
+
+        #[test]
+        fn test_value_contract_package(contract_pkg in gens::contract_package_arb()) {
+            bytesrepr::test_serialization_roundtrip(&contract_pkg);
+        }
     }
 }
