@@ -37,8 +37,10 @@ default-members = [
 debug = true
 
 [profile.release]
-codegen-units = 1
-lto = true
+# codegen-units = 1
+# lto = true
+# [profile.release]
+debug = true
 
 [profile.bench]
 codegen-units = 1

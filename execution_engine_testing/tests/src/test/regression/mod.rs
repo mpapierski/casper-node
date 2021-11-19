@@ -41,5 +41,4 @@ mod gov_89_regression;
 mod regression_20210707;
 mod regression_20210831;
 mod regression_20210924;
-mod regression_20211110;
-mod transforms_must_be_ordered;
+mod gh_2346;
