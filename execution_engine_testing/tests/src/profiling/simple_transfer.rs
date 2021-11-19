@@ -7,13 +7,13 @@
 //! By avoiding setting up global state as part of this executable, it will allow profiling to be
 //! done only on meaningful code, rather than including test setup effort in the profile results.
 
-use std::{env, io, path::PathBuf};
+use std::{convert::TryFrom, env, io, path::PathBuf};
 
 use clap::{crate_version, App, Arg};
 
-use casper_engine_test_support::internal::{
+use casper_engine_test_support::{DEFAULT_ACCOUNT_ADDR, internal::{
     DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, DEFAULT_PAYMENT,
-};
+}};
 use casper_execution_engine::core::engine_state::EngineConfig;
 use casper_hashing::Digest;
 use casper_types::{runtime_args, RuntimeArgs, U512};
@@ -85,25 +85,24 @@ fn main() {
 
     // If the required initial root hash wasn't passed as a command line arg, expect to read it in
     // from stdin to allow for it to be piped from the output of 'state-initializer'.
-    let root_hash = args.root_hash.unwrap_or_else(|| {
-        let mut input = String::new();
-        let _ = io::stdin().read_line(&mut input);
-        profiling::parse_hash(input.trim_end())
-    });
+    let root_hash = args.root_hash.unwrap();
 
-    let account_1_account_hash = profiling::account_1_account_hash();
-    let account_2_account_hash = profiling::account_2_account_hash();
+    // let account_1_account_hash = profiling::account_1_account_hash();
+    // let account_2_account_hash = profiling::account_2_account_hash();
 
     let exec_request = {
         let deploy = DeployItemBuilder::new()
-            .with_address(account_1_account_hash)
-            .with_deploy_hash([1; 32])
-            .with_session_code(
-                "simple_transfer.wasm",
-                runtime_args! { "target" =>account_2_account_hash, "amount" => U512::from(TRANSFER_AMOUNT) },
-            )
-            .with_empty_payment_bytes( runtime_args! { "amount" => *DEFAULT_PAYMENT})
-            .with_authorization_keys(&[account_1_account_hash])
+            .with_address(*DEFAULT_ACCOUNT_ADDR)
+            .with_deploy_hash([3; 32])
+            .with_stored_session_named_key("contract_hash", "create_domains", runtime_args! {
+                "number" => 50_000u64,
+            })
+            // .with_session_code(
+            //     "simple_transfer.wasm",
+            //     runtime_args! { "target" =>account_2_account_hash, "amount" => U512::from(TRANSFER_AMOUNT) },
+            // )
+            .with_empty_payment_bytes( runtime_args! { "amount" => (*DEFAULT_PAYMENT * 10)})
+            .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
             .build();
 
         ExecuteRequestBuilder::new().push_deploy(deploy).build()
@@ -112,7 +111,7 @@ fn main() {
     let engine_config = EngineConfig::default();
 
     let mut test_builder =
-        LmdbWasmTestBuilder::open(&args.data_dir, engine_config, Digest::hash(&root_hash));
+        LmdbWasmTestBuilder::open(&args.data_dir, engine_config, Digest::try_from(root_hash.as_slice()).unwrap());
 
     test_builder.exec(exec_request).expect_success().commit();
 

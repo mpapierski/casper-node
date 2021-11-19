@@ -489,7 +489,7 @@ where
         let maybe_exec_results = self
             .engine_state
             .run_execute(CorrelationId::new(), exec_request);
-        assert!(maybe_exec_results.is_ok());
+        assert!(maybe_exec_results.is_ok(), "{:?}", maybe_exec_results);
         // Parse deploy results
         let execution_results = maybe_exec_results.as_ref().unwrap();
         // Cache transformations
