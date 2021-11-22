@@ -430,7 +430,7 @@ impl Key {
         Key::Dictionary(addr)
     }
 
-    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), self::Error> {
         writer.push(self.tag());
         match self {
             Key::Account(account_hash) => {
@@ -468,6 +468,7 @@ impl Key {
                 writer.extend_from_slice(&[0u8; 32]);
             }
         };
+        Ok(())
     }
 }
 
@@ -618,6 +619,10 @@ impl ToBytes for Key {
             Key::Dictionary(_) => KEY_DICTIONARY_SERIALIZED_LENGTH,
             Key::SystemContractRegistry => KEY_SYSTEM_CONTRACT_REGISTRY_SERIALIZED_LENGTH,
         }
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        Key::write_bytes(self, writer)
     }
 }
 

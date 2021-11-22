@@ -212,6 +212,10 @@ impl Group {
     pub fn value(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        bytesrepr::write_string(writer, &self.0)
+    }
 }
 
 impl From<Group> for String {
@@ -268,9 +272,9 @@ impl ContractVersionKey {
         self.1
     }
 
-    pub(crate) fn as_bytes(&self, writer: &mut Vec<u8>) {
-        writer.extend(self.0.to_le_bytes());
-        writer.extend(self.1.to_le_bytes());
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        bytesrepr::write_u32(writer, self.0)?;
+        bytesrepr::write_u32(writer, self.1)
     }
 }
 
@@ -359,6 +363,11 @@ impl ContractHash {
             .ok_or(FromStrError::InvalidPrefix)?;
         let bytes = HashAddr::try_from(base16::decode(remainder)?.as_ref())?;
         Ok(ContractHash(bytes))
+    }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.extend_from_slice(&self.0);
+        Ok(())
     }
 }
 
@@ -502,6 +511,10 @@ impl ContractPackageHash {
         let bytes = HashAddr::try_from(base16::decode(remainder)?.as_ref())?;
         Ok(ContractPackageHash(bytes))
     }
+
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+        writer.extend_from_slice(&self.0)
+    }
 }
 
 impl Display for ContractPackageHash {
@@ -629,10 +642,10 @@ impl ContractPackageStatus {
         }
     }
 
-    pub(crate) fn as_bytes(&self, writer: &mut Vec<u8>) {
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
         match self {
-            ContractPackageStatus::Locked => writer.push(true as u8),
-            ContractPackageStatus::Unlocked => writer.push(false as u8),
+            ContractPackageStatus::Locked => writer.push(u8::from(true)),
+            ContractPackageStatus::Unlocked => writer.push(u8::from(false)),
         }
     }
 }
@@ -859,30 +872,23 @@ impl ToBytes for ContractPackage {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
 
-        self.access_key().as_bytes(&mut result);
-        // versions
-        result.extend((self.versions.len() as u32).to_le_bytes());
-        for (contract_key, contract_hash) in self.versions() {
-            contract_key.as_bytes(&mut result);
-            result.extend_from_slice(contract_hash.as_bytes());
-        }
-        // disabled versions
-        result.extend((self.disabled_versions.len() as u32).to_le_bytes());
-        for contract_key in self.disabled_versions() {
-            contract_key.as_bytes(&mut result);
-        }
-        // groups
-        result.extend((self.groups.len() as u32).to_le_bytes());
-        for (group, urefs) in self.groups() {
-            append_string(&mut result, group.value());
-            result.extend((urefs.len() as u32).to_le_bytes());
-            for uref in urefs {
-                uref.as_bytes(&mut result);
-            }
-        }
-        // lock status
-        self.lock_status.as_bytes(&mut result);
-
+        self.access_key().write_bytes(&mut result)?;
+        bytesrepr::write_tree(
+            &mut result,
+            self.versions(),
+            |version, writer| version.write_bytes(writer),
+            |hash, writer| hash.write_bytes(writer),
+        )?;
+        bytesrepr::write_set(&mut result, self.disabled_versions(), |element, writer| {
+            element.write_bytes(writer)
+        })?;
+        bytesrepr::write_tree(
+            &mut result,
+            self.groups(),
+            |group, w| group.write_bytes(w),
+            |urefs, w| bytesrepr::write_set(w, urefs, |uref, ww| uref.write_bytes(ww)),
+        )?;
+        (&self.lock_status).write_bytes(&mut result);
         Ok(result)
     }
 
@@ -892,6 +898,27 @@ impl ToBytes for ContractPackage {
             + self.disabled_versions.serialized_length()
             + self.groups.serialized_length()
             + self.lock_status.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.access_key().write_bytes(writer)?;
+        bytesrepr::write_tree(
+            writer,
+            self.versions(),
+            |version, w| version.write_bytes(w),
+            |hash, w| hash.write_bytes(w),
+        )?;
+        bytesrepr::write_set(writer, self.disabled_versions(), |element, w| {
+            element.write_bytes(w)
+        })?;
+        bytesrepr::write_tree(
+            writer,
+            self.groups(),
+            |group, w| group.write_bytes(w),
+            |urefs, w| bytesrepr::write_set(w, urefs, |uref, ww| uref.write_bytes(ww)),
+        )?;
+        (&self.lock_status).write_bytes(writer);
+        Ok(())
     }
 }
 
@@ -999,28 +1026,13 @@ impl EntryPoints {
         self.0.into_iter().map(|(_name, value)| value).collect()
     }
 
-    /// Returns number of entry points.
-    pub fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    /// Returns `true` if the containers contains no entry points.
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// Returns an iterator over entry points.
-    pub fn iter(&self) -> impl Iterator<Item = (&String, &EntryPoint)> {
-        self.0.iter()
-    }
-
     pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        writer.extend((self.0.len() as u32).to_le_bytes());
-        for (name, entry_point) in self.0.iter() {
-            bytesrepr::append_string(writer, name);
-            entry_point.write_bytes(writer)?;
-        }
-        Ok(())
+        bytesrepr::write_tree(
+            writer,
+            &self.0,
+            |name, writer| bytesrepr::write_string(writer, name),
+            |entry_point, writer| entry_point.write_bytes(writer),
+        )
     }
 }
 
@@ -1159,15 +1171,16 @@ impl Contract {
 impl ToBytes for Contract {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
-        result.extend_from_slice(self.contract_package_hash.as_bytes());
-        result.extend_from_slice(self.contract_wasm_hash.as_bytes());
-        result.extend((self.named_keys().len() as u32).to_le_bytes());
-        for (key, value) in self.named_keys() {
-            bytesrepr::append_string(&mut result, key);
-            value.write_bytes(&mut result);
-        }
+        self.contract_package_hash().write_bytes(&mut result);
+        self.contract_wasm_hash().write_bytes(&mut result);
+        bytesrepr::write_tree(
+            &mut result,
+            self.named_keys(),
+            |name, writer| bytesrepr::write_string(writer, name),
+            |key, writer| key.write_bytes(writer),
+        )?;
         self.entry_points().write_bytes(&mut result)?;
-        self.protocol_version.write_bytes(&mut result);
+        self.protocol_version().write_bytes(&mut result);
         Ok(result)
     }
 
@@ -1177,6 +1190,20 @@ impl ToBytes for Contract {
             + ToBytes::serialized_length(&self.contract_wasm_hash)
             + ToBytes::serialized_length(&self.protocol_version)
             + ToBytes::serialized_length(&self.named_keys)
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.contract_package_hash().write_bytes(writer);
+        self.contract_wasm_hash().write_bytes(writer);
+        bytesrepr::write_tree(
+            writer,
+            self.named_keys(),
+            |name, w| bytesrepr::write_string(w, name),
+            |key, w| key.write_bytes(w),
+        )?;
+        self.entry_points().write_bytes(writer)?;
+        self.protocol_version().write_bytes(writer);
+        Ok(())
     }
 }
 
@@ -1243,8 +1270,9 @@ pub enum EntryPointType {
 }
 
 impl EntryPointType {
-    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
         writer.push(*self as u8);
+        Ok(())
     }
 }
 
@@ -1357,17 +1385,11 @@ impl EntryPoint {
     }
 
     pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        bytesrepr::append_string(writer, &self.name);
-        // result.append(&mut self.args.to_bytes()?);
-        writer.extend((self.args.len() as u32).to_le_bytes());
-        for arg in self.args() {
-            arg.write_bytes(writer)?;
-        }
-        self.ret().append_bytes(writer)?;
-        // result.append(&mut entry_point.access.to_bytes()?);
-        self.access().write_bytes(writer);
-        // result.append(&mut entry_point.entry_point_type.to_bytes()?);
-        self.entry_point_type().write_bytes(writer);
+        bytesrepr::write_string(writer, &self.name)?;
+        bytesrepr::write_vec(writer, &self.args, |v, writer| v.write_bytes(writer))?;
+        self.ret.append_bytes(writer)?;
+        self.access().write_bytes(writer)?;
+        self.entry_point_type().write_bytes(writer)?;
         Ok(())
     }
 }
@@ -1450,17 +1472,19 @@ impl EntryPointAccess {
         EntryPointAccess::Groups(list)
     }
 
-    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) {
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
         match self {
-            EntryPointAccess::Public => writer.push(ENTRYPOINTACCESS_PUBLIC_TAG),
+            EntryPointAccess::Public => {
+                writer.push(ENTRYPOINTACCESS_PUBLIC_TAG);
+            }
             EntryPointAccess::Groups(groups) => {
                 writer.push(ENTRYPOINTACCESS_GROUPS_TAG);
-                writer.extend((groups.len() as u32).to_le_bytes());
-                for group in groups {
-                    bytesrepr::append_string(writer, group.value())
-                }
+                bytesrepr::write_vec(writer, groups, |group, writer| {
+                    bytesrepr::write_string(writer, group.value())
+                })?;
             }
         }
+        Ok(())
     }
 }
 
@@ -1532,9 +1556,8 @@ impl Parameter {
     }
 
     pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        bytesrepr::append_string(writer, self.name());
-        self.cl_type.append_bytes(writer)?;
-        Ok(())
+        bytesrepr::write_string(writer, &self.name)?;
+        self.cl_type.append_bytes(writer)
     }
 }
 

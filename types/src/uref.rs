@@ -199,9 +199,10 @@ impl URef {
         Ok(URef(addr, access_rights))
     }
 
-    pub(crate) fn as_bytes(&self, writer: &mut Vec<u8>) {
-        writer.extend(&self.0);
+    pub(crate) fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), self::Error> {
+        writer.extend_from_slice(&self.0);
         writer.push(self.1.bits());
+        Ok(())
     }
 }
 
