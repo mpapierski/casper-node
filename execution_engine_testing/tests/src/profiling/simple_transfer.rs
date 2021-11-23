@@ -7,7 +7,7 @@
 //! By avoiding setting up global state as part of this executable, it will allow profiling to be
 //! done only on meaningful code, rather than including test setup effort in the profile results.
 
-use std::{convert::TryFrom, env, io, path::PathBuf};
+use std::{convert::TryFrom, env, io, path::PathBuf, fs::{File, self}};
 
 use clap::{crate_version, App, Arg};
 
@@ -16,7 +16,7 @@ use casper_engine_test_support::{DEFAULT_ACCOUNT_ADDR, internal::{
 }};
 use casper_execution_engine::core::engine_state::EngineConfig;
 use casper_hashing::Digest;
-use casper_types::{runtime_args, RuntimeArgs, U512};
+use casper_types::{runtime_args, RuntimeArgs, U512, DeployHash};
 
 use casper_engine_tests::profiling;
 
@@ -80,12 +80,21 @@ impl Args {
     }
 }
 
+const STATE_HASH_FILE: &str = "state_hash.raw";
+
 fn main() {
     let args = Args::new();
 
     // If the required initial root hash wasn't passed as a command line arg, expect to read it in
     // from stdin to allow for it to be piped from the output of 'state-initializer'.
-    let root_hash = args.root_hash.unwrap();
+    let state_root_hash = {
+        let hash_bytes = match args.root_hash {
+            Some(root_hash) => root_hash,
+            None => fs::read(STATE_HASH_FILE).unwrap(),
+        };
+
+        Digest::try_from(hash_bytes.as_slice()).unwrap()
+    };
 
     // let account_1_account_hash = profiling::account_1_account_hash();
     // let account_2_account_hash = profiling::account_2_account_hash();
@@ -111,11 +120,14 @@ fn main() {
     let engine_config = EngineConfig::default();
 
     let mut test_builder =
-        LmdbWasmTestBuilder::open(&args.data_dir, engine_config, Digest::try_from(root_hash.as_slice()).unwrap());
+        LmdbWasmTestBuilder::open(&args.data_dir, engine_config, state_root_hash);
 
     test_builder.exec(exec_request).expect_success().commit();
 
     if args.verbose {
         println!("{:#?}", test_builder.get_transforms());
     }
+
+    let post_state_hash = test_builder.get_post_state_hash();
+    fs::write(STATE_HASH_FILE, &post_state_hash).unwrap();
 }

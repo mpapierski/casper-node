@@ -2,7 +2,7 @@
 //! standalone test executable(s).  This will allow profiling to be done on executables running only
 //! meaningful code, rather than including test setup effort in the profile results.
 
-use std::{env, path::PathBuf};
+use std::{env, path::PathBuf, io::Write, fs};
 
 use clap::{crate_version, App};
 
@@ -99,7 +99,7 @@ fn main() {
         .exec(exec_request_1)
         .expect_success()
         .commit();
-    
+
     // builder
     //     .exec(exec_request_2)
     //     .expect_success()
@@ -108,4 +108,6 @@ fn main() {
     let post_state_hash = builder
         .get_post_state_hash();
     println!("{}", base16::encode_lower(&post_state_hash));
+
+    fs::write("state_hash.raw", &post_state_hash).unwrap();
 }
