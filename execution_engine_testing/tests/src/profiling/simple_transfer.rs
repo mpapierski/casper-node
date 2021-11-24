@@ -19,6 +19,7 @@ use casper_hashing::Digest;
 use casper_types::{runtime_args, RuntimeArgs, U512, DeployHash};
 
 use casper_engine_tests::profiling;
+use rand::{thread_rng, Rng};
 
 const ABOUT: &str = "Executes a simple contract which transfers an amount between two accounts.  \
      Note that the 'state-initializer' executable should be run first to set up the required \
@@ -102,7 +103,7 @@ fn main() {
     let exec_request = {
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
-            .with_deploy_hash([3; 32])
+            .with_deploy_hash(thread_rng().gen())
             .with_stored_session_named_key("contract_hash", "create_domains", runtime_args! {
                 "number" => 50_000u64,
             })
