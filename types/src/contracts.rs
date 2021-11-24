@@ -1004,6 +1004,11 @@ impl EntryPoints {
         self.0.len()
     }
 
+    /// Returns `true` if the containers contains no entry points.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Returns an iterator over entry points.
     pub fn iter(&self) -> impl Iterator<Item = (&String, &EntryPoint)> {
         self.0.iter()

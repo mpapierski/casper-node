@@ -13,7 +13,13 @@ use casper_execution_engine::{
     storage::global_state::in_memory::InMemoryGlobalState,
 };
 use casper_hashing::Digest;
-use casper_types::{AccessRights, CLTyped, CLValue, ContractHash, ContractPackageHash, EraId, Key, ProtocolVersion, RuntimeArgs, StoredValue, StoredValueTypeMismatch, U256, U512, URef, account::AccountHash, runtime_args, system::{auction, auction::DelegationRate, mint, standard_payment::ARG_AMOUNT}};
+use casper_types::{
+    account::AccountHash,
+    runtime_args,
+    system::{auction, auction::DelegationRate, mint, standard_payment::ARG_AMOUNT},
+    AccessRights, CLTyped, CLValue, ContractHash, ContractPackageHash, EraId, Key, ProtocolVersion,
+    RuntimeArgs, StoredValue, StoredValueTypeMismatch, URef, U256, U512,
+};
 use once_cell::sync::Lazy;
 use tempfile::TempDir;
 
@@ -109,8 +115,11 @@ impl Default for GenericTestBuilder {
                 };
 
                 builder
-                .upgrade_with_upgrade_request(*builder.get_engine_state().config(), &mut upgrade_request)
-                .expect_upgrade_success();
+                    .upgrade_with_upgrade_request(
+                        *builder.get_engine_state().config(),
+                        &mut upgrade_request,
+                    )
+                    .expect_upgrade_success();
 
                 GenericTestBuilder::Lmdb {
                     builder,
@@ -210,13 +219,17 @@ impl GenericTestBuilder {
     pub fn disk_size(&mut self) -> usize {
         match self {
             GenericTestBuilder::InMemory(builder) => 0,
-            GenericTestBuilder::Lmdb { builder, fixture, temp_dir } => 0,
+            GenericTestBuilder::Lmdb {
+                builder,
+                fixture,
+                temp_dir,
+            } => 0,
         }
     }
 
     pub fn flush(&mut self) {
         match self {
-            GenericTestBuilder::InMemory(_) => {},
+            GenericTestBuilder::InMemory(_) => {}
             GenericTestBuilder::Lmdb { builder, .. } => builder.flush_environment(),
         }
     }
@@ -280,7 +293,12 @@ fn gh_2346_should_execute_without_cache() {
 
         let commit_dur = now.elapsed() - exec_dur;
 
-        eprintln!("nocache,{i},{exec},{commit}", i=i, exec=exec_dur.as_millis(), commit=commit_dur.as_millis());
+        eprintln!(
+            "nocache,{i},{exec},{commit}",
+            i = i,
+            exec = exec_dur.as_millis(),
+            commit = commit_dur.as_millis()
+        );
     }
 
     // for n in 500..TOTAL_DOMAINS {
@@ -312,14 +330,12 @@ fn setup() -> GenericTestBuilder {
     builder
 }
 
-
 // #[ignore]
 // #[test]
 // fn gh_2346_should_execute_with_cache() {
 //     let mut builder = setup();
-    
-//     for i in 1u64.. {
 
+//     for i in 1u64.. {
 
 //         let deploy_hash = {
 //             let val = U256::from(i);
@@ -368,6 +384,6 @@ fn setup() -> GenericTestBuilder {
 
 //         let commit_dur = now.elapsed() - exec_dur;
 
-//         eprintln!("cache,{i},{exec},{commit}", i=i, exec=exec_dur.as_millis(), commit=commit_dur.as_millis());
-//     }
+//         eprintln!("cache,{i},{exec},{commit}", i=i, exec=exec_dur.as_millis(),
+// commit=commit_dur.as_millis());     }
 // }

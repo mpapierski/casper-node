@@ -79,7 +79,7 @@ impl LmdbEnvironment {
     ) -> Result<Self, error::Error> {
         let mut lmdb_flags = EnvironmentFlags::NO_READAHEAD;
 
-        lmdb_flags  |= if manual_sync_enabled {
+        lmdb_flags |= if manual_sync_enabled {
             // These options require that we manually call sync on the environment for the EE.
             EnvironmentFlags::NO_SUB_DIR
                 | EnvironmentFlags::MAP_ASYNC

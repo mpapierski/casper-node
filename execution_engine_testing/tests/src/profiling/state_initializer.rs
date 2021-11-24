@@ -2,7 +2,7 @@
 //! standalone test executable(s).  This will allow profiling to be done on executables running only
 //! meaningful code, rather than including test setup effort in the profile results.
 
-use std::{env, path::PathBuf, io::Write, fs};
+use std::{env, fs, io::Write, path::PathBuf};
 
 use clap::{crate_version, App};
 
@@ -43,10 +43,7 @@ fn main() {
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
             .with_deploy_hash([1; 32])
-            .with_session_code(
-                STATE_INITIALIZER_CONTRACT,
-                RuntimeArgs::default(),
-            )
+            .with_session_code(STATE_INITIALIZER_CONTRACT, RuntimeArgs::default())
             .with_empty_payment_bytes(runtime_args! { ARG_AMOUNT => *DEFAULT_PAYMENT, })
             .with_authorization_keys(&[genesis_account_hash])
             .build();
@@ -63,8 +60,8 @@ fn main() {
     //         })
     //         // .with_session_code(
     //         //     "simple_transfer.wasm",
-    //         //     runtime_args! { "target" =>account_2_account_hash, "amount" => U512::from(TRANSFER_AMOUNT) },
-    //         // )
+    //         //     runtime_args! { "target" =>account_2_account_hash, "amount" =>
+    // U512::from(TRANSFER_AMOUNT) },         // )
     //         .with_empty_payment_bytes( runtime_args! { "amount" => (*DEFAULT_PAYMENT * 10)})
     //         .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
     //         .build();
@@ -92,21 +89,16 @@ fn main() {
         exec_config,
     );
 
-    builder
-        .run_genesis(&run_genesis_request);
+    builder.run_genesis(&run_genesis_request);
 
-    builder
-        .exec(exec_request_1)
-        .expect_success()
-        .commit();
+    builder.exec(exec_request_1).expect_success().commit();
 
     // builder
     //     .exec(exec_request_2)
     //     .expect_success()
     //     .commit();
 
-    let post_state_hash = builder
-        .get_post_state_hash();
+    let post_state_hash = builder.get_post_state_hash();
     println!("{}", base16::encode_lower(&post_state_hash));
 
     fs::write("state_hash.raw", &post_state_hash).unwrap();

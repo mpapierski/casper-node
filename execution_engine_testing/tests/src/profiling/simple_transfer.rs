@@ -7,16 +7,23 @@
 //! By avoiding setting up global state as part of this executable, it will allow profiling to be
 //! done only on meaningful code, rather than including test setup effort in the profile results.
 
-use std::{convert::TryFrom, env, io, path::PathBuf, fs::{File, self}};
+use std::{
+    convert::TryFrom,
+    env,
+    fs::{self, File},
+    io,
+    path::PathBuf,
+};
 
 use clap::{crate_version, App, Arg};
 
-use casper_engine_test_support::{DEFAULT_ACCOUNT_ADDR, internal::{
-    DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, DEFAULT_PAYMENT,
-}};
+use casper_engine_test_support::{
+    internal::{DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, DEFAULT_PAYMENT},
+    DEFAULT_ACCOUNT_ADDR,
+};
 use casper_execution_engine::core::engine_state::EngineConfig;
 use casper_hashing::Digest;
-use casper_types::{runtime_args, RuntimeArgs, U512, DeployHash};
+use casper_types::{runtime_args, DeployHash, RuntimeArgs, U512};
 
 use casper_engine_tests::profiling;
 use rand::{thread_rng, Rng};
@@ -104,14 +111,18 @@ fn main() {
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
             .with_deploy_hash(thread_rng().gen())
-            .with_stored_session_named_key("contract_hash", "create_domains", runtime_args! {
-                "number" => 50_000u64,
-            })
+            .with_stored_session_named_key(
+                "contract_hash",
+                "create_domains",
+                runtime_args! {
+                    "number" => 50_000u64,
+                },
+            )
             // .with_session_code(
             //     "simple_transfer.wasm",
-            //     runtime_args! { "target" =>account_2_account_hash, "amount" => U512::from(TRANSFER_AMOUNT) },
-            // )
-            .with_empty_payment_bytes( runtime_args! { "amount" => (*DEFAULT_PAYMENT * 10)})
+            //     runtime_args! { "target" =>account_2_account_hash, "amount" =>
+            // U512::from(TRANSFER_AMOUNT) }, )
+            .with_empty_payment_bytes(runtime_args! { "amount" => (*DEFAULT_PAYMENT * 10)})
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
             .build();
 

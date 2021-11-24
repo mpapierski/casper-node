@@ -33,7 +33,7 @@ mod ee_890;
 mod ee_966;
 mod gh_1470;
 mod gh_1688;
+mod gh_2346;
 mod regression_20210707;
 mod regression_20210831;
 mod regression_20210924;
-mod gh_2346;
