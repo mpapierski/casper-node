@@ -17,6 +17,17 @@ use casper_types::{
 
 use super::{Account, Contract, ContractPackage};
 
+
+
+
+
+
+
+
+
+
+
+
 /// Representation of a value stored in global state.
 ///
 /// `Account`, `Contract` and `ContractPackage` have their own `json_compatibility` representations

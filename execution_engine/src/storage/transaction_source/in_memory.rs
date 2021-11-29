@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, BTreeMap},
     sync::{Arc, Mutex, MutexGuard},
 };
 
@@ -16,9 +16,8 @@ struct WriteCapability;
 
 type WriteLock<'a> = MutexGuard<'a, WriteCapability>;
 
-type BytesMap = HashMap<Bytes, Bytes>;
+type BytesMap = BTreeMap<Bytes, Bytes>;
 
-#[cfg(test)]
 type PoisonError<'a> = std::sync::PoisonError<MutexGuard<'a, HashMap<Option<String>, BytesMap>>>;
 
 /// A read transaction for the in-memory trie store.
@@ -136,7 +135,12 @@ impl InMemoryEnvironment {
         Default::default()
     }
 
-    #[cfg(test)]
+    pub fn data_all(&self) -> Result<HashMap<Option<String>, BytesMap>, PoisonError> {
+        let data = self.data.lock()?;
+        let ret = data.clone();
+        Ok(ret)
+    }
+
     pub fn data(&self, name: Option<&str>) -> Result<Option<BytesMap>, PoisonError> {
         let data = self.data.lock()?;
         let name = name.map(ToString::to_string);

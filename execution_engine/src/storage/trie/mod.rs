@@ -192,13 +192,14 @@ impl PointerBlock {
     }
 
     /// Deconstructs a `PointerBlock` into an iterator of indexed `Pointer`s.
-    pub fn as_indexed_pointers(&self) -> impl Iterator<Item = (u8, Pointer)> + '_ {
+    pub fn as_indexed_pointers(&self) -> impl Iterator<Item = (u8, &Pointer)>  {
         self.0
             .iter()
             .enumerate()
             .filter_map(|(index, maybe_pointer)| {
                 maybe_pointer
-                    .map(|value| (index.try_into().expect(USIZE_EXCEEDS_U8), value.to_owned()))
+                    .as_ref()
+                    .map(|value| (index.try_into().expect(USIZE_EXCEEDS_U8), value))
             })
     }
 

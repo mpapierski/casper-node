@@ -231,6 +231,10 @@ impl StateProvider for LmdbGlobalState {
         txn.commit()?;
         Ok(missing_descendants)
     }
+
+    fn get_tries(&self) -> std::collections::BTreeMap<Digest, Trie<Key, StoredValue>> {
+        todo!()
+    }
 }
 
 #[cfg(test)]

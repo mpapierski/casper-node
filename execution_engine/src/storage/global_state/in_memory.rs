@@ -1,7 +1,7 @@
-use std::{ops::Deref, sync::Arc};
+use std::{ops::Deref, sync::Arc, collections::{HashMap, BTreeMap}, convert::TryFrom};
 
 use casper_hashing::Digest;
-use casper_types::{Key, StoredValue};
+use casper_types::{Key, StoredValue, bytesrepr};
 
 use crate::{
     shared::{additive_map::AdditiveMap, newtypes::CorrelationId, transform::Transform},
@@ -281,6 +281,43 @@ impl StateProvider for InMemoryGlobalState {
         txn.commit()?;
         Ok(missing_descendants)
     }
+
+    fn get_tries(&self) -> BTreeMap<Digest, Trie<Key, StoredValue>> {
+        let data = self.environment.data_all().unwrap();
+
+        let trie_store = data.get(&Some("TRIE_STORE".to_string())).unwrap();
+
+
+        // for (digest_bytes, trie_bytes) in trie_store.iter() {
+
+        // }
+        trie_store.iter().map(|(digest_bytes, trie_bytes)| {
+            let digest = Digest::try_from(digest_bytes.as_slice()).unwrap();
+            let trie = bytesrepr::deserialize(trie_bytes.clone().into()).unwrap();
+
+            (digest, trie)
+        }).collect()
+        // // todo!("{:?}", data.keys().collect::<Vec<_>>())
+
+        // let sizes: HashMap<_, _> = data.into_iter().map(|(key, tries)| {
+        //     let total_size: usize = tries.into_iter().map(|(digest, trie)| {
+        //         digest.len() + trie.len()
+        //     }).sum();
+        //     (key, total_size)
+        // }).collect();
+
+        // // println!("{:?}", sizes);
+        // assert_eq!(sizes.len(), 2);
+        // assert_eq!(sizes[&None], 0);
+
+        // sizes[&Some("TRIE_STORE".to_string())]
+    }
+
+    fn total_size(&self) -> usize {
+        0
+    }
+
+    
 }
 
 #[cfg(test)]

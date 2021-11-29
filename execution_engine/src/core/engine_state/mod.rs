@@ -130,6 +130,11 @@ where
     S: StateProvider,
     S::Error: Into<execution::Error>,
 {
+    pub fn state(&self) -> &S {
+        // self.state.total_size()
+        &self.state
+    }
+
     /// Creates new engine state.
     pub fn new(state: S, config: EngineConfig) -> EngineState<S> {
         let system_contract_cache = Default::default();

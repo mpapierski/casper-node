@@ -6,7 +6,7 @@ pub mod in_memory;
 /// Lmdb implementation of global state.
 pub mod lmdb;
 
-use std::hash::BuildHasher;
+use std::{hash::BuildHasher, collections::BTreeMap};
 
 use tracing::error;
 
@@ -115,6 +115,12 @@ pub trait StateProvider {
         correlation_id: CorrelationId,
         trie_keys: Vec<Digest>,
     ) -> Result<Vec<Digest>, Self::Error>;
+
+    fn total_size(&self) -> usize {
+        0
+    }
+
+    fn get_tries(&self) -> BTreeMap<Digest, Trie<Key, StoredValue>>;
 }
 
 /// Commit `effects` to the store.
