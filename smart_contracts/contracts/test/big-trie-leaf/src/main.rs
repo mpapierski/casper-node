@@ -7,7 +7,7 @@ const USER_ERROR_CODE_OFFSET: u32 = 65536;
 
 const KB: usize = 1024;
 const MB: usize = 1024 * KB;
-const VEC_LEN: usize = 3 * MB;
+const VEC_LEN: usize = 2 * MB;
 
 const KEY_TAG_UREF: u8 = 2;
 
@@ -46,6 +46,13 @@ extern "C" {
     fn casper_put_key(name_ptr: *const u8, name_size: usize, key_ptr: *const u8, key_size: usize);
     fn casper_write(key_ptr: *const u8, key_size: usize, value_ptr: *const u8, value_size: usize);
     fn casper_new_uref(uref_ptr: *mut u8, value_ptr: *const u8, value_size: usize);
+    fn casper_get_blocktime(dest_ptr: *const u8);
+}
+
+fn get_blocktime() -> u64 {
+    let u64_bytes = [0u8; 8];
+    unsafe { casper_get_blocktime(u64_bytes.as_ptr()) }
+    u64::from_le_bytes(u64_bytes)
 }
 
 fn new_raw_uref_key() -> KeyBytes {
@@ -91,8 +98,19 @@ pub extern "C" fn call() {
     let vec_length_prefix = VEC_LEN as u32;
     let buffer = unsafe { &mut BUFFER };
     buffer[0..LENGTH_PREFIX_LEN].copy_from_slice(&cl_length_prefix.to_le_bytes());
-    buffer[LENGTH_PREFIX_LEN..LENGTH_PREFIX_LEN + 4]
-        .copy_from_slice(&vec_length_prefix.to_le_bytes());
+
+    {
+        // vector contents
+
+        let mut pos = LENGTH_PREFIX_LEN;
+
+        buffer[pos..pos + 4].copy_from_slice(&vec_length_prefix.to_le_bytes());
+        pos += 4;
+
+        let block_time = get_blocktime();
+        buffer[pos..pos + 8].copy_from_slice(&block_time.to_be_bytes());
+    }
+
     buffer[BUFFER_LEN - CL_TYPE.len()..].copy_from_slice(&CL_TYPE);
     write_raw_cl_value(&raw_uref_key, &buffer[..]);
     put_raw_key_bytes(&KEY_NAME, &raw_uref_key);

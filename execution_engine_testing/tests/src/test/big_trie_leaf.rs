@@ -8,6 +8,7 @@ const KB: usize = 1024;
 const MB: usize = 1024 * KB;
 const DATA_SIZE: usize = 2 * MB;
 const KEY_NAME: &str = "data";
+const BLOCK_TIME: u64 = u64::MAX - 1;
 
 #[ignore]
 #[test]
@@ -17,6 +18,7 @@ fn should_run_mint_purse_contract() {
         CONTRACT_BIG_TRIE_LEAF,
         RuntimeArgs::new(),
     )
+    .with_block_time(BLOCK_TIME)
     .build();
 
     let mut builder = WasmTestBuilder::default();
@@ -36,4 +38,6 @@ fn should_run_mint_purse_contract() {
     let cl_value = stored.as_cl_value().expect("should store cl value");
     let bytes: Bytes = cl_value.clone().into_t().expect("should have u8 array");
     assert_eq!(bytes.len(), DATA_SIZE);
+    assert_ne!(bytes, Bytes::from(vec![0; DATA_SIZE]));
+    assert_eq!(bytes[0..8], BLOCK_TIME.to_be_bytes());
 }
