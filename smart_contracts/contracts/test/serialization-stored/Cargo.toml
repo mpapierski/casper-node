@@ -1,0 +1,22 @@
+[package]
+name = "serialization-stored"
+version = "0.1.0"
+authors = ["Michał Papierski <michal@casperlabs.io>"]
+edition = "2018"
+build = "build.rs"
+
+[[bin]]
+name = "serialization_stored"
+path = "src/main.rs"
+bench = false
+doctest = false
+test = false
+
+[dependencies]
+casper-contract = { path = "../../../contract" }
+casper-types = { path = "../../../../types" }
+capnp = { version = "0.14" }#efault-features = false }
+borsh = { version = "0.9.3" }#//, default-features = false }
+
+[build-dependencies]
+capnpc = "0.14"
