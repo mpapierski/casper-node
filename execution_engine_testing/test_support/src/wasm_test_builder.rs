@@ -44,7 +44,7 @@ use casper_execution_engine::{
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
-    bytesrepr, runtime_args,
+    bytesrepr::{self, BorshDeserialize}, runtime_args,
     system::{
         auction::{
             Bids, EraValidators, UnbondingPurses, ValidatorWeights, WithdrawPurses,
@@ -1093,7 +1093,7 @@ where
     /// Gets a stored value from a contract's named keys.
     pub fn get_value<T>(&mut self, contract_hash: ContractHash, name: &str) -> T
     where
-        T: FromBytes + CLTyped,
+        T: BorshDeserialize + CLTyped,
     {
         let contract = self
             .get_contract(contract_hash)

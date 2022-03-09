@@ -1,5 +1,5 @@
 mod delete;
-mod ee_699;
+// mod ee_699;
 mod keys;
 mod proptests;
 mod read;
@@ -13,7 +13,7 @@ use lmdb::DatabaseFlags;
 use tempfile::{tempdir, TempDir};
 
 use casper_hashing::Digest;
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 
 use crate::{
     shared::newtypes::CorrelationId,
@@ -38,27 +38,8 @@ use crate::{
 const TEST_KEY_LENGTH: usize = 7;
 
 /// A short key type for tests.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
 struct TestKey([u8; TEST_KEY_LENGTH]);
-
-impl ToBytes for TestKey {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        Ok(self.0.to_vec())
-    }
-
-    fn serialized_length(&self) -> usize {
-        TEST_KEY_LENGTH
-    }
-}
-
-impl FromBytes for TestKey {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (key, rem) = bytes.split_at(TEST_KEY_LENGTH);
-        let mut ret = [0u8; TEST_KEY_LENGTH];
-        ret.copy_from_slice(key);
-        Ok((TestKey(ret), rem))
-    }
-}
 
 const TEST_VAL_LENGTH: usize = 6;
 
@@ -66,7 +47,7 @@ const TEST_VAL_LENGTH: usize = 6;
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 struct TestValue([u8; TEST_VAL_LENGTH]);
 
-impl ToBytes for TestValue {
+impl BorshSerialize for TestValue {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         Ok(self.0.to_vec())
     }
@@ -76,7 +57,7 @@ impl ToBytes for TestValue {
     }
 }
 
-impl FromBytes for TestValue {
+impl BorshDeserialize for TestValue {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (key, rem) = bytes.split_at(TEST_VAL_LENGTH);
         let mut ret = [0u8; TEST_VAL_LENGTH];
@@ -96,7 +77,7 @@ struct HashedTrie<K, V> {
     trie: Trie<K, V>,
 }
 
-impl<K: ToBytes, V: ToBytes> HashedTrie<K, V> {
+impl<K: BorshSerialize, V: BorshSerialize> HashedTrie<K, V> {
     pub fn new(trie: Trie<K, V>) -> Result<Self, bytesrepr::Error> {
         let trie_bytes = trie.to_bytes()?;
         let hash = Digest::hash(&trie_bytes);
@@ -490,8 +471,8 @@ fn put_tries<'a, K, V, R, S, E>(
     tries: &[HashedTrie<K, V>],
 ) -> Result<(), E>
 where
-    K: ToBytes,
-    V: ToBytes,
+    K: BorshSerialize,
+    V: BorshSerialize,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -518,8 +499,8 @@ struct LmdbTestContext {
 impl LmdbTestContext {
     fn new<K, V>(tries: &[HashedTrie<K, V>]) -> anyhow::Result<Self>
     where
-        K: FromBytes + ToBytes,
-        V: FromBytes + ToBytes,
+        K: BorshDeserialize + BorshSerialize,
+        V: BorshDeserialize + BorshSerialize,
     {
         let _temp_dir = tempdir()?;
         let environment = LmdbEnvironment::new(
@@ -539,8 +520,8 @@ impl LmdbTestContext {
 
     fn update<K, V>(&self, tries: &[HashedTrie<K, V>]) -> anyhow::Result<()>
     where
-        K: ToBytes,
-        V: ToBytes,
+        K: BorshSerialize,
+        V: BorshSerialize,
     {
         put_tries::<_, _, _, _, error::Error>(&self.environment, &self.store, tries)?;
         Ok(())
@@ -556,8 +537,8 @@ struct InMemoryTestContext {
 impl InMemoryTestContext {
     fn new<K, V>(tries: &[HashedTrie<K, V>]) -> anyhow::Result<Self>
     where
-        K: ToBytes,
-        V: ToBytes,
+        K: BorshSerialize,
+        V: BorshSerialize,
     {
         let environment = InMemoryEnvironment::new();
         let store = InMemoryTrieStore::new(&environment, None);
@@ -567,8 +548,8 @@ impl InMemoryTestContext {
 
     fn update<K, V>(&self, tries: &[HashedTrie<K, V>]) -> anyhow::Result<()>
     where
-        K: ToBytes,
-        V: ToBytes,
+        K: BorshSerialize,
+        V: BorshSerialize,
     {
         put_tries::<_, _, _, _, in_memory::Error>(&self.environment, &self.store, tries)?;
         Ok(())
@@ -583,8 +564,8 @@ fn check_leaves_exist<K, V, T, S, E>(
     leaves: &[Trie<K, V>],
 ) -> Result<Vec<bool>, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Eq + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Eq + Copy,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
@@ -613,8 +594,8 @@ fn check_merkle_proofs<K, V, T, S, E>(
     leaves: &[Trie<K, V>],
 ) -> Result<Vec<bool>, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
-    V: ToBytes + FromBytes + Eq + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
+    V: BorshSerialize + BorshDeserialize + Eq + Copy,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
@@ -651,8 +632,8 @@ fn check_keys<K, V, T, S, E>(
     leaves: &[Trie<K, V>],
 ) -> bool
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Clone + Ord,
-    V: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Clone + Ord,
+    V: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
@@ -686,8 +667,8 @@ fn check_leaves<'a, K, V, R, S, E>(
     absent: &[Trie<K, V>],
 ) -> Result<(), E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy + Clone + Ord,
-    V: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy + Clone + Ord,
+    V: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -739,8 +720,8 @@ fn write_leaves<'a, K, V, R, S, E>(
     leaves: &[Trie<K, V>],
 ) -> Result<Vec<WriteResult>, E>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -781,8 +762,8 @@ fn check_pairs_proofs<'a, K, V, R, S, E>(
     pairs: &[(K, V)],
 ) -> Result<bool, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy + Clone + Ord,
-    V: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy + Clone + Ord,
+    V: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -816,8 +797,8 @@ fn check_pairs<'a, K, V, R, S, E>(
     pairs: &[(K, V)],
 ) -> Result<bool, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Clone + Ord,
-    V: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Clone + Ord,
+    V: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -862,8 +843,8 @@ fn write_pairs<'a, K, V, R, S, E>(
     pairs: &[(K, V)],
 ) -> Result<Vec<Digest>, E>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -898,8 +879,8 @@ fn writes_to_n_leaf_empty_trie_had_expected_results<'a, K, V, R, S, E>(
     test_leaves: &[Trie<K, V>],
 ) -> Result<Vec<Digest>, E>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug + Copy + Ord,
-    V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug + Copy + Ord,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug + Copy,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,
@@ -940,8 +921,8 @@ impl InMemoryEnvironment {
         maybe_name: Option<&str>,
     ) -> Result<HashMap<Digest, Trie<K, V>>, in_memory::Error>
     where
-        K: FromBytes,
-        V: FromBytes,
+        K: BorshDeserialize,
+        V: BorshDeserialize,
     {
         let name = maybe_name
             .map(|name| format!("{}-{}", trie_store::NAME, name))

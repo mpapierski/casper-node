@@ -5,6 +5,7 @@
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
+use borsh::{BorshSerialize, BorshDeserialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -12,12 +13,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    bytesrepr::{self, Error, FromBytes, ToBytes},
     CLTyped, CLValue, CLValueError,
 };
 
 /// Named arguments to a contract
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct NamedArg(String, CLValue);
@@ -43,29 +43,8 @@ impl From<(String, CLValue)> for NamedArg {
     }
 }
 
-impl ToBytes for NamedArg {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        result.append(&mut self.0.to_bytes()?);
-        result.append(&mut self.1.to_bytes()?);
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length() + self.1.serialized_length()
-    }
-}
-
-impl FromBytes for NamedArg {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (name, remainder) = String::from_bytes(bytes)?;
-        let (cl_value, remainder) = CLValue::from_bytes(remainder)?;
-        Ok((NamedArg(name, cl_value), remainder))
-    }
-}
-
 /// Represents a collection of arguments passed to a smart contract.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug, Default)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug, Default, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct RuntimeArgs(Vec<NamedArg>);
@@ -117,7 +96,7 @@ impl RuntimeArgs {
     pub fn insert<K, V>(&mut self, key: K, value: V) -> Result<(), CLValueError>
     where
         K: Into<String>,
-        V: CLTyped + ToBytes,
+        V: CLTyped + BorshSerialize,
     {
         let cl_value = CLValue::from_t(value)?;
         self.0.push(NamedArg(key.into(), cl_value));
@@ -162,23 +141,6 @@ impl From<RuntimeArgs> for BTreeMap<String, CLValue> {
             map.insert(named.0, named.1);
         }
         map
-    }
-}
-
-impl ToBytes for RuntimeArgs {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        self.0.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length()
-    }
-}
-
-impl FromBytes for RuntimeArgs {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (args, remainder) = Vec::<NamedArg>::from_bytes(bytes)?;
-        Ok((RuntimeArgs(args), remainder))
     }
 }
 
@@ -245,32 +207,6 @@ mod tests {
     #[test]
     fn empty_macro() {
         assert_eq!(runtime_args! {}, RuntimeArgs::new());
-    }
-
-    #[test]
-    fn btreemap_compat() {
-        // This test assumes same serialization format as BTreeMap
-        let runtime_args_1 = runtime_args! {
-            "bar" => "Foo",
-            "foo" => 1i32,
-            "qwer" => Some(1i32),
-        };
-        let tagless = runtime_args_1.to_bytes().unwrap().to_vec();
-
-        let mut runtime_args_2 = BTreeMap::new();
-        runtime_args_2.insert(String::from("bar"), CLValue::from_t("Foo").unwrap());
-        runtime_args_2.insert(String::from("foo"), CLValue::from_t(1i32).unwrap());
-        runtime_args_2.insert(String::from("qwer"), CLValue::from_t(Some(1i32)).unwrap());
-
-        assert_eq!(tagless, runtime_args_2.to_bytes().unwrap());
-    }
-
-    #[test]
-    fn named_serialization_roundtrip() {
-        let args = runtime_args! {
-            "foo" => 1i32,
-        };
-        bytesrepr::test_serialization_roundtrip(&args);
     }
 
     #[test]

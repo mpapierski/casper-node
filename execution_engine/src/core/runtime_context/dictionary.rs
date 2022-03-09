@@ -1,14 +1,12 @@
-use casper_types::{
-    bytesrepr::{self, Bytes, FromBytes, ToBytes},
-    CLType, CLTyped, CLValue, CLValueError, Key, StoredValue,
-};
+use borsh::{BorshDeserialize, BorshSerialize};
+use casper_types::{bytesrepr::Bytes, CLType, CLTyped, CLValue, CLValueError, Key, StoredValue};
 
 /// Wraps a [`CLValue`] for storage in a dictionary.
 ///
 /// Note that we include the dictionary [`casper_types::URef`] and key used to create the
 /// `Key::Dictionary` under which this value is stored.  This is to allow migration to a different
 /// key representation in the future.
-#[derive(Clone)]
+#[derive(Clone, BorshSerialize, BorshDeserialize)]
 pub struct DictionaryValue {
     /// Actual [`CLValue`] written to global state.
     cl_value: CLValue,
@@ -40,43 +38,6 @@ impl DictionaryValue {
 impl CLTyped for DictionaryValue {
     fn cl_type() -> CLType {
         CLType::Any
-    }
-}
-
-impl FromBytes for DictionaryValue {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (cl_value, remainder) = FromBytes::from_bytes(bytes)?;
-        let (uref_addr, remainder) = FromBytes::from_bytes(remainder)?;
-        let (key_bytes, remainder) = FromBytes::from_bytes(remainder)?;
-        let dictionary_value = DictionaryValue {
-            cl_value,
-            seed_uref_addr: uref_addr,
-            dictionary_item_key_bytes: key_bytes,
-        };
-        Ok((dictionary_value, remainder))
-    }
-}
-
-impl ToBytes for DictionaryValue {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut buffer = bytesrepr::allocate_buffer(self)?;
-        buffer.extend(self.cl_value.to_bytes()?);
-        buffer.extend(self.seed_uref_addr.to_bytes()?);
-        buffer.extend(self.dictionary_item_key_bytes.to_bytes()?);
-        Ok(buffer)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.cl_value.serialized_length()
-            + self.seed_uref_addr.serialized_length()
-            + self.dictionary_item_key_bytes.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.cl_value.write_bytes(writer)?;
-        self.seed_uref_addr.write_bytes(writer)?;
-        self.dictionary_item_key_bytes.write_bytes(writer)?;
-        Ok(())
     }
 }
 

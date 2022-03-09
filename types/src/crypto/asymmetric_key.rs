@@ -28,6 +28,7 @@ use k256::ecdsa::{
 #[cfg(feature = "json-schema")]
 use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use borsh::{BorshDeserialize, BorshSerialize, maybestd::io};
 
 use crate::{
     account::AccountHash,
@@ -337,72 +338,44 @@ impl Tagged<u8> for PublicKey {
     }
 }
 
-impl ToBytes for PublicKey {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut buffer = bytesrepr::allocate_buffer(self)?;
-        match self {
-            PublicKey::System => {
-                buffer.insert(0, SYSTEM_TAG);
-            }
-            PublicKey::Ed25519(public_key) => {
-                buffer.insert(0, ED25519_TAG);
-                let ed25519_bytes = public_key.as_bytes();
-                buffer.extend_from_slice(ed25519_bytes);
-            }
-            PublicKey::Secp256k1(public_key) => {
-                buffer.insert(0, SECP256K1_TAG);
-                let secp256k1_bytes = public_key.to_bytes();
-                buffer.extend_from_slice(&secp256k1_bytes);
-            }
-        }
-        Ok(buffer)
-    }
+impl BorshSerialize for PublicKey {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
 
-    fn serialized_length(&self) -> usize {
-        TAG_LENGTH
-            + match self {
-                PublicKey::System => Self::SYSTEM_LENGTH,
-                PublicKey::Ed25519(_) => Self::ED25519_LENGTH,
-                PublicKey::Secp256k1(_) => Self::SECP256K1_LENGTH,
-            }
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
         match self {
-            PublicKey::System => writer.push(SYSTEM_TAG),
+            PublicKey::System => writer.write_all(&[SYSTEM_TAG])?,
             PublicKey::Ed25519(pk) => {
-                writer.push(ED25519_TAG);
-                writer.extend_from_slice(pk.as_bytes());
+                writer.write_all(&[ED25519_TAG])?;
+                writer.write_all(pk.as_bytes())?;
             }
             PublicKey::Secp256k1(pk) => {
-                writer.push(SECP256K1_TAG);
-                writer.extend_from_slice(&pk.to_bytes());
+                writer.write_all(&[SECP256K1_TAG])?;
+                writer.write_all(&pk.to_bytes())?;
             }
         }
         Ok(())
     }
 }
 
-impl FromBytes for PublicKey {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, remainder) = u8::from_bytes(bytes)?;
+impl BorshDeserialize for PublicKey {
+    fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
+        let tag = u8::try_from_slice(buf)?;
         match tag {
-            SYSTEM_TAG => Ok((PublicKey::System, remainder)),
+            SYSTEM_TAG => Ok(PublicKey::System),
             ED25519_TAG => {
-                let (raw_bytes, remainder): ([u8; Self::ED25519_LENGTH], _) =
-                    FromBytes::from_bytes(remainder)?;
+                let raw_bytes: [u8; Self::ED25519_LENGTH] =
+                    BorshDeserialize::try_from_slice(buf)?;
                 let public_key = Self::ed25519_from_bytes(raw_bytes)
-                    .map_err(|_error| bytesrepr::Error::Formatting)?;
-                Ok((public_key, remainder))
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+                Ok(public_key)
             }
             SECP256K1_TAG => {
-                let (raw_bytes, remainder): ([u8; Self::SECP256K1_LENGTH], _) =
-                    FromBytes::from_bytes(remainder)?;
+                let raw_bytes: [u8; Self::SECP256K1_LENGTH] =
+                    BorshDeserialize::try_from_slice(buf)?;
                 let public_key = Self::secp256k1_from_bytes(raw_bytes)
-                    .map_err(|_error| bytesrepr::Error::Formatting)?;
-                Ok((public_key, remainder))
+                    .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+                Ok(public_key)
             }
-            _ => Err(bytesrepr::Error::Formatting),
+            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid public key variant")),
         }
     }
 }

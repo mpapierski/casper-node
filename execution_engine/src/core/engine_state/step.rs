@@ -4,6 +4,7 @@
 //! rewards.
 use std::{collections::BTreeMap, vec::Vec};
 
+use borsh::maybestd::io;
 use casper_hashing::Digest;
 use casper_types::{bytesrepr, CLValueError, EraId, ProtocolVersion, PublicKey};
 
@@ -166,6 +167,8 @@ pub enum StepError {
     /// Execution error.
     #[error(transparent)]
     ExecutionError(#[from] execution::Error),
+    #[error("Borsh {0:?}")]
+    BorshSerialization(#[from] io::Error),
 }
 
 impl From<bytesrepr::Error> for StepError {

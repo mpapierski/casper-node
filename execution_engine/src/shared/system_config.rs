@@ -8,7 +8,7 @@ use datasize::DataSize;
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
 
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 
 use self::{
     auction_costs::AuctionCosts, handle_payment_costs::HandlePaymentCosts, mint_costs::MintCosts,
@@ -105,48 +105,6 @@ impl Distribution<SystemConfig> for Standard {
             handle_payment_costs: rng.gen(),
             standard_payment_costs: rng.gen(),
         }
-    }
-}
-
-impl ToBytes for SystemConfig {
-    fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-
-        ret.append(&mut self.wasmless_transfer_cost.to_bytes()?);
-        ret.append(&mut self.auction_costs.to_bytes()?);
-        ret.append(&mut self.mint_costs.to_bytes()?);
-        ret.append(&mut self.handle_payment_costs.to_bytes()?);
-        ret.append(&mut self.standard_payment_costs.to_bytes()?);
-
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.wasmless_transfer_cost.serialized_length()
-            + self.auction_costs.serialized_length()
-            + self.mint_costs.serialized_length()
-            + self.handle_payment_costs.serialized_length()
-            + self.standard_payment_costs.serialized_length()
-    }
-}
-
-impl FromBytes for SystemConfig {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), casper_types::bytesrepr::Error> {
-        let (wasmless_transfer_cost, rem) = FromBytes::from_bytes(bytes)?;
-        let (auction_costs, rem) = FromBytes::from_bytes(rem)?;
-        let (mint_costs, rem) = FromBytes::from_bytes(rem)?;
-        let (handle_payment_costs, rem) = FromBytes::from_bytes(rem)?;
-        let (standard_payment_costs, rem) = FromBytes::from_bytes(rem)?;
-        Ok((
-            SystemConfig::new(
-                wasmless_transfer_cost,
-                auction_costs,
-                mint_costs,
-                handle_payment_costs,
-                standard_payment_costs,
-            ),
-            rem,
-        ))
     }
 }
 

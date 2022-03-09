@@ -2,7 +2,8 @@ mod store_ext;
 #[cfg(test)]
 pub(crate) mod tests;
 
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use borsh::maybestd::io;
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 
 pub use self::store_ext::StoreExt;
 use crate::storage::transaction_source::{Readable, Writable};
@@ -11,7 +12,7 @@ use crate::storage::transaction_source::{Readable, Writable};
 /// specified by its associated `Handle` type.
 pub trait Store<K, V> {
     /// Errors possible from this store.
-    type Error: From<bytesrepr::Error>;
+    type Error: From<io::Error>;
 
     /// Underlying store type.
     type Handle;
@@ -25,13 +26,13 @@ pub trait Store<K, V> {
     where
         T: Readable<Handle = Self::Handle>,
         K: AsRef<[u8]>,
-        V: FromBytes,
+        V: BorshDeserialize,
         Self::Error: From<T::Error>,
     {
         let raw = self.get_raw(txn, key)?;
         match raw {
             Some(bytes) => {
-                let value = bytesrepr::deserialize_from_slice(bytes)?;
+                let value = BorshDeserialize::try_from_slice(&bytes)?;
                 Ok(Some(value))
             }
             None => Ok(None),
@@ -56,10 +57,10 @@ pub trait Store<K, V> {
     where
         T: Writable<Handle = Self::Handle>,
         K: AsRef<[u8]>,
-        V: ToBytes,
+        V: BorshSerialize,
         Self::Error: From<T::Error>,
     {
-        self.put_raw(txn, key, &value.to_bytes()?)
+        self.put_raw(txn, key, &value.try_to_vec()?)
     }
 
     /// Puts a raw `value` into the store at `key` within a transaction, potentially returning an

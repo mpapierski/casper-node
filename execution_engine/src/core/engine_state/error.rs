@@ -2,6 +2,7 @@
 use datasize::DataSize;
 use thiserror::Error;
 
+use borsh::maybestd::io;
 use casper_hashing::Digest;
 use casper_types::{bytesrepr, system::mint, ApiError, ProtocolVersion};
 
@@ -58,6 +59,8 @@ pub enum Error {
     /// Serialization/deserialization error.
     #[error("Bytesrepr error: {0}")]
     Bytesrepr(String),
+    #[error("Borsh error: {0:?}")]
+    BorshSerialization(io::ErrorKind),
     /// Mint error.
     #[error("Mint error: {0}")]
     Mint(String),
@@ -107,6 +110,12 @@ impl Error {
     /// code.
     pub fn reverter(api_error: impl Into<ApiError>) -> Error {
         Error::Exec(execution::Error::Revert(api_error.into()))
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Error::BorshSerialization(error.kind())
     }
 }
 

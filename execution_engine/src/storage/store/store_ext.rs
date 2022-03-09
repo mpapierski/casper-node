@@ -1,6 +1,6 @@
 //! Extension traits for store.
 
-use casper_types::bytesrepr::{FromBytes, ToBytes};
+use casper_types::bytesrepr::{BorshDeserialize, BorshSerialize};
 
 use crate::storage::{
     store::Store,
@@ -18,7 +18,7 @@ pub trait StoreExt<K, V>: Store<K, V> {
     where
         T: Readable<Handle = Self::Handle>,
         K: AsRef<[u8]> + 'a,
-        V: FromBytes,
+        V: BorshDeserialize,
         Self::Error: From<T::Error>,
     {
         let mut ret: Vec<Option<V>> = Vec::new();
@@ -39,7 +39,7 @@ pub trait StoreExt<K, V>: Store<K, V> {
     where
         T: Writable<Handle = Self::Handle>,
         K: AsRef<[u8]> + 'a,
-        V: ToBytes + 'a,
+        V: BorshSerialize + 'a,
         Self::Error: From<T::Error>,
     {
         for (key, value) in pairs {

@@ -1,6 +1,7 @@
 //! Support for a genesis process.
 use std::{cell::RefCell, collections::BTreeMap, fmt, iter, rc::Rc};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use datasize::DataSize;
 use num::Zero;
 use num_rational::Ratio;
@@ -15,7 +16,7 @@ use tracing::error;
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
-    bytesrepr::{self, FromBytes, ToBytes, U8_SERIALIZED_LENGTH},
+    bytesrepr::BorshRatio,
     contracts::{ContractPackageStatus, ContractVersions, DisabledVersions, Groups, NamedKeys},
     runtime_args,
     system::{
@@ -53,7 +54,6 @@ use crate::{
     storage::global_state::StateProvider,
 };
 
-const TAG_LENGTH: usize = U8_SERIALIZED_LENGTH;
 const DEFAULT_ADDRESS: [u8; 32] = [0; 32];
 
 /// Represents an outcome of a successful genesis run.
@@ -83,37 +83,23 @@ enum GenesisAccountTag {
 }
 
 /// Represents details about genesis account's validator status.
-#[derive(DataSize, Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    DataSize,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct GenesisValidator {
     /// Stake of a genesis validator.
     bonded_amount: Motes,
     /// Delegation rate in the range of 0-100.
     delegation_rate: DelegationRate,
-}
-
-impl ToBytes for GenesisValidator {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut buffer = bytesrepr::allocate_buffer(self)?;
-        buffer.extend(self.bonded_amount.to_bytes()?);
-        buffer.extend(self.delegation_rate.to_bytes()?);
-        Ok(buffer)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.bonded_amount.serialized_length() + self.delegation_rate.serialized_length()
-    }
-}
-
-impl FromBytes for GenesisValidator {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (bonded_amount, remainder) = FromBytes::from_bytes(bytes)?;
-        let (delegation_rate, remainder) = FromBytes::from_bytes(remainder)?;
-        let genesis_validator = GenesisValidator {
-            bonded_amount,
-            delegation_rate,
-        };
-        Ok((genesis_validator, remainder))
-    }
 }
 
 impl GenesisValidator {
@@ -146,7 +132,9 @@ impl Distribution<GenesisValidator> for Standard {
 }
 
 /// This enum represents possible states of a genesis account.
-#[derive(DataSize, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    DataSize, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 pub enum GenesisAccount {
     /// This variant is for internal use only - genesis process will create a virtual system
     /// account and use it to call system contracts.
@@ -346,101 +334,6 @@ impl Distribution<GenesisAccount> for Standard {
         let validator = rng.gen();
 
         GenesisAccount::account(public_key, balance, validator)
-    }
-}
-
-impl ToBytes for GenesisAccount {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut buffer = bytesrepr::allocate_buffer(self)?;
-        match self {
-            GenesisAccount::System => {
-                buffer.push(GenesisAccountTag::System as u8);
-            }
-            GenesisAccount::Account {
-                public_key,
-                balance,
-                validator,
-            } => {
-                buffer.push(GenesisAccountTag::Account as u8);
-                buffer.extend(public_key.to_bytes()?);
-                buffer.extend(balance.value().to_bytes()?);
-                buffer.extend(validator.to_bytes()?);
-            }
-            GenesisAccount::Delegator {
-                validator_public_key,
-                delegator_public_key,
-                balance,
-                delegated_amount,
-            } => {
-                buffer.push(GenesisAccountTag::Delegator as u8);
-                buffer.extend(validator_public_key.to_bytes()?);
-                buffer.extend(delegator_public_key.to_bytes()?);
-                buffer.extend(balance.value().to_bytes()?);
-                buffer.extend(delegated_amount.value().to_bytes()?);
-            }
-        }
-        Ok(buffer)
-    }
-
-    fn serialized_length(&self) -> usize {
-        match self {
-            GenesisAccount::System => TAG_LENGTH,
-            GenesisAccount::Account {
-                public_key,
-                balance,
-                validator,
-            } => {
-                public_key.serialized_length()
-                    + balance.value().serialized_length()
-                    + validator.serialized_length()
-                    + TAG_LENGTH
-            }
-            GenesisAccount::Delegator {
-                validator_public_key,
-                delegator_public_key,
-                balance,
-                delegated_amount,
-            } => {
-                validator_public_key.serialized_length()
-                    + delegator_public_key.serialized_length()
-                    + balance.value().serialized_length()
-                    + delegated_amount.value().serialized_length()
-                    + TAG_LENGTH
-            }
-        }
-    }
-}
-
-impl FromBytes for GenesisAccount {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, remainder) = u8::from_bytes(bytes)?;
-        match tag {
-            tag if tag == GenesisAccountTag::System as u8 => {
-                let genesis_account = GenesisAccount::system();
-                Ok((genesis_account, remainder))
-            }
-            tag if tag == GenesisAccountTag::Account as u8 => {
-                let (public_key, remainder) = FromBytes::from_bytes(remainder)?;
-                let (balance, remainder) = FromBytes::from_bytes(remainder)?;
-                let (validator, remainder) = FromBytes::from_bytes(remainder)?;
-                let genesis_account = GenesisAccount::account(public_key, balance, validator);
-                Ok((genesis_account, remainder))
-            }
-            tag if tag == GenesisAccountTag::Delegator as u8 => {
-                let (validator_public_key, remainder) = FromBytes::from_bytes(remainder)?;
-                let (delegator_public_key, remainder) = FromBytes::from_bytes(remainder)?;
-                let (balance, remainder) = FromBytes::from_bytes(remainder)?;
-                let (delegated_amount_value, remainder) = FromBytes::from_bytes(remainder)?;
-                let genesis_account = GenesisAccount::delegator(
-                    validator_public_key,
-                    delegator_public_key,
-                    balance,
-                    Motes::new(delegated_amount_value),
-                );
-                Ok((genesis_account, remainder))
-            }
-            _ => Err(bytesrepr::Error::Formatting),
-        }
     }
 }
 
@@ -804,28 +697,29 @@ where
     }
 
     pub(crate) fn create_mint(&mut self) -> Result<ContractHash, GenesisError> {
-        let round_seigniorage_rate_uref =
-            {
-                let round_seigniorage_rate_uref = self
-                    .address_generator
-                    .borrow_mut()
-                    .new_uref(AccessRights::READ_ADD_WRITE);
+        let round_seigniorage_rate_uref = {
+            let round_seigniorage_rate_uref = self
+                .address_generator
+                .borrow_mut()
+                .new_uref(AccessRights::READ_ADD_WRITE);
 
-                let (round_seigniorage_rate_numer, round_seigniorage_rate_denom) =
-                    self.exec_config.round_seigniorage_rate().into();
-                let round_seigniorage_rate: Ratio<U512> = Ratio::new(
-                    round_seigniorage_rate_numer.into(),
-                    round_seigniorage_rate_denom.into(),
-                );
+            let (round_seigniorage_rate_numer, round_seigniorage_rate_denom) =
+                self.exec_config.round_seigniorage_rate().into();
+            let round_seigniorage_rate: Ratio<U512> = Ratio::new(
+                round_seigniorage_rate_numer.into(),
+                round_seigniorage_rate_denom.into(),
+            );
 
-                self.tracking_copy.borrow_mut().write(
-                    round_seigniorage_rate_uref.into(),
-                    StoredValue::CLValue(CLValue::from_t(round_seigniorage_rate).map_err(
-                        |_| GenesisError::CLValue(ARG_ROUND_SEIGNIORAGE_RATE.to_string()),
-                    )?),
-                );
-                round_seigniorage_rate_uref
-            };
+            self.tracking_copy.borrow_mut().write(
+                round_seigniorage_rate_uref.into(),
+                StoredValue::CLValue(
+                    CLValue::from_t(BorshRatio::from(round_seigniorage_rate)).map_err(|_| {
+                        GenesisError::CLValue(ARG_ROUND_SEIGNIORAGE_RATE.to_string())
+                    })?,
+                ),
+            );
+            round_seigniorage_rate_uref
+        };
 
         let total_supply_uref = {
             let total_supply_uref = self
@@ -1385,67 +1279,5 @@ where
             StoredValue::CLValue(cl_value_registry),
         );
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use rand::RngCore;
-
-    #[test]
-    fn bytesrepr_roundtrip() {
-        let mut rng = rand::thread_rng();
-        let genesis_account: GenesisAccount = rng.gen();
-        bytesrepr::test_serialization_roundtrip(&genesis_account);
-    }
-
-    #[test]
-    fn system_account_bytesrepr_roundtrip() {
-        let genesis_account = GenesisAccount::system();
-
-        bytesrepr::test_serialization_roundtrip(&genesis_account);
-    }
-
-    #[test]
-    fn account_bytesrepr_roundtrip() {
-        let mut rng = rand::thread_rng();
-        let mut bytes = [0u8; 32];
-        rng.fill_bytes(&mut bytes[..]);
-        let secret_key = SecretKey::ed25519_from_bytes(bytes).unwrap();
-        let public_key: PublicKey = PublicKey::from(&secret_key);
-
-        let genesis_account_1 =
-            GenesisAccount::account(public_key.clone(), Motes::new(U512::from(100)), None);
-
-        bytesrepr::test_serialization_roundtrip(&genesis_account_1);
-
-        let genesis_account_2 =
-            GenesisAccount::account(public_key, Motes::new(U512::from(100)), Some(rng.gen()));
-
-        bytesrepr::test_serialization_roundtrip(&genesis_account_2);
-    }
-
-    #[test]
-    fn delegator_bytesrepr_roundtrip() {
-        let mut rng = rand::thread_rng();
-        let mut validator_bytes = [0u8; 32];
-        let mut delegator_bytes = [0u8; 32];
-        rng.fill_bytes(&mut validator_bytes[..]);
-        rng.fill_bytes(&mut delegator_bytes[..]);
-        let validator_secret_key = SecretKey::ed25519_from_bytes(validator_bytes).unwrap();
-        let delegator_secret_key = SecretKey::ed25519_from_bytes(delegator_bytes).unwrap();
-
-        let validator_public_key = PublicKey::from(&validator_secret_key);
-        let delegator_public_key = PublicKey::from(&delegator_secret_key);
-
-        let genesis_account = GenesisAccount::delegator(
-            validator_public_key,
-            delegator_public_key,
-            Motes::new(U512::from(100)),
-            Motes::zero(),
-        );
-
-        bytesrepr::test_serialization_roundtrip(&genesis_account);
     }
 }

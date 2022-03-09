@@ -4,7 +4,7 @@ use rand::{distributions::Standard, prelude::Distribution, Rng};
 use serde::{Deserialize, Serialize};
 
 use casper_types::{
-    bytesrepr::{self, FromBytes, ToBytes, U32_SERIALIZED_LENGTH},
+    bytesrepr::{self, BorshDeserialize, BorshSerialize, U32_SERIALIZED_LENGTH},
     Gas,
 };
 
@@ -85,7 +85,18 @@ pub(crate) const DEFAULT_HOST_FUNCTION_NEW_DICTIONARY: HostFunction<[Cost; 1]> =
 ///
 /// The total gas cost is equal to `cost` + sum of each argument weight multiplied by the byte size
 /// of the data.
-#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize, Debug, DataSize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Deserialize,
+    Serialize,
+    Debug,
+    DataSize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct HostFunction<T> {
     /// How much the user is charged for calling the host function.
     cost: Cost,
@@ -160,43 +171,19 @@ where
     }
 }
 
-impl<T> ToBytes for HostFunction<T>
-where
-    T: AsRef<[Cost]>,
-{
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-        ret.append(&mut self.cost.to_bytes()?);
-        for value in self.arguments.as_ref().iter() {
-            ret.append(&mut value.to_bytes()?);
-        }
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.cost.serialized_length() + (COST_SERIALIZED_LENGTH * self.arguments.as_ref().len())
-    }
-}
-
-impl<T> FromBytes for HostFunction<T>
-where
-    T: Default + AsMut<[Cost]>,
-{
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (cost, mut bytes) = FromBytes::from_bytes(bytes)?;
-        let mut arguments = T::default();
-        let arguments_mut = arguments.as_mut();
-        for ith_argument in arguments_mut {
-            let (cost, rem) = FromBytes::from_bytes(bytes)?;
-            *ith_argument = cost;
-            bytes = rem;
-        }
-        Ok((Self { cost, arguments }, bytes))
-    }
-}
-
 /// Definition of a host function cost table.
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Debug, DataSize)]
+#[derive(
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    Debug,
+    DataSize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct HostFunctionCosts {
     /// Cost of calling the `read_value` host function.
     pub read_value: HostFunction<[Cost; 3]>,
@@ -402,194 +389,6 @@ impl Default for HostFunctionCosts {
             ),
             blake2b: HostFunction::default(),
         }
-    }
-}
-
-impl ToBytes for HostFunctionCosts {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-        ret.append(&mut self.read_value.to_bytes()?);
-        ret.append(&mut self.dictionary_get.to_bytes()?);
-        ret.append(&mut self.write.to_bytes()?);
-        ret.append(&mut self.dictionary_put.to_bytes()?);
-        ret.append(&mut self.add.to_bytes()?);
-        ret.append(&mut self.new_uref.to_bytes()?);
-        ret.append(&mut self.load_named_keys.to_bytes()?);
-        ret.append(&mut self.ret.to_bytes()?);
-        ret.append(&mut self.get_key.to_bytes()?);
-        ret.append(&mut self.has_key.to_bytes()?);
-        ret.append(&mut self.put_key.to_bytes()?);
-        ret.append(&mut self.remove_key.to_bytes()?);
-        ret.append(&mut self.revert.to_bytes()?);
-        ret.append(&mut self.is_valid_uref.to_bytes()?);
-        ret.append(&mut self.add_associated_key.to_bytes()?);
-        ret.append(&mut self.remove_associated_key.to_bytes()?);
-        ret.append(&mut self.update_associated_key.to_bytes()?);
-        ret.append(&mut self.set_action_threshold.to_bytes()?);
-        ret.append(&mut self.get_caller.to_bytes()?);
-        ret.append(&mut self.get_blocktime.to_bytes()?);
-        ret.append(&mut self.create_purse.to_bytes()?);
-        ret.append(&mut self.transfer_to_account.to_bytes()?);
-        ret.append(&mut self.transfer_from_purse_to_account.to_bytes()?);
-        ret.append(&mut self.transfer_from_purse_to_purse.to_bytes()?);
-        ret.append(&mut self.get_balance.to_bytes()?);
-        ret.append(&mut self.get_phase.to_bytes()?);
-        ret.append(&mut self.get_system_contract.to_bytes()?);
-        ret.append(&mut self.get_main_purse.to_bytes()?);
-        ret.append(&mut self.read_host_buffer.to_bytes()?);
-        ret.append(&mut self.create_contract_package_at_hash.to_bytes()?);
-        ret.append(&mut self.create_contract_user_group.to_bytes()?);
-        ret.append(&mut self.add_contract_version.to_bytes()?);
-        ret.append(&mut self.disable_contract_version.to_bytes()?);
-        ret.append(&mut self.call_contract.to_bytes()?);
-        ret.append(&mut self.call_versioned_contract.to_bytes()?);
-        ret.append(&mut self.get_named_arg_size.to_bytes()?);
-        ret.append(&mut self.get_named_arg.to_bytes()?);
-        ret.append(&mut self.remove_contract_user_group.to_bytes()?);
-        ret.append(&mut self.provision_contract_user_group_uref.to_bytes()?);
-        ret.append(&mut self.remove_contract_user_group_urefs.to_bytes()?);
-        ret.append(&mut self.print.to_bytes()?);
-        ret.append(&mut self.blake2b.to_bytes()?);
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.read_value.serialized_length()
-            + self.dictionary_get.serialized_length()
-            + self.write.serialized_length()
-            + self.dictionary_put.serialized_length()
-            + self.add.serialized_length()
-            + self.new_uref.serialized_length()
-            + self.load_named_keys.serialized_length()
-            + self.ret.serialized_length()
-            + self.get_key.serialized_length()
-            + self.has_key.serialized_length()
-            + self.put_key.serialized_length()
-            + self.remove_key.serialized_length()
-            + self.revert.serialized_length()
-            + self.is_valid_uref.serialized_length()
-            + self.add_associated_key.serialized_length()
-            + self.remove_associated_key.serialized_length()
-            + self.update_associated_key.serialized_length()
-            + self.set_action_threshold.serialized_length()
-            + self.get_caller.serialized_length()
-            + self.get_blocktime.serialized_length()
-            + self.create_purse.serialized_length()
-            + self.transfer_to_account.serialized_length()
-            + self.transfer_from_purse_to_account.serialized_length()
-            + self.transfer_from_purse_to_purse.serialized_length()
-            + self.get_balance.serialized_length()
-            + self.get_phase.serialized_length()
-            + self.get_system_contract.serialized_length()
-            + self.get_main_purse.serialized_length()
-            + self.read_host_buffer.serialized_length()
-            + self.create_contract_package_at_hash.serialized_length()
-            + self.create_contract_user_group.serialized_length()
-            + self.add_contract_version.serialized_length()
-            + self.disable_contract_version.serialized_length()
-            + self.call_contract.serialized_length()
-            + self.call_versioned_contract.serialized_length()
-            + self.get_named_arg_size.serialized_length()
-            + self.get_named_arg.serialized_length()
-            + self.remove_contract_user_group.serialized_length()
-            + self.provision_contract_user_group_uref.serialized_length()
-            + self.remove_contract_user_group_urefs.serialized_length()
-            + self.print.serialized_length()
-            + self.blake2b.serialized_length()
-    }
-}
-
-impl FromBytes for HostFunctionCosts {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (read_value, rem) = FromBytes::from_bytes(bytes)?;
-        let (dictionary_get, rem) = FromBytes::from_bytes(rem)?;
-        let (write, rem) = FromBytes::from_bytes(rem)?;
-        let (dictionary_put, rem) = FromBytes::from_bytes(rem)?;
-        let (add, rem) = FromBytes::from_bytes(rem)?;
-        let (new_uref, rem) = FromBytes::from_bytes(rem)?;
-        let (load_named_keys, rem) = FromBytes::from_bytes(rem)?;
-        let (ret, rem) = FromBytes::from_bytes(rem)?;
-        let (get_key, rem) = FromBytes::from_bytes(rem)?;
-        let (has_key, rem) = FromBytes::from_bytes(rem)?;
-        let (put_key, rem) = FromBytes::from_bytes(rem)?;
-        let (remove_key, rem) = FromBytes::from_bytes(rem)?;
-        let (revert, rem) = FromBytes::from_bytes(rem)?;
-        let (is_valid_uref, rem) = FromBytes::from_bytes(rem)?;
-        let (add_associated_key, rem) = FromBytes::from_bytes(rem)?;
-        let (remove_associated_key, rem) = FromBytes::from_bytes(rem)?;
-        let (update_associated_key, rem) = FromBytes::from_bytes(rem)?;
-        let (set_action_threshold, rem) = FromBytes::from_bytes(rem)?;
-        let (get_caller, rem) = FromBytes::from_bytes(rem)?;
-        let (get_blocktime, rem) = FromBytes::from_bytes(rem)?;
-        let (create_purse, rem) = FromBytes::from_bytes(rem)?;
-        let (transfer_to_account, rem) = FromBytes::from_bytes(rem)?;
-        let (transfer_from_purse_to_account, rem) = FromBytes::from_bytes(rem)?;
-        let (transfer_from_purse_to_purse, rem) = FromBytes::from_bytes(rem)?;
-        let (get_balance, rem) = FromBytes::from_bytes(rem)?;
-        let (get_phase, rem) = FromBytes::from_bytes(rem)?;
-        let (get_system_contract, rem) = FromBytes::from_bytes(rem)?;
-        let (get_main_purse, rem) = FromBytes::from_bytes(rem)?;
-        let (read_host_buffer, rem) = FromBytes::from_bytes(rem)?;
-        let (create_contract_package_at_hash, rem) = FromBytes::from_bytes(rem)?;
-        let (create_contract_user_group, rem) = FromBytes::from_bytes(rem)?;
-        let (add_contract_version, rem) = FromBytes::from_bytes(rem)?;
-        let (disable_contract_version, rem) = FromBytes::from_bytes(rem)?;
-        let (call_contract, rem) = FromBytes::from_bytes(rem)?;
-        let (call_versioned_contract, rem) = FromBytes::from_bytes(rem)?;
-        let (get_named_arg_size, rem) = FromBytes::from_bytes(rem)?;
-        let (get_named_arg, rem) = FromBytes::from_bytes(rem)?;
-        let (remove_contract_user_group, rem) = FromBytes::from_bytes(rem)?;
-        let (provision_contract_user_group_uref, rem) = FromBytes::from_bytes(rem)?;
-        let (remove_contract_user_group_urefs, rem) = FromBytes::from_bytes(rem)?;
-        let (print, rem) = FromBytes::from_bytes(rem)?;
-        let (blake2b, rem) = FromBytes::from_bytes(rem)?;
-        Ok((
-            HostFunctionCosts {
-                read_value,
-                dictionary_get,
-                write,
-                dictionary_put,
-                add,
-                new_uref,
-                load_named_keys,
-                ret,
-                get_key,
-                has_key,
-                put_key,
-                remove_key,
-                revert,
-                is_valid_uref,
-                add_associated_key,
-                remove_associated_key,
-                update_associated_key,
-                set_action_threshold,
-                get_caller,
-                get_blocktime,
-                create_purse,
-                transfer_to_account,
-                transfer_from_purse_to_account,
-                transfer_from_purse_to_purse,
-                get_balance,
-                get_phase,
-                get_system_contract,
-                get_main_purse,
-                read_host_buffer,
-                create_contract_package_at_hash,
-                create_contract_user_group,
-                add_contract_version,
-                disable_contract_version,
-                call_contract,
-                call_versioned_contract,
-                get_named_arg_size,
-                get_named_arg,
-                remove_contract_user_group,
-                provision_contract_user_group_uref,
-                remove_contract_user_group_urefs,
-                print,
-                blake2b,
-            },
-            rem,
-        ))
     }
 }
 

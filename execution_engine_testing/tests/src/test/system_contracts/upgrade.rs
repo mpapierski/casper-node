@@ -33,6 +33,7 @@ use casper_execution_engine::{
 };
 use casper_types::{
     account::{AccountHash, ACCOUNT_HASH_LENGTH},
+    bytesrepr::BorshRatio,
     runtime_args,
     system::{
         auction::{
@@ -481,7 +482,7 @@ fn should_upgrade_only_round_seigniorage_rate() {
         .expect("auction should exist")
         .named_keys()[ROUND_SEIGNIORAGE_RATE_KEY];
 
-    let before_round_seigniorage_rate: Ratio<U512> = builder
+    let before_round_seigniorage_rate_borsh: BorshRatio<U512> = builder
         .query(None, round_seigniorage_rate_key, &[])
         .expect("should have locked funds period")
         .as_cl_value()
@@ -489,6 +490,7 @@ fn should_upgrade_only_round_seigniorage_rate() {
         .clone()
         .into_t()
         .expect("should be u64");
+    let before_round_seigniorage_rate = before_round_seigniorage_rate_borsh.into_inner();
 
     let new_round_seigniorage_rate = Ratio::new(1, 1_000_000_000);
 
@@ -505,7 +507,7 @@ fn should_upgrade_only_round_seigniorage_rate() {
         .upgrade_with_upgrade_request(*builder.get_engine_state().config(), &mut upgrade_request)
         .expect_upgrade_success();
 
-    let after_round_seigniorage_rate: Ratio<U512> = builder
+    let after_round_seigniorage_rate_borsh: BorshRatio<U512> = builder
         .query(None, round_seigniorage_rate_key, &[])
         .expect("should have locked funds period")
         .as_cl_value()
@@ -513,8 +515,9 @@ fn should_upgrade_only_round_seigniorage_rate() {
         .clone()
         .into_t()
         .expect("should be u64");
+    let after_round_seigniorage_rate = after_round_seigniorage_rate_borsh.into_inner();
 
-    assert_ne!(before_round_seigniorage_rate, after_round_seigniorage_rate);
+    assert_ne!(before_round_seigniorage_rate, after_round_seigniorage_rate,);
 
     let expected_round_seigniorage_rate = Ratio::new(
         U512::from(*new_round_seigniorage_rate.numer()),

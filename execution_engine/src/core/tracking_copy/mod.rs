@@ -10,6 +10,7 @@ use std::{
     iter,
 };
 
+use borsh::maybestd::io;
 use linked_hash_map::LinkedHashMap;
 use thiserror::Error;
 
@@ -220,6 +221,7 @@ pub enum AddResult {
     KeyNotFound(Key),
     TypeMismatch(StoredValueTypeMismatch),
     Serialization(bytesrepr::Error),
+    BorshSerialization(io::ErrorKind),
 }
 
 impl From<CLValueError> for AddResult {
@@ -231,6 +233,7 @@ impl From<CLValueError> for AddResult {
                 let found = format!("{:?}", type_mismatch.found);
                 AddResult::TypeMismatch(StoredValueTypeMismatch::new(expected, found))
             }
+            CLValueError::BorshSerialization(error) => Self::BorshSerialization(error),
         }
     }
 }
@@ -399,6 +402,9 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
                 Ok(AddResult::TypeMismatch(type_mismatch))
             }
             Err(transform::Error::Serialization(error)) => Ok(AddResult::Serialization(error)),
+            Err(transform::Error::BorshSerialization(error)) => {
+                Ok(AddResult::BorshSerialization(error))
+            }
         }
     }
 
@@ -576,7 +582,7 @@ impl<R: StateReader<Key, StoredValue>> StateReader<Key, StoredValue> for &Tracki
 }
 
 /// Error conditions of a proof validation.
-#[derive(Error, Debug, PartialEq, Eq)]
+#[derive(Error, PartialEq, Eq, Debug)]
 pub enum ValidationError {
     /// The path should not have a different length than the proof less one.
     #[error("The path should not have a different length than the proof less one.")]
@@ -613,8 +619,16 @@ pub enum ValidationError {
     /// CLValue conversion error.
     #[error("{0}")]
     CLValueError(CLValueError),
+
+    #[error("Borsh {0:?}")]
+    BorshSerialization(io::ErrorKind),
 }
 
+impl From<io::Error> for ValidationError {
+    fn from(error: io::Error) -> Self {
+        ValidationError::BorshSerialization(error.kind())
+    }
+}
 impl From<CLValueError> for ValidationError {
     fn from(err: CLValueError) -> Self {
         ValidationError::CLValueError(err)

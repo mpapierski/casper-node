@@ -6,7 +6,7 @@ use wasmi::ModuleRef;
 
 use casper_types::{
     account::{Account, AccountHash},
-    bytesrepr::FromBytes,
+    bytesrepr::BorshDeserialize,
     contracts::NamedKeys,
     system::{auction, handle_payment, mint, AUCTION, HANDLE_PAYMENT, MINT},
     BlockTime, CLTyped, CLValue, ContractPackage, DeployHash, EntryPoint, EntryPointType, Gas, Key,
@@ -365,7 +365,7 @@ impl Executor {
     where
         R: StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
-        T: FromBytes + CLTyped,
+        T: BorshDeserialize + CLTyped,
     {
         // TODO See if these panics can be removed.
         let system_contract_registry = tracking_copy
@@ -507,7 +507,7 @@ impl Executor {
     where
         R: StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
-        T: FromBytes + CLTyped,
+        T: BorshDeserialize + CLTyped,
     {
         let mut named_keys: NamedKeys = account.named_keys().clone();
         let base_key = account.account_hash().into();
@@ -679,7 +679,7 @@ impl DirectSystemContractCall {
     where
         R: StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
-        T: FromBytes + CLTyped,
+        T: BorshDeserialize + CLTyped,
     {
         let entry_point_name = self.entry_point_name();
 

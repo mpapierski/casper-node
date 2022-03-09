@@ -2,6 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::{string::String, vec::Vec};
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use core::fmt::{self, Display, Formatter};
 
 #[cfg(feature = "datasize")]
@@ -11,10 +12,7 @@ use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::{
-    bytesrepr::{self, Bytes, FromBytes, ToBytes, U32_SERIALIZED_LENGTH},
-    checksummed_hex, CLType, CLTyped,
-};
+use crate::{bytesrepr, checksummed_hex, CLType, CLTyped};
 
 mod jsonrepr;
 
@@ -39,17 +37,23 @@ impl Display for CLTypeMismatch {
 }
 
 /// Error relating to [`CLValue`] operations.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CLValueError {
     /// An error while serializing or deserializing the underlying data.
-    Serialization(bytesrepr::Error),
+    Serialization(bytesrepr::Error), // todo remove
+    BorshSerialization(io::ErrorKind),
     /// A type mismatch while trying to convert a [`CLValue`] into a given type.
     Type(CLTypeMismatch),
 }
-
 impl From<bytesrepr::Error> for CLValueError {
     fn from(error: bytesrepr::Error) -> Self {
         CLValueError::Serialization(error)
+    }
+}
+
+impl From<io::Error> for CLValueError {
+    fn from(error: io::Error) -> Self {
+        CLValueError::BorshSerialization(error.kind())
     }
 }
 
@@ -58,6 +62,9 @@ impl Display for CLValueError {
         match self {
             CLValueError::Serialization(error) => write!(formatter, "CLValue error: {}", error),
             CLValueError::Type(error) => write!(formatter, "Type mismatch: {}", error),
+            CLValueError::BorshSerialization(io_error) => {
+                write!(formatter, "IO error: {:?}", io_error)
+            }
         }
     }
 }
@@ -66,30 +73,30 @@ impl Display for CLValueError {
 ///
 /// It holds the underlying data as a type-erased, serialized `Vec<u8>` and also holds the
 /// [`CLType`] of the underlying data as a separate member.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct CLValue {
+    bytes: Vec<u8>,
     cl_type: CLType,
-    bytes: Bytes,
 }
 
 impl CLValue {
     /// Constructs a `CLValue` from `t`.
-    pub fn from_t<T: CLTyped + ToBytes>(t: T) -> Result<CLValue, CLValueError> {
-        let bytes = t.into_bytes()?;
+    pub fn from_t<T: CLTyped + BorshSerialize>(t: T) -> Result<CLValue, CLValueError> {
+        let bytes = borsh::to_vec(&t)?;
 
         Ok(CLValue {
+            bytes,
             cl_type: T::cl_type(),
-            bytes: bytes.into(),
         })
     }
 
     /// Consumes and converts `self` back into its underlying type.
-    pub fn into_t<T: CLTyped + FromBytes>(self) -> Result<T, CLValueError> {
+    pub fn into_t<T: CLTyped + BorshDeserialize>(self) -> Result<T, CLValueError> {
         let expected = T::cl_type();
 
         if self.cl_type == expected {
-            Ok(bytesrepr::deserialize_from_slice(&self.bytes)?)
+            Ok(T::try_from_slice(&self.bytes)?)
         } else {
             Err(CLValueError::Type(CLTypeMismatch {
                 expected,
@@ -116,7 +123,7 @@ impl CLValue {
     // This is only required in order to implement `From<CLValue> for state::CLValue` (i.e. the
     // conversion to the Protobuf `CLValue`) in a separate module to this one.
     #[doc(hidden)]
-    pub fn destructure(self) -> (CLType, Bytes) {
+    pub fn destructure(self) -> (CLType, Vec<u8>) {
         (self.cl_type, self.bytes)
     }
 
@@ -127,45 +134,7 @@ impl CLValue {
 
     /// Returns a reference to the serialized form of the underlying value held in this `CLValue`.
     pub fn inner_bytes(&self) -> &Vec<u8> {
-        self.bytes.inner_bytes()
-    }
-
-    /// Returns the length of the `Vec<u8>` yielded after calling `self.to_bytes()`.
-    ///
-    /// Note, this method doesn't actually serialize `self`, and hence is relatively cheap.
-    pub fn serialized_length(&self) -> usize {
-        self.cl_type.serialized_length() + U32_SERIALIZED_LENGTH + self.bytes.len()
-    }
-}
-
-impl ToBytes for CLValue {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.clone().into_bytes()
-    }
-
-    fn into_bytes(self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = self.bytes.into_bytes()?;
-        self.cl_type.append_bytes(&mut result)?;
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.bytes.serialized_length() + self.cl_type.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        (&self.bytes).write_bytes(writer)?;
-        self.cl_type.append_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for CLValue {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (bytes, remainder) = FromBytes::from_bytes(bytes)?;
-        let (cl_type, remainder) = FromBytes::from_bytes(remainder)?;
-        let cl_value = CLValue { cl_type, bytes };
-        Ok((cl_value, remainder))
+        &self.bytes
     }
 }
 
@@ -208,7 +177,7 @@ impl Serialize for CLValue {
             }
             .serialize(serializer)
         } else {
-            (&self.cl_type, &self.bytes).serialize(serializer)
+            Serialize::serialize(&(&self.cl_type, &self.bytes), serializer)
         }
     }
 }
@@ -222,7 +191,7 @@ impl<'de> Deserialize<'de> for CLValue {
                 checksummed_hex::decode(&json.bytes).map_err(D::Error::custom)?,
             )
         } else {
-            <(CLType, Vec<u8>)>::deserialize(deserializer)?
+            <(CLType, std::vec::Vec<u8>) as Deserialize>::deserialize(deserializer)?
         };
         Ok(CLValue {
             cl_type,
@@ -270,7 +239,7 @@ mod tests {
         assert_eq!(cl_value, decoded);
     }
 
-    fn check_to_json<T: CLTyped + ToBytes + FromBytes>(value: T, expected: &str) {
+    fn check_to_json<T: CLTyped + BorshSerialize + BorshDeserialize>(value: T, expected: &str) {
         let cl_value = CLValue::from_t(value).unwrap();
         let cl_value_as_json = serde_json::to_string(&cl_value).unwrap();
         // Remove the `serialized_bytes` field:

@@ -5,6 +5,7 @@ mod vesting;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -20,7 +21,7 @@ use crate::{
 pub use vesting::{VestingSchedule, VESTING_SCHEDULE_LENGTH_MILLIS};
 
 /// An entry in the validator map.
-#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -285,65 +286,6 @@ impl CLTyped for Bid {
     }
 }
 
-impl ToBytes for Bid {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        (&self.validator_public_key).write_bytes(&mut result)?;
-        (&self.bonding_purse).write_bytes(&mut result)?;
-        self.staked_amount.write_bytes(&mut result)?;
-        self.delegation_rate.write_bytes(&mut result)?;
-        self.vesting_schedule.write_bytes(&mut result)?;
-        self.delegators().write_bytes(&mut result)?;
-        self.inactive.write_bytes(&mut result)?;
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.validator_public_key.serialized_length()
-            + self.bonding_purse.serialized_length()
-            + self.staked_amount.serialized_length()
-            + self.delegation_rate.serialized_length()
-            + self.vesting_schedule.serialized_length()
-            + self.delegators.serialized_length()
-            + self.inactive.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        (&self.validator_public_key).write_bytes(writer)?;
-        (&self.bonding_purse).write_bytes(writer)?;
-        self.staked_amount.write_bytes(writer)?;
-        self.delegation_rate.write_bytes(writer)?;
-        self.vesting_schedule.write_bytes(writer)?;
-        self.delegators().write_bytes(writer)?;
-        self.inactive.write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for Bid {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (validator_public_key, bytes) = FromBytes::from_bytes(bytes)?;
-        let (bonding_purse, bytes) = FromBytes::from_bytes(bytes)?;
-        let (staked_amount, bytes) = FromBytes::from_bytes(bytes)?;
-        let (delegation_rate, bytes) = FromBytes::from_bytes(bytes)?;
-        let (vesting_schedule, bytes) = FromBytes::from_bytes(bytes)?;
-        let (delegators, bytes) = FromBytes::from_bytes(bytes)?;
-        let (inactive, bytes) = FromBytes::from_bytes(bytes)?;
-        Ok((
-            Bid {
-                validator_public_key,
-                bonding_purse,
-                staked_amount,
-                delegation_rate,
-                vesting_schedule,
-                delegators,
-                inactive,
-            },
-            bytes,
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeMap;
@@ -353,22 +295,6 @@ mod tests {
         system::auction::{bid::VestingSchedule, Bid, DelegationRate, Delegator},
         AccessRights, PublicKey, SecretKey, URef, U512,
     };
-
-    #[test]
-    fn serialization_roundtrip() {
-        let founding_validator = Bid {
-            validator_public_key: PublicKey::from(
-                &SecretKey::ed25519_from_bytes([0u8; SecretKey::ED25519_LENGTH]).unwrap(),
-            ),
-            bonding_purse: URef::new([42; 32], AccessRights::READ_ADD_WRITE),
-            staked_amount: U512::one(),
-            delegation_rate: DelegationRate::max_value(),
-            vesting_schedule: Some(VestingSchedule::default()),
-            delegators: BTreeMap::default(),
-            inactive: true,
-        };
-        bytesrepr::test_serialization_roundtrip(&founding_validator);
-    }
 
     #[test]
     fn should_initialize_delegators_different_timestamps() {
@@ -466,19 +392,5 @@ mod tests {
 
         // Validator initialized, and all delegators initialized
         assert!(!bid.process(delegator_2_release_timestamp + 1));
-    }
-}
-
-#[cfg(test)]
-mod prop_tests {
-    use proptest::prelude::*;
-
-    use crate::{bytesrepr, gens};
-
-    proptest! {
-        #[test]
-        fn test_value_bid(bid in gens::bid_arb(1..100)) {
-            bytesrepr::test_serialization_roundtrip(&bid);
-        }
     }
 }

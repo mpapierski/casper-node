@@ -2,6 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::vec::Vec;
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::mem::MaybeUninit;
 
 #[cfg(feature = "datasize")]
@@ -27,7 +28,18 @@ pub const VESTING_SCHEDULE_LENGTH_MILLIS: u64 =
 /// 91 days / 7 days in a week = 13 weeks
 const LOCKED_AMOUNTS_LENGTH: usize = (VESTING_SCHEDULE_LENGTH_DAYS / DAYS_IN_WEEK) + 1;
 
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -102,75 +114,6 @@ impl VestingSchedule {
             .saturating_add(VESTING_SCHEDULE_LENGTH_MILLIS as u64);
 
         timestamp_millis < vested_period
-    }
-}
-
-impl ToBytes for [U512; LOCKED_AMOUNTS_LENGTH] {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        for item in self.iter() {
-            result.append(&mut item.to_bytes()?);
-        }
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.iter().map(ToBytes::serialized_length).sum::<usize>()
-    }
-}
-
-impl FromBytes for [U512; LOCKED_AMOUNTS_LENGTH] {
-    fn from_bytes(mut bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let mut result: MaybeUninit<[U512; LOCKED_AMOUNTS_LENGTH]> = MaybeUninit::uninit();
-        let result_ptr = result.as_mut_ptr() as *mut U512;
-        for i in 0..LOCKED_AMOUNTS_LENGTH {
-            let (t, remainder) = match FromBytes::from_bytes(bytes) {
-                Ok(success) => success,
-                Err(error) => {
-                    for j in 0..i {
-                        unsafe { result_ptr.add(j).drop_in_place() }
-                    }
-                    return Err(error);
-                }
-            };
-            unsafe { result_ptr.add(i).write(t) };
-            bytes = remainder;
-        }
-        Ok((unsafe { result.assume_init() }, bytes))
-    }
-}
-
-impl ToBytes for VestingSchedule {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        result.append(&mut self.initial_release_timestamp_millis.to_bytes()?);
-        result.append(&mut self.locked_amounts.to_bytes()?);
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.initial_release_timestamp_millis.serialized_length()
-            + self.locked_amounts.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        (&self.initial_release_timestamp_millis).write_bytes(writer)?;
-        self.locked_amounts().write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for VestingSchedule {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (initial_release_timestamp_millis, bytes) = FromBytes::from_bytes(bytes)?;
-        let (locked_amounts, bytes) = FromBytes::from_bytes(bytes)?;
-        Ok((
-            VestingSchedule {
-                initial_release_timestamp_millis,
-                locked_amounts,
-            },
-            bytes,
-        ))
     }
 }
 
@@ -371,11 +314,6 @@ mod tests {
                 stake,
                 DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS
             ))
-        }
-
-        #[test]
-        fn prop_serialization_roundtrip(vesting_schedule in vesting_schedule_arb()) {
-            bytesrepr::test_serialization_roundtrip(&vesting_schedule)
         }
     }
 }

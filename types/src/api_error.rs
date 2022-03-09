@@ -15,6 +15,7 @@ use crate::{
     system::{auction, handle_payment, mint},
     CLValueError,
 };
+use borsh::maybestd::io;
 
 /// All `Error` variants defined in this library other than `Error::User` will convert to a `u32`
 /// value less than or equal to `RESERVED_ERROR_MAX`.
@@ -391,6 +392,13 @@ pub enum ApiError {
     User(u16),
 }
 
+impl From<io::Error> for ApiError {
+    fn from(error: io::Error) -> Self {
+        // todo represent io error properly
+        ApiError::User(u16::MAX)
+    }
+}
+
 impl From<bytesrepr::Error> for ApiError {
     fn from(error: bytesrepr::Error) -> Self {
         match error {
@@ -449,6 +457,9 @@ impl From<CLValueError> for ApiError {
         match error {
             CLValueError::Serialization(bytesrepr_error) => bytesrepr_error.into(),
             CLValueError::Type(_) => ApiError::CLTypeMismatch,
+            CLValueError::BorshSerialization(error_kind) => {
+                bytesrepr::Error::from(error_kind).into()
+            }
         }
     }
 }

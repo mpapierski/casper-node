@@ -1,5 +1,6 @@
 use alloc::{string::String, vec, vec::Vec};
 
+use borsh::BorshDeserialize;
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -102,18 +103,22 @@ fn to_json<'a>(cl_type: &CLType, bytes: &'a [u8]) -> Option<(Value, &'a [u8])> {
     }
 }
 
-fn simple_type_to_json<T: FromBytes + Serialize>(bytes: &[u8]) -> Option<(Value, &[u8])> {
-    let (value, remainder) = T::from_bytes(bytes).ok()?;
-    Some((json!(value), remainder))
+fn simple_type_to_json<T: BorshDeserialize + Serialize>(
+    mut bytes: &[u8],
+) -> Option<(Value, &[u8])> {
+    // let (value, remainder) = T::from_bytes(bytes).ok()?;
+    let value = T::deserialize(&mut bytes).ok()?;
+    Some((json!(value), bytes))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{bytesrepr::ToBytes, AsymmetricType, CLTyped, SecretKey};
+    use crate::{AsymmetricType, CLTyped, SecretKey};
     use alloc::collections::BTreeMap;
+    use borsh::BorshSerialize;
 
-    fn test_value<T: ToBytes + Serialize + Clone + CLTyped>(value: T) {
+    fn test_value<T: BorshSerialize + Serialize + Clone + CLTyped>(value: T) {
         let cl_value = CLValue::from_t(value.clone()).unwrap();
         let cl_value_as_json: Value = cl_value_to_json(&cl_value).unwrap();
         let expected = json!(value);
@@ -225,8 +230,6 @@ mod tests {
         let v2 = vec![1, 2, 3];
         let v3 = 1u8;
 
-        test_value((v1.clone(),));
-        test_value((v1.clone(), v2.clone()));
-        test_value((v1, v2, v3));
+        todo!("serialize tuples");
     }
 }

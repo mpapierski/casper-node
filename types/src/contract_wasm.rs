@@ -1,4 +1,5 @@
 use alloc::{format, string::String, vec::Vec};
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -83,7 +84,9 @@ impl Display for FromStrError {
 
 /// A newtype wrapping a `HashAddr` which is the raw bytes of
 /// the ContractWasmHash
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(
+    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractWasmHash(HashAddr);
 
@@ -162,8 +165,8 @@ impl FromBytes for ContractWasmHash {
     }
 }
 
-impl From<[u8; 32]> for ContractWasmHash {
-    fn from(bytes: [u8; 32]) -> Self {
+impl From<HashAddr> for ContractWasmHash {
+    fn from(bytes: HashAddr) -> Self {
         ContractWasmHash(bytes)
     }
 }
@@ -171,9 +174,9 @@ impl From<[u8; 32]> for ContractWasmHash {
 impl Serialize for ContractWasmHash {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            self.to_formatted_string().serialize(serializer)
+            Serialize::serialize(&self.to_formatted_string(), serializer)
         } else {
-            self.0.serialize(serializer)
+            Serialize::serialize(&self.0, serializer)
         }
     }
 }
@@ -181,10 +184,10 @@ impl Serialize for ContractWasmHash {
 impl<'de> Deserialize<'de> for ContractWasmHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = String::deserialize(deserializer)?;
+            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
             ContractWasmHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
-            let bytes = HashAddr::deserialize(deserializer)?;
+            let bytes = <HashAddr as Deserialize>::deserialize(deserializer)?;
             Ok(ContractWasmHash(bytes))
         }
     }
@@ -232,7 +235,7 @@ impl JsonSchema for ContractWasmHash {
 }
 
 /// A container for contract's WASM bytes.
-#[derive(PartialEq, Eq, Clone, Serialize)]
+#[derive(PartialEq, Eq, Clone, Serialize, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractWasm {
     bytes: Bytes,

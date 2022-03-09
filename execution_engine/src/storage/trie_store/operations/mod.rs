@@ -8,8 +8,8 @@ use std::{
     mem,
 };
 
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use casper_hashing::Digest;
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
 
 use crate::{
     shared::newtypes::CorrelationId,
@@ -48,14 +48,14 @@ pub fn read<K, V, T, S, E>(
     key: &K,
 ) -> Result<ReadResult<V>, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
-    let path: Vec<u8> = key.to_bytes()?;
+    let path: Vec<u8> = key.try_to_vec()?;
 
     let mut depth: usize = 0;
     let mut current: Trie<K, V> = match store.get(txn, root)? {
@@ -140,15 +140,15 @@ pub fn read_with_proof<K, V, T, S, E>(
     key: &K,
 ) -> Result<ReadResult<TrieMerkleProof<K, V>>, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     let mut proof_steps = VecDeque::new();
-    let path: Vec<u8> = key.to_bytes()?;
+    let path: Vec<u8> = key.try_to_vec()?;
 
     let mut depth: usize = 0;
     let mut current: Trie<K, V> = match store.get(txn, root)? {
@@ -239,12 +239,12 @@ pub fn missing_trie_keys<K, V, T, S, E>(
     mut trie_keys_to_visit: Vec<Digest>,
 ) -> Result<Vec<Digest>, E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + std::fmt::Debug,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + std::fmt::Debug,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     let mut missing_descendants = Vec::new();
     let mut visited = HashSet::new();
@@ -303,12 +303,12 @@ fn scan<K, V, T, S, E>(
     root: &Trie<K, V>,
 ) -> Result<TrieScan<K, V>, E>
 where
-    K: ToBytes + FromBytes + Clone,
-    V: ToBytes + FromBytes + Clone,
+    K: BorshSerialize + BorshDeserialize + Clone,
+    V: BorshSerialize + BorshDeserialize + Clone,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     let path = key_bytes;
 
@@ -396,19 +396,19 @@ fn delete<K, V, T, S, E>(
     key_to_delete: &K,
 ) -> Result<DeleteResult, E>
 where
-    K: ToBytes + FromBytes + Clone + PartialEq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone,
+    K: BorshSerialize + BorshDeserialize + Clone + PartialEq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone,
     T: Readable<Handle = S::Handle> + Writable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     let root_trie = match store.get(txn, root)? {
         None => return Ok(DeleteResult::RootNotFound),
         Some(root_trie) => root_trie,
     };
 
-    let key_bytes = key_to_delete.to_bytes()?;
+    let key_bytes = key_to_delete.try_to_vec()?;
     let TrieScan { tip, mut parents } =
         scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)?;
 
@@ -602,10 +602,10 @@ where
 fn rehash<K, V>(
     mut tip: Trie<K, V>,
     parents: Parents<K, V>,
-) -> Result<Vec<(Digest, Trie<K, V>)>, bytesrepr::Error>
+) -> Result<Vec<(Digest, Trie<K, V>)>, io::Error>
 where
-    K: ToBytes + Clone,
-    V: ToBytes + Clone,
+    K: BorshSerialize + Clone,
+    V: BorshSerialize + Clone,
 {
     let mut ret: Vec<(Digest, Trie<K, V>)> = Vec::new();
     let mut tip_hash = tip.trie_hash()?;
@@ -673,8 +673,8 @@ fn add_node_to_parents<K, V>(
     mut parents: Parents<K, V>,
 ) -> Parents<K, V>
 where
-    K: ToBytes,
-    V: ToBytes,
+    K: BorshSerialize,
+    V: BorshSerialize,
 {
     // TODO: add is_node() method to Trie
     match new_parent_node {
@@ -715,10 +715,10 @@ fn reparent_leaf<K, V>(
     new_leaf_path: &[u8],
     existing_leaf_path: &[u8],
     parents: Parents<K, V>,
-) -> Result<(Trie<K, V>, Parents<K, V>), bytesrepr::Error>
+) -> Result<(Trie<K, V>, Parents<K, V>), io::Error>
 where
-    K: ToBytes,
-    V: ToBytes,
+    K: BorshSerialize,
+    V: BorshSerialize,
 {
     let mut parents = parents;
     let (child_index, parent) = parents.pop().expect("parents should not be empty");
@@ -771,10 +771,10 @@ fn split_extension<K, V>(
     new_leaf_path: &[u8],
     existing_extension: Trie<K, V>,
     mut parents: Parents<K, V>,
-) -> Result<SplitResult<K, V>, bytesrepr::Error>
+) -> Result<SplitResult<K, V>, io::Error>
 where
-    K: ToBytes + Clone,
-    V: ToBytes + Clone,
+    K: BorshSerialize + Clone,
+    V: BorshSerialize + Clone,
 {
     // TODO: add is_extension() method to Trie
     let (affix, pointer) = match existing_extension {
@@ -842,12 +842,12 @@ pub fn write<K, V, T, S, E>(
     value: &V,
 ) -> Result<WriteResult, E>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq,
     T: Readable<Handle = S::Handle> + Writable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     match store.get(txn, root)? {
         None => Ok(WriteResult::RootNotFound),
@@ -856,7 +856,7 @@ where
                 key: key.to_owned(),
                 value: value.to_owned(),
             };
-            let path: Vec<u8> = key.to_bytes()?;
+            let path: Vec<u8> = key.try_to_vec()?;
             let TrieScan { tip, parents } =
                 scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)?;
             let new_elements: Vec<(Digest, Trie<K, V>)> = match tip {
@@ -878,7 +878,7 @@ where
                     key: ref existing_leaf_key,
                     ..
                 } if key != existing_leaf_key => {
-                    let existing_leaf_path = existing_leaf_key.to_bytes()?;
+                    let existing_leaf_path = existing_leaf_key.try_to_vec()?;
                     let (new_node, parents) = reparent_leaf(&path, &existing_leaf_path, parents)?;
                     let parents = add_node_to_parents(&path, new_node, parents);
                     rehash(new_leaf, parents)?
@@ -931,12 +931,12 @@ pub fn put_trie<K, V, T, S, E>(
     trie_bytes: &[u8],
 ) -> Result<Digest, E>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq,
     T: Readable<Handle = S::Handle> + Writable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
-    E: From<S::Error> + From<bytesrepr::Error>,
+    E: From<S::Error> + From<io::Error>,
 {
     let trie_hash = hash_bytes_into_chunks_if_necessary(trie_bytes);
     store.put_raw(txn, &trie_hash, trie_bytes)?;
@@ -969,11 +969,11 @@ pub struct KeysIterator<'a, 'b, K, V, T, S: TrieStore<K, V>> {
 
 impl<'a, 'b, K, V, T, S> Iterator for KeysIterator<'a, 'b, K, V, T, S>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
-    S::Error: From<T::Error> + From<bytesrepr::Error>,
+    S::Error: From<T::Error> + From<io::Error>,
 {
     type Item = Result<K, S::Error>;
 
@@ -998,7 +998,7 @@ where
 
             match trie {
                 Trie::Leaf { key, .. } => {
-                    let key_bytes = match key.to_bytes() {
+                    let key_bytes = match key.try_to_vec() {
                         Ok(bytes) => bytes,
                         Err(e) => {
                             self.state = KeysIteratorState::Failed;
@@ -1098,8 +1098,8 @@ pub fn keys<'a, 'b, K, V, T, S>(
     root: &Digest,
 ) -> KeysIterator<'a, 'b, K, V, T, S>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
@@ -1118,8 +1118,8 @@ pub fn keys_with_prefix<'a, 'b, K, V, T, S>(
     prefix: &[u8],
 ) -> KeysIterator<'a, 'b, K, V, T, S>
 where
-    K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-    V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+    K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+    V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
     T: Readable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,

@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
+use borsh::{BorshSerialize, BorshDeserialize};
 use casper_types::{
     account::AccountHash,
-    bytesrepr::{FromBytes, ToBytes},
     system::{
         auction::{Bid, EraInfo, Error, UnbondingPurse},
         mint,
@@ -31,10 +31,10 @@ pub trait RuntimeProvider {
 /// Provides functionality of a contract storage.
 pub trait StorageProvider {
     /// Reads data from [`URef`].
-    fn read<T: FromBytes + CLTyped>(&mut self, uref: URef) -> Result<Option<T>, Error>;
+    fn read<T: BorshDeserialize + CLTyped>(&mut self, uref: URef) -> Result<Option<T>, Error>;
 
     /// Writes data to [`URef].
-    fn write<T: ToBytes + CLTyped>(&mut self, uref: URef, value: T) -> Result<(), Error>;
+    fn write<T: BorshSerialize + CLTyped>(&mut self, uref: URef, value: T) -> Result<(), Error>;
 
     /// Reads [`Bid`] at account hash derived from given public key
     fn read_bid(&mut self, account_hash: &AccountHash) -> Result<Option<Bid>, Error>;

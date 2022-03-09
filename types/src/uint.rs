@@ -37,17 +37,18 @@ mod macro_code {
     #[cfg(feature = "datasize")]
     use datasize::DataSize;
     use uint::construct_uint;
+    use borsh::{BorshSerialize, BorshDeserialize};
 
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
         pub struct U512(8);
     }
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
         pub struct U256(4);
     }
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
         pub struct U128(2);
     }
 }

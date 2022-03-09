@@ -13,7 +13,6 @@ use casper_types::{
         Account, AccountHash, ActionType, AddKeyFailure, AssociatedKeys, RemoveKeyFailure,
         SetThresholdFailure, Weight, ACCOUNT_HASH_LENGTH,
     },
-    bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::{AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT},
     AccessRights, BlockTime, CLValue, Contract, ContractHash, DeployHash, EntryPointType,

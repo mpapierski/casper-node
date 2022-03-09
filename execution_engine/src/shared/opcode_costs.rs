@@ -6,7 +6,7 @@ use pwasm_utils::rules::{InstructionType, Metering, Set};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
 
-use casper_types::bytesrepr::{self, FromBytes, ToBytes, U32_SERIALIZED_LENGTH};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize, U32_SERIALIZED_LENGTH};
 
 /// Default cost of the `bit` Wasm opcode.
 pub const DEFAULT_BIT_COST: u32 = 300;
@@ -185,78 +185,6 @@ impl Distribution<OpcodeCosts> for Standard {
             grow_memory: rng.gen(),
             regular: rng.gen(),
         }
-    }
-}
-
-impl ToBytes for OpcodeCosts {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-
-        ret.append(&mut self.bit.to_bytes()?);
-        ret.append(&mut self.add.to_bytes()?);
-        ret.append(&mut self.mul.to_bytes()?);
-        ret.append(&mut self.div.to_bytes()?);
-        ret.append(&mut self.load.to_bytes()?);
-        ret.append(&mut self.store.to_bytes()?);
-        ret.append(&mut self.op_const.to_bytes()?);
-        ret.append(&mut self.local.to_bytes()?);
-        ret.append(&mut self.global.to_bytes()?);
-        ret.append(&mut self.control_flow.to_bytes()?);
-        ret.append(&mut self.integer_comparison.to_bytes()?);
-        ret.append(&mut self.conversion.to_bytes()?);
-        ret.append(&mut self.unreachable.to_bytes()?);
-        ret.append(&mut self.nop.to_bytes()?);
-        ret.append(&mut self.current_memory.to_bytes()?);
-        ret.append(&mut self.grow_memory.to_bytes()?);
-        ret.append(&mut self.regular.to_bytes()?);
-
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        OPCODE_COSTS_SERIALIZED_LENGTH
-    }
-}
-
-impl FromBytes for OpcodeCosts {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (bit, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (add, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (mul, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (div, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (load, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (store, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (const_, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (local, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (global, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (control_flow, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (integer_comparison, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (conversion, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (unreachable, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (nop, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (current_memory, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (grow_memory, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let (regular, bytes): (_, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let opcode_costs = OpcodeCosts {
-            bit,
-            add,
-            mul,
-            div,
-            load,
-            store,
-            op_const: const_,
-            local,
-            global,
-            control_flow,
-            integer_comparison,
-            conversion,
-            unreachable,
-            nop,
-            current_memory,
-            grow_memory,
-            regular,
-        };
-        Ok((opcode_costs, bytes))
     }
 }
 

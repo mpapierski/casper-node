@@ -2,6 +2,7 @@ use alloc::{
     string::String,
     vec::{IntoIter, Vec},
 };
+use borsh::{BorshSerialize, BorshDeserialize};
 use core::{
     cmp, fmt,
     iter::FromIterator,
@@ -22,7 +23,7 @@ use super::{Error, FromBytes, ToBytes};
 use crate::{checksummed_hex, CLType, CLTyped};
 
 /// A newtype wrapper for bytes that has efficient serialization routines.
-#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Default, Hash)]
+#[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Default, Hash, BorshSerialize, BorshDeserialize)]
 pub struct Bytes(Vec<u8>);
 
 impl Bytes {
@@ -277,7 +278,7 @@ impl<'de> Deserialize<'de> for Bytes {
         D: Deserializer<'de>,
     {
         if deserializer.is_human_readable() {
-            let hex_string = String::deserialize(deserializer)?;
+            let hex_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
             checksummed_hex::decode(&hex_string)
                 .map(Bytes)
                 .map_err(SerdeError::custom)
@@ -294,7 +295,7 @@ impl Serialize for Bytes {
         S: Serializer,
     {
         if serializer.is_human_readable() {
-            base16::encode_lower(&self.0).serialize(serializer)
+            Serialize::serialize(&base16::encode_lower(&self.0), serializer)
         } else {
             serializer.serialize_bytes(&self.0)
         }

@@ -1,6 +1,7 @@
 //! Home of the Mint contract's [`enum@Error`] type.
 
 use alloc::vec::Vec;
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     convert::{TryFrom, TryInto},
     fmt::{self, Display, Formatter},
@@ -12,7 +13,7 @@ use crate::{
 };
 
 /// Errors which can occur while executing the Mint contract.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, BorshSerialize, BorshDeserialize)]
 #[repr(u8)]
 pub enum Error {
     /// Insufficient funds to complete the transfer.

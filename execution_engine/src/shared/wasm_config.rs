@@ -3,7 +3,7 @@ use datasize::DataSize;
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
 
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 
 use super::{
     host_function_costs::HostFunctionCosts, opcode_costs::OpcodeCosts, storage_costs::StorageCosts,
@@ -75,49 +75,6 @@ impl Default for WasmConfig {
             storage_costs: StorageCosts::default(),
             host_function_costs: HostFunctionCosts::default(),
         }
-    }
-}
-
-impl ToBytes for WasmConfig {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-
-        ret.append(&mut self.max_memory.to_bytes()?);
-        ret.append(&mut self.max_stack_height.to_bytes()?);
-        ret.append(&mut self.opcode_costs.to_bytes()?);
-        ret.append(&mut self.storage_costs.to_bytes()?);
-        ret.append(&mut self.host_function_costs.to_bytes()?);
-
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.max_memory.serialized_length()
-            + self.max_stack_height.serialized_length()
-            + self.opcode_costs.serialized_length()
-            + self.storage_costs.serialized_length()
-            + self.host_function_costs.serialized_length()
-    }
-}
-
-impl FromBytes for WasmConfig {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (max_memory, rem) = FromBytes::from_bytes(bytes)?;
-        let (max_stack_height, rem) = FromBytes::from_bytes(rem)?;
-        let (opcode_costs, rem) = FromBytes::from_bytes(rem)?;
-        let (storage_costs, rem) = FromBytes::from_bytes(rem)?;
-        let (host_function_costs, rem) = FromBytes::from_bytes(rem)?;
-
-        Ok((
-            WasmConfig {
-                max_memory,
-                max_stack_height,
-                opcode_costs,
-                storage_costs,
-                host_function_costs,
-            },
-            rem,
-        ))
     }
 }
 

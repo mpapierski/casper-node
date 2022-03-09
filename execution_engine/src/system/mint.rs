@@ -7,6 +7,7 @@ use num_traits::CheckedMul;
 
 use casper_types::{
     account::AccountHash,
+    bytesrepr::BorshRatio,
     system::{
         mint::{Error, ROUND_SEIGNIORAGE_RATE_KEY, TOTAL_SUPPLY_KEY},
         CallStackElement,
@@ -146,9 +147,10 @@ pub trait Mint: RuntimeProvider + StorageProvider + SystemProvider {
             Some(_) => return Err(Error::MissingKey), // TODO
             None => return Err(Error::MissingKey),
         };
-        let round_seigniorage_rate: Ratio<U512> = self
+        let round_seigniorage_rate_borsh: BorshRatio<U512> = self
             .read(round_seigniorage_rate_uref)?
             .ok_or(Error::TotalSupplyNotFound)?;
+        let round_seigniorage_rate: Ratio<U512> = round_seigniorage_rate_borsh.into_inner();
 
         round_seigniorage_rate
             .checked_mul(&Ratio::from(total_supply))

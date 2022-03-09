@@ -22,7 +22,7 @@ use casper_execution_engine::{
     },
 };
 use casper_types::{
-    bytesrepr::{Bytes, ToBytes},
+    bytesrepr::{BorshSerialize, Bytes, ToBytes},
     CLValue, ContractHash, EraId, ProtocolVersion, RuntimeArgs, StoredValue, U512,
 };
 #[cfg(not(feature = "use-as-wasm"))]
@@ -331,7 +331,7 @@ fn should_measure_gas_cost_for_storage_usage_write() {
     let expected_small_write_data =
         StoredValue::from(CLValue::from_t(Bytes::from(WRITE_SMALL_VALUE.to_vec())).unwrap());
 
-    let expected_small_cost = U512::from(expected_small_write_data.serialized_length());
+    let expected_small_cost = U512::from(expected_small_write_data.try_to_vec().unwrap().len());
 
     let small_write_cost = Ratio::new(small_write_function_cost.value(), cost_per_byte);
 
@@ -371,7 +371,7 @@ fn should_measure_gas_cost_for_storage_usage_write() {
 
     let expected_large_write_data =
         StoredValue::from(CLValue::from_t(Bytes::from(WRITE_LARGE_VALUE.to_vec())).unwrap());
-    let expected_large_cost = U512::from(expected_large_write_data.serialized_length());
+    let expected_large_cost = U512::from(expected_large_write_data.try_to_vec().unwrap().len());
 
     let large_write_cost = Ratio::new(large_write_function_cost.value(), cost_per_byte);
 
@@ -442,7 +442,7 @@ fn should_measure_unisolated_gas_cost_for_storage_usage_write() {
     let expected_small_write_data =
         StoredValue::from(CLValue::from_t(Bytes::from(WRITE_SMALL_VALUE.to_vec())).unwrap());
 
-    let expected_small_cost = U512::from(expected_small_write_data.serialized_length());
+    let expected_small_cost = U512::from(expected_small_write_data.try_to_vec().unwrap().len());
 
     let small_write_cost = Ratio::new(small_write_function_cost.value(), cost_per_byte);
 
@@ -481,7 +481,7 @@ fn should_measure_unisolated_gas_cost_for_storage_usage_write() {
 
     let expected_large_write_data =
         StoredValue::from(CLValue::from_t(Bytes::from(WRITE_LARGE_VALUE.to_vec())).unwrap());
-    let expected_large_cost = U512::from(expected_large_write_data.serialized_length());
+    let expected_large_cost = U512::from(expected_large_write_data.try_to_vec().unwrap().len());
 
     let large_write_cost = Ratio::new(large_write_function_cost.value(), cost_per_byte);
 
@@ -555,7 +555,7 @@ fn should_measure_gas_cost_for_storage_usage_add() {
     let expected_small_add_data =
         StoredValue::from(CLValue::from_t(U512::from(ADD_SMALL_VALUE)).unwrap());
 
-    let expected_small_cost = U512::from(expected_small_add_data.serialized_length());
+    let expected_small_cost = U512::from(expected_small_add_data.try_to_vec().unwrap().len());
 
     let small_add_cost = Ratio::new(small_add_function_cost.value(), cost_per_byte);
 
@@ -595,7 +595,7 @@ fn should_measure_gas_cost_for_storage_usage_add() {
 
     let expected_large_write_data =
         StoredValue::from(CLValue::from_t(U512::from(ADD_LARGE_VALUE)).unwrap());
-    let expected_large_cost = U512::from(expected_large_write_data.serialized_length());
+    let expected_large_cost = U512::from(expected_large_write_data.try_to_vec().unwrap().len());
 
     assert!(expected_large_cost > expected_small_cost);
 
@@ -670,7 +670,7 @@ fn should_measure_unisolated_gas_cost_for_storage_usage_add() {
     let expected_small_add_data =
         StoredValue::from(CLValue::from_t(U512::from(ADD_SMALL_VALUE)).unwrap());
 
-    let expected_small_cost = U512::from(expected_small_add_data.serialized_length());
+    let expected_small_cost = U512::from(expected_small_add_data.try_to_vec().unwrap().len());
 
     let small_add_cost = Ratio::new(small_add_function_cost.value(), cost_per_byte);
 
@@ -709,7 +709,7 @@ fn should_measure_unisolated_gas_cost_for_storage_usage_add() {
 
     let expected_large_write_data =
         StoredValue::from(CLValue::from_t(U512::from(ADD_LARGE_VALUE)).unwrap());
-    let expected_large_cost = U512::from(expected_large_write_data.serialized_length());
+    let expected_large_cost = U512::from(expected_large_write_data.try_to_vec().unwrap().len());
 
     assert!(expected_large_cost > expected_small_cost);
 

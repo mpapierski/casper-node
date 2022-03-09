@@ -17,3 +17,4 @@ default = ["casper-contract/default"]
 [dependencies]
 casper-contract = { path = "../../../contract", default-features = false }
 casper-types = { path = "../../../../types" }
+borsh = "0.9.3"

@@ -2,18 +2,27 @@
 
 use std::{collections::BTreeMap, convert::TryFrom};
 
-use serde::{Deserialize, Serialize};
-
+use borsh::{BorshDeserialize, BorshSerialize};
 use casper_hashing::Digest;
-use casper_types::{
-    bytesrepr::{self, FromBytes, ToBytes},
-    CLType, CLTyped,
-};
+use casper_types::{bytesrepr, CLType, CLTyped};
+use serde::{Deserialize, Serialize};
 
 type BytesreprChainspecRegistry = BTreeMap<String, Digest>;
 
 /// The chainspec registry.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug)]
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Debug,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct ChainspecRegistry {
     chainspec_raw_hash: Digest,
     genesis_accounts_raw_hash: Option<Digest>,
@@ -103,56 +112,8 @@ impl TryFrom<BytesreprChainspecRegistry> for ChainspecRegistry {
     }
 }
 
-impl ToBytes for ChainspecRegistry {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.as_map().to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.as_map().serialized_length()
-    }
-}
-
-impl FromBytes for ChainspecRegistry {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (map, remainder) = BytesreprChainspecRegistry::from_bytes(bytes)?;
-        let chainspec_registry = ChainspecRegistry::try_from(map)?;
-        Ok((chainspec_registry, remainder))
-    }
-}
-
 impl CLTyped for ChainspecRegistry {
     fn cl_type() -> CLType {
         BytesreprChainspecRegistry::cl_type()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use rand::Rng;
-
-    use super::*;
-
-    #[test]
-    fn bytesrepr_roundtrip() {
-        let mut rng = rand::thread_rng();
-
-        let chainspec_file_bytes: [u8; 10] = rng.gen();
-
-        let genesis_account_file_bytes: [u8; 10] = rng.gen();
-        let chainspec_registry =
-            ChainspecRegistry::new_with_genesis(&chainspec_file_bytes, &genesis_account_file_bytes);
-        bytesrepr::test_serialization_roundtrip(&chainspec_registry);
-
-        let global_state_file_bytes: [u8; 10] = rng.gen();
-        let chainspec_registry = ChainspecRegistry::new_with_optional_global_state(
-            &chainspec_file_bytes,
-            Some(&global_state_file_bytes),
-        );
-        bytesrepr::test_serialization_roundtrip(&chainspec_registry);
-
-        let chainspec_registry =
-            ChainspecRegistry::new_with_optional_global_state(&chainspec_file_bytes, None);
-        bytesrepr::test_serialization_roundtrip(&chainspec_registry);
     }
 }

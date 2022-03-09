@@ -7,6 +7,7 @@ pub mod associated_keys;
 mod error;
 mod weight;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::Serialize;
 
 use alloc::{collections::BTreeSet, vec::Vec};
@@ -24,16 +25,12 @@ pub use self::{
     action_type::ActionType,
     associated_keys::AssociatedKeys,
     error::{FromStrError, SetThresholdFailure, TryFromIntError, TryFromSliceForAccountHashError},
-    weight::{Weight, WEIGHT_SERIALIZED_LENGTH},
+    weight::Weight,
 };
-use crate::{
-    bytesrepr::{self, FromBytes, ToBytes},
-    contracts::NamedKeys,
-    crypto, AccessRights, URef, BLAKE2B_DIGEST_LENGTH,
-};
+use crate::{contracts::NamedKeys, crypto, AccessRights, URef, BLAKE2B_DIGEST_LENGTH};
 
 /// Represents an Account in the global state.
-#[derive(PartialEq, Eq, Clone, Debug, Serialize)]
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct Account {
     account_hash: AccountHash,
@@ -243,55 +240,6 @@ impl Account {
             .calculate_keys_weight(authorization_keys);
 
         total_weight >= *self.action_thresholds().key_management()
-    }
-}
-
-impl ToBytes for Account {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        self.account_hash().write_bytes(&mut result)?;
-        self.named_keys().write_bytes(&mut result)?;
-        self.main_purse.write_bytes(&mut result)?;
-        self.associated_keys().write_bytes(&mut result)?;
-        self.action_thresholds().write_bytes(&mut result)?;
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.account_hash.serialized_length()
-            + self.named_keys.serialized_length()
-            + self.main_purse.serialized_length()
-            + self.associated_keys.serialized_length()
-            + self.action_thresholds.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.account_hash().write_bytes(writer)?;
-        self.named_keys().write_bytes(writer)?;
-        self.main_purse().write_bytes(writer)?;
-        self.associated_keys().write_bytes(writer)?;
-        self.action_thresholds().write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for Account {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (account_hash, rem) = AccountHash::from_bytes(bytes)?;
-        let (named_keys, rem) = NamedKeys::from_bytes(rem)?;
-        let (main_purse, rem) = URef::from_bytes(rem)?;
-        let (associated_keys, rem) = AssociatedKeys::from_bytes(rem)?;
-        let (action_thresholds, rem) = ActionThresholds::from_bytes(rem)?;
-        Ok((
-            Account {
-                account_hash,
-                named_keys,
-                main_purse,
-                associated_keys,
-                action_thresholds,
-            },
-            rem,
-        ))
     }
 }
 
@@ -938,21 +886,5 @@ mod tests {
         account
             .update_associated_key(key_1, Weight::new(1))
             .expect("should work");
-    }
-}
-
-#[cfg(test)]
-mod proptests {
-    use proptest::prelude::*;
-
-    use crate::bytesrepr;
-
-    use super::*;
-
-    proptest! {
-        #[test]
-        fn test_value_account(acct in gens::account_arb()) {
-            bytesrepr::test_serialization_roundtrip(&acct);
-        }
     }
 }

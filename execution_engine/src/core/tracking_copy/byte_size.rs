@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, mem};
 
-use casper_types::{account::Account, bytesrepr::ToBytes, ContractWasm, Key, StoredValue};
+use casper_types::{account::Account, bytesrepr::BorshSerialize, ContractWasm, Key, StoredValue};
 
 /// Returns byte size of the element - both heap size and stack size.
 pub trait ByteSize {
@@ -29,22 +29,8 @@ impl<K: HeapSizeOf, V: HeapSizeOf> ByteSize for BTreeMap<K, V> {
 
 impl ByteSize for StoredValue {
     fn byte_size(&self) -> usize {
-        mem::size_of::<Self>()
-            + match self {
-                StoredValue::CLValue(cl_value) => cl_value.serialized_length(),
-                StoredValue::Account(account) => account.serialized_length(),
-                StoredValue::ContractWasm(contract_wasm) => contract_wasm.serialized_length(),
-                StoredValue::Contract(contract_header) => contract_header.serialized_length(),
-                StoredValue::ContractPackage(contract_package) => {
-                    contract_package.serialized_length()
-                }
-                StoredValue::DeployInfo(deploy_info) => deploy_info.serialized_length(),
-                StoredValue::Transfer(transfer) => transfer.serialized_length(),
-                StoredValue::EraInfo(era_info) => era_info.serialized_length(),
-                StoredValue::Bid(bid) => bid.serialized_length(),
-                StoredValue::Withdraw(withdraw_purses) => withdraw_purses.serialized_length(),
-                StoredValue::Unbonding(unbonding_purses) => unbonding_purses.serialized_length(),
-            }
+        let serialized = self.try_to_vec().map(|vec| vec.len()).unwrap_or(1024);
+        mem::size_of::<Self>() + serialized
     }
 }
 

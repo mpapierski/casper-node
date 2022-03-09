@@ -1,11 +1,11 @@
 //! Functions for accessing and mutating local and global state.
 
 use alloc::{collections::BTreeSet, string::String, vec, vec::Vec};
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{convert::From, mem::MaybeUninit};
 
 use casper_types::{
-    api_error,
-    bytesrepr::{self, FromBytes, ToBytes},
+    api_error, bytesrepr,
     contracts::{ContractVersion, EntryPoints, NamedKeys},
     AccessRights, ApiError, CLTyped, CLValue, ContractHash, ContractPackageHash, HashAddr, Key,
     URef, DICTIONARY_ITEM_KEY_MAX_LENGTH, UREF_SERIALIZED_LENGTH,
@@ -18,7 +18,7 @@ use crate::{
 };
 
 /// Reads value under `uref` in the global state.
-pub fn read<T: CLTyped + FromBytes>(uref: URef) -> Result<Option<T>, bytesrepr::Error> {
+pub fn read<T: CLTyped + BorshDeserialize>(uref: URef) -> Result<Option<T>, bytesrepr::Error> {
     let key: Key = uref.into();
     let (key_ptr, key_size, _bytes) = contract_api::to_ptr(key);
 
@@ -33,18 +33,22 @@ pub fn read<T: CLTyped + FromBytes>(uref: URef) -> Result<Option<T>, bytesrepr::
     };
 
     let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
-    Ok(Some(bytesrepr::deserialize(value_bytes)?))
+    Ok(Some(
+        T::try_from_slice(&value_bytes)
+            .ok()
+            .ok_or(bytesrepr::Error::Formatting)?,
+    ))
 }
 
 /// Reads value under `uref` in the global state, reverts if value not found or is not `T`.
-pub fn read_or_revert<T: CLTyped + FromBytes>(uref: URef) -> T {
+pub fn read_or_revert<T: CLTyped + BorshDeserialize>(uref: URef) -> T {
     read(uref)
         .unwrap_or_revert_with(ApiError::Read)
         .unwrap_or_revert_with(ApiError::ValueNotFound)
 }
 
 /// Writes `value` under `uref` in the global state.
-pub fn write<T: CLTyped + ToBytes>(uref: URef, value: T) {
+pub fn write<T: CLTyped + BorshSerialize>(uref: URef, value: T) {
     let key = Key::from(uref);
     let (key_ptr, key_size, _bytes1) = contract_api::to_ptr(key);
 
@@ -57,7 +61,7 @@ pub fn write<T: CLTyped + ToBytes>(uref: URef, value: T) {
 }
 
 /// Adds `value` to the one currently under `uref` in the global state.
-pub fn add<T: CLTyped + ToBytes>(uref: URef, value: T) {
+pub fn add<T: CLTyped + BorshSerialize>(uref: URef, value: T) {
     let key = Key::from(uref);
     let (key_ptr, key_size, _bytes1) = contract_api::to_ptr(key);
 
@@ -71,7 +75,7 @@ pub fn add<T: CLTyped + ToBytes>(uref: URef, value: T) {
 }
 
 /// Returns a new unforgeable pointer, where the value is initialized to `init`.
-pub fn new_uref<T: CLTyped + ToBytes>(init: T) -> URef {
+pub fn new_uref<T: CLTyped + BorshSerialize>(init: T) -> URef {
     let uref_non_null_ptr = contract_api::alloc_bytes(UREF_SERIALIZED_LENGTH);
     let cl_value = CLValue::from_t(init).unwrap_or_revert();
     let (cl_value_ptr, cl_value_size, _cl_value_bytes) = contract_api::to_ptr(cl_value);
@@ -83,7 +87,10 @@ pub fn new_uref<T: CLTyped + ToBytes>(init: T) -> URef {
             UREF_SERIALIZED_LENGTH,
         )
     };
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .ok_or(bytesrepr::Error::Formatting)
+        .unwrap_or_revert()
 }
 
 /// Create a new contract stored under a Key::Hash at version 1. You may upgrade this contract in
@@ -200,7 +207,10 @@ pub fn create_contract_user_group(
     };
 
     let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
-    Ok(bytesrepr::deserialize(value_bytes).unwrap_or_revert())
+    Ok(BorshDeserialize::try_from_slice(&value_bytes)
+        .ok()
+        .ok_or(bytesrepr::Error::Formatting)
+        .unwrap_or_revert())
 }
 
 /// Extends specified group with a new `URef`.
@@ -226,7 +236,10 @@ pub fn provision_contract_user_group_uref(
         unsafe { value_size.assume_init() }
     };
     let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
-    Ok(bytesrepr::deserialize(value_bytes).unwrap_or_revert())
+    Ok(BorshDeserialize::try_from_slice(&value_bytes)
+        .ok()
+        .ok_or(bytesrepr::Error::Formatting)
+        .unwrap_or_revert())
 }
 
 /// Removes specified urefs from a named group.
@@ -308,7 +321,10 @@ pub fn add_contract_version(
         Err(e) => revert(e),
     }
     output_ptr.truncate(total_bytes);
-    let contract_hash = bytesrepr::deserialize(output_ptr).unwrap_or_revert();
+    let contract_hash = BorshDeserialize::try_from_slice(&output_ptr)
+        .ok()
+        .ok_or(bytesrepr::Error::Formatting)
+        .unwrap_or_revert();
     (contract_hash, contract_version)
 }
 
@@ -350,14 +366,17 @@ pub fn new_dictionary(dictionary_name: &str) -> Result<URef, ApiError> {
         unsafe { value_size.assume_init() }
     };
     let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
-    let uref: URef = bytesrepr::deserialize(value_bytes).unwrap_or_revert();
+    let uref: URef = BorshDeserialize::try_from_slice(&value_bytes)
+        .ok()
+        .ok_or(bytesrepr::Error::Formatting)
+        .unwrap_or_revert();
     runtime::put_key(dictionary_name, Key::from(uref));
     Ok(uref)
 }
 
 /// Retrieve `value` stored under `dictionary_item_key` in the dictionary accessed by
 /// `dictionary_seed_uref`.
-pub fn dictionary_get<V: CLTyped + FromBytes>(
+pub fn dictionary_get<V: CLTyped + BorshDeserialize>(
     dictionary_seed_uref: URef,
     dictionary_item_key: &str,
 ) -> Result<Option<V>, bytesrepr::Error> {
@@ -388,11 +407,15 @@ pub fn dictionary_get<V: CLTyped + FromBytes>(
     };
 
     let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
-    Ok(Some(bytesrepr::deserialize(value_bytes)?))
+    Ok(Some(
+        BorshDeserialize::try_from_slice(&value_bytes)
+            .ok()
+            .ok_or(bytesrepr::Error::Formatting)?,
+    ))
 }
 
 /// Writes `value` under `dictionary_item_key` in the dictionary accessed by `dictionary_seed_uref`.
-pub fn dictionary_put<V: CLTyped + ToBytes>(
+pub fn dictionary_put<V: CLTyped + BorshSerialize>(
     dictionary_seed_uref: URef,
     dictionary_item_key: &str,
     value: V,
@@ -431,7 +454,7 @@ fn get_named_uref(name: &str) -> URef {
 }
 
 /// Gets a value out of a named dictionary.
-pub fn named_dictionary_get<V: CLTyped + FromBytes>(
+pub fn named_dictionary_get<V: CLTyped + BorshDeserialize>(
     dictionary_name: &str,
     dictionary_item_key: &str,
 ) -> Result<Option<V>, bytesrepr::Error> {
@@ -439,7 +462,7 @@ pub fn named_dictionary_get<V: CLTyped + FromBytes>(
 }
 
 /// Writes a value in a named dictionary.
-pub fn named_dictionary_put<V: CLTyped + ToBytes>(
+pub fn named_dictionary_put<V: CLTyped + BorshSerialize>(
     dictionary_name: &str,
     dictionary_item_key: &str,
     value: V,

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use casper_types::bytesrepr::{FromBytes, ToBytes};
+use casper_types::bytesrepr::{BorshDeserialize, BorshSerialize};
 
 use crate::storage::{
     store::{Store, StoreExt},
@@ -15,7 +15,7 @@ fn roundtrip<'a, K, V, X, S>(
 ) -> Result<Vec<Option<V>>, S::Error>
 where
     K: AsRef<[u8]>,
-    V: ToBytes + FromBytes,
+    V: BorshSerialize + BorshDeserialize,
     X: TransactionSource<'a, Handle = S::Handle>,
     S: Store<K, V>,
     S::Error: From<X::Error>,
@@ -35,7 +35,7 @@ pub fn roundtrip_succeeds<'a, K, V, X, S>(
 ) -> Result<bool, S::Error>
 where
     K: AsRef<[u8]>,
-    V: ToBytes + FromBytes + Clone + PartialEq,
+    V: BorshSerialize + BorshDeserialize + Clone + PartialEq,
     X: TransactionSource<'a, Handle = S::Handle>,
     S: Store<K, V>,
     S::Error: From<X::Error>,

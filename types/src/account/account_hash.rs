@@ -1,4 +1,5 @@
 use alloc::{string::String, vec::Vec};
+use borsh::{BorshSerialize, BorshDeserialize};
 use core::{
     convert::{From, TryFrom},
     fmt::{Debug, Display, Formatter},
@@ -15,7 +16,6 @@ use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Seria
 
 use super::FromStrError;
 use crate::{
-    bytesrepr::{Error, FromBytes, ToBytes},
     checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH,
 };
 
@@ -27,7 +27,7 @@ pub const ACCOUNT_HASH_FORMATTED_STRING_PREFIX: &str = "account-hash-";
 
 /// A newtype wrapping an array which contains the raw bytes of
 /// the AccountHash, a hash of Public Key and Algorithm
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct AccountHash(pub [u8; ACCOUNT_HASH_LENGTH]);
 
@@ -113,9 +113,9 @@ impl JsonSchema for AccountHash {
 impl Serialize for AccountHash {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            self.to_formatted_string().serialize(serializer)
+            Serialize::serialize(&self.to_formatted_string(), serializer)
         } else {
-            self.0.serialize(serializer)
+            Serialize::serialize(&self.0, serializer)
         }
     }
 }
@@ -123,10 +123,10 @@ impl Serialize for AccountHash {
 impl<'de> Deserialize<'de> for AccountHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = String::deserialize(deserializer)?;
+            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
             AccountHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
-            let bytes = <[u8; ACCOUNT_HASH_LENGTH]>::deserialize(deserializer)?;
+            let bytes = <[u8; 32] as Deserialize>::deserialize(deserializer)?;
             Ok(AccountHash(bytes))
         }
     }
@@ -173,31 +173,6 @@ impl Debug for AccountHash {
 impl CLTyped for AccountHash {
     fn cl_type() -> CLType {
         CLType::ByteArray(ACCOUNT_HASH_LENGTH as u32)
-    }
-}
-
-impl ToBytes for AccountHash {
-    #[inline(always)]
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        self.0.to_bytes()
-    }
-
-    #[inline(always)]
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length()
-    }
-
-    #[inline(always)]
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
-        writer.extend_from_slice(&self.0);
-        Ok(())
-    }
-}
-
-impl FromBytes for AccountHash {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (bytes, rem) = FromBytes::from_bytes(bytes)?;
-        Ok((AccountHash::new(bytes), rem))
     }
 }
 

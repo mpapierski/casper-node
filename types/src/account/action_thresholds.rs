@@ -2,17 +2,15 @@
 
 use alloc::vec::Vec;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    account::{ActionType, SetThresholdFailure, Weight, WEIGHT_SERIALIZED_LENGTH},
-    bytesrepr::{self, Error, FromBytes, ToBytes},
-};
+use crate::account::{ActionType, SetThresholdFailure, Weight};
 
 /// Thresholds that have to be met when executing an action of a certain type.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ActionThresholds {
     /// Threshold for deploy execution.
@@ -102,37 +100,6 @@ impl Default for ActionThresholds {
     }
 }
 
-impl ToBytes for ActionThresholds {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        let mut result = bytesrepr::unchecked_allocate_buffer(self);
-        result.append(&mut self.deployment.to_bytes()?);
-        result.append(&mut self.key_management.to_bytes()?);
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        2 * WEIGHT_SERIALIZED_LENGTH
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.deployment().write_bytes(writer)?;
-        self.key_management().write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for ActionThresholds {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (deployment, rem) = Weight::from_bytes(bytes)?;
-        let (key_management, rem) = Weight::from_bytes(rem)?;
-        let ret = ActionThresholds {
-            deployment,
-            key_management,
-        };
-        Ok((ret, rem))
-    }
-}
-
 #[doc(hidden)]
 #[cfg(any(feature = "gens", test))]
 pub mod gens {
@@ -160,11 +127,5 @@ mod tests {
     fn should_not_create_action_thresholds_with_invalid_deployment_threshold() {
         // deployment cant be greater than key management
         assert!(ActionThresholds::new(Weight::new(5), Weight::new(1)).is_err());
-    }
-
-    #[test]
-    fn serialization_roundtrip() {
-        let action_thresholds = ActionThresholds::new(Weight::new(1), Weight::new(42)).unwrap();
-        bytesrepr::test_serialization_roundtrip(&action_thresholds);
     }
 }

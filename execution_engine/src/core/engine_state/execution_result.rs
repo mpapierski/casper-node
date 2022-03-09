@@ -3,7 +3,7 @@
 use std::collections::VecDeque;
 
 use casper_types::{
-    bytesrepr::FromBytes, CLTyped, CLValue, Gas, Key, Motes, StoredValue, TransferAddr,
+    bytesrepr::BorshDeserialize, CLTyped, CLValue, Gas, Key, Motes, StoredValue, TransferAddr,
 };
 
 use super::error;
@@ -37,7 +37,7 @@ fn make_payment_error_effects(
 
 /// Represents the result of an execution specified by
 /// [`crate::core::engine_state::ExecuteRequest`].
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub enum ExecutionResult {
     /// An error condition that happened during execution
     Failure {
@@ -332,12 +332,12 @@ impl ExecutionResult {
     }
 
     /// Returns a wrapped `ret` by consuming object.
-    pub(crate) fn take_with_ret<T: FromBytes + CLTyped>(self, ret: T) -> (Option<T>, Self) {
+    pub(crate) fn take_with_ret<T: BorshDeserialize + CLTyped>(self, ret: T) -> (Option<T>, Self) {
         (Some(ret), self)
     }
 
     /// Returns a self and has a return type compatible with [`ExecutionResult::take_with_ret`].
-    pub(crate) fn take_without_ret<T: FromBytes + CLTyped>(self) -> (Option<T>, Self) {
+    pub(crate) fn take_without_ret<T: BorshDeserialize + CLTyped>(self) -> (Option<T>, Self) {
         (None, self)
     }
 }

@@ -1,4 +1,5 @@
 use alloc::{collections::BTreeMap, vec::Vec};
+use borsh::{BorshDeserialize, BorshSerialize};
 
 use crate::{
     bytesrepr::{self, FromBytes, ToBytes},
@@ -7,7 +8,7 @@ use crate::{
 };
 
 /// The seigniorage recipient details.
-#[derive(Default, PartialEq, Clone, Debug)]
+#[derive(Default, PartialEq, Clone, Debug, BorshSerialize, BorshDeserialize)]
 pub struct SeigniorageRecipient {
     /// Validator stake (not including delegators)
     stake: U512,
@@ -67,38 +68,6 @@ impl CLTyped for SeigniorageRecipient {
     }
 }
 
-impl ToBytes for SeigniorageRecipient {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        result.extend(self.stake.to_bytes()?);
-        result.extend(self.delegation_rate.to_bytes()?);
-        result.extend(self.delegator_stake.to_bytes()?);
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.stake.serialized_length()
-            + self.delegation_rate.serialized_length()
-            + self.delegator_stake.serialized_length()
-    }
-}
-
-impl FromBytes for SeigniorageRecipient {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (stake, bytes) = FromBytes::from_bytes(bytes)?;
-        let (delegation_rate, bytes) = FromBytes::from_bytes(bytes)?;
-        let (delegator_stake, bytes) = FromBytes::from_bytes(bytes)?;
-        Ok((
-            SeigniorageRecipient {
-                stake,
-                delegation_rate,
-                delegator_stake,
-            },
-            bytes,
-        ))
-    }
-}
-
 impl From<&Bid> for SeigniorageRecipient {
     fn from(bid: &Bid) -> Self {
         let delegator_stake = bid
@@ -124,29 +93,6 @@ mod tests {
         system::auction::{DelegationRate, SeigniorageRecipient},
         PublicKey, SecretKey, U512,
     };
-
-    #[test]
-    fn serialization_roundtrip() {
-        let delegator_1_key = PublicKey::from(
-            &SecretKey::ed25519_from_bytes([42; SecretKey::ED25519_LENGTH]).unwrap(),
-        );
-        let delegator_2_key = PublicKey::from(
-            &SecretKey::ed25519_from_bytes([43; SecretKey::ED25519_LENGTH]).unwrap(),
-        );
-        let delegator_3_key = PublicKey::from(
-            &SecretKey::ed25519_from_bytes([44; SecretKey::ED25519_LENGTH]).unwrap(),
-        );
-        let seigniorage_recipient = SeigniorageRecipient {
-            stake: U512::max_value(),
-            delegation_rate: DelegationRate::max_value(),
-            delegator_stake: BTreeMap::from_iter(vec![
-                (delegator_1_key, U512::max_value()),
-                (delegator_2_key, U512::max_value()),
-                (delegator_3_key, U512::zero()),
-            ]),
-        };
-        bytesrepr::test_serialization_roundtrip(&seigniorage_recipient);
-    }
 
     #[test]
     fn test_overflow_in_delegation_rate() {

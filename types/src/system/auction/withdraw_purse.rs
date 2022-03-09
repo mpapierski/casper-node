@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -15,7 +16,7 @@ use crate::{
 };
 
 /// A withdraw purse, a legacy structure.
-#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone)]
+#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -86,47 +87,6 @@ impl WithdrawPurse {
     }
 }
 
-impl ToBytes for WithdrawPurse {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        result.extend(&self.bonding_purse.to_bytes()?);
-        result.extend(&self.validator_public_key.to_bytes()?);
-        result.extend(&self.unbonder_public_key.to_bytes()?);
-        result.extend(&self.era_of_creation.to_bytes()?);
-        result.extend(&self.amount.to_bytes()?);
-
-        Ok(result)
-    }
-    fn serialized_length(&self) -> usize {
-        self.bonding_purse.serialized_length()
-            + self.validator_public_key.serialized_length()
-            + self.unbonder_public_key.serialized_length()
-            + self.era_of_creation.serialized_length()
-            + self.amount.serialized_length()
-    }
-}
-
-impl FromBytes for WithdrawPurse {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (bonding_purse, remainder) = FromBytes::from_bytes(bytes)?;
-        let (validator_public_key, remainder) = FromBytes::from_bytes(remainder)?;
-        let (unbonder_public_key, remainder) = FromBytes::from_bytes(remainder)?;
-        let (era_of_creation, remainder) = FromBytes::from_bytes(remainder)?;
-        let (amount, remainder) = FromBytes::from_bytes(remainder)?;
-
-        Ok((
-            WithdrawPurse {
-                bonding_purse,
-                validator_public_key,
-                unbonder_public_key,
-                era_of_creation,
-                amount,
-            },
-            remainder,
-        ))
-    }
-}
-
 impl CLTyped for WithdrawPurse {
     fn cl_type() -> CLType {
         CLType::Any
@@ -154,19 +114,6 @@ mod tests {
 
     fn amount() -> U512 {
         U512::max_value() - 1
-    }
-
-    #[test]
-    fn serialization_roundtrip_for_withdraw_purse() {
-        let withdraw_purse = WithdrawPurse {
-            bonding_purse: BONDING_PURSE,
-            validator_public_key: validator_public_key(),
-            unbonder_public_key: unbonder_public_key(),
-            era_of_creation: ERA_OF_WITHDRAWAL,
-            amount: amount(),
-        };
-
-        bytesrepr::test_serialization_roundtrip(&withdraw_purse);
     }
 
     #[test]

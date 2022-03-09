@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use borsh::{BorshSerialize, BorshDeserialize, maybestd::io};
 use core::fmt::{self, Display, Formatter};
 
 use bitflags::bitflags;
@@ -9,8 +10,6 @@ use rand::{
     Rng,
 };
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
-
-use crate::bytesrepr;
 
 /// The number of bytes in a serialized [`AccessRights`].
 pub const ACCESS_RIGHTS_SERIALIZED_LENGTH: usize = 1;
@@ -37,6 +36,20 @@ bitflags! {
         const ADD_WRITE      = Self::ADD.bits  | Self::WRITE.bits;
         /// Permission to read, add to, or write the value under the associated `URef`.
         const READ_ADD_WRITE = Self::READ.bits | Self::ADD.bits | Self::WRITE.bits;
+    }
+}
+
+impl BorshSerialize for AccessRights {
+    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+        writer.write_all(&[self.bits])
+    }
+}
+
+
+impl BorshDeserialize for AccessRights {
+    fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
+        let bits = u8::try_from_slice(buf)?;
+        AccessRights::from_bits(bits).ok_or(io::Error::new(io::ErrorKind::InvalidInput, "Invalid access right bits"))
     }
 }
 
@@ -84,40 +97,15 @@ impl Display for AccessRights {
     }
 }
 
-impl bytesrepr::ToBytes for AccessRights {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.bits.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        ACCESS_RIGHTS_SERIALIZED_LENGTH
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        writer.push(self.bits());
-        Ok(())
-    }
-}
-
-impl bytesrepr::FromBytes for AccessRights {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (id, rem) = u8::from_bytes(bytes)?;
-        match AccessRights::from_bits(id) {
-            Some(rights) => Ok((rights, rem)),
-            None => Err(bytesrepr::Error::Formatting),
-        }
-    }
-}
-
 impl Serialize for AccessRights {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        self.bits.serialize(serializer)
+        Serialize::serialize(&self.bits, serializer)
     }
 }
 
 impl<'de> Deserialize<'de> for AccessRights {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let bits = u8::deserialize(deserializer)?;
+        let bits: u8 = Deserialize::deserialize(deserializer)?;
         AccessRights::from_bits(bits).ok_or_else(|| SerdeError::custom("invalid bits"))
     }
 }

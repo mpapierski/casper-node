@@ -27,6 +27,7 @@ use std::{
     rc::Rc,
 };
 
+use borsh::BorshSerialize;
 use num::Zero;
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
@@ -35,7 +36,7 @@ use tracing::{debug, error};
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
-    bytesrepr::{Bytes, ToBytes},
+    bytesrepr::{BorshRatio, Bytes},
     contracts::NamedKeys,
     system::{
         auction::{
@@ -436,7 +437,7 @@ where
 
             let locked_funds_period_key = mint_contract.named_keys()[ROUND_SEIGNIORAGE_RATE_KEY];
             let value = StoredValue::CLValue(
-                CLValue::from_t(new_round_seigniorage_rate)
+                CLValue::from_t(BorshRatio::from(new_round_seigniorage_rate))
                     .map_err(|_| Error::Bytesrepr("new_round_seigniorage_rate".to_string()))?,
             );
             tracking_copy
@@ -1985,7 +1986,7 @@ where
             let bytes: Vec<u8> = get_era_validators_request
                 .protocol_version()
                 .value()
-                .into_bytes()
+                .try_to_vec()
                 .map_err(Error::from)?
                 .to_vec();
             DeployHash::new(Digest::hash(&bytes).value())
@@ -2125,8 +2126,8 @@ where
         let gas_limit = Gas::new(U512::from(std::u64::MAX));
         let deploy_hash = {
             // seeds address generator w/ era_end_timestamp_millis
-            let mut bytes = step_request.era_end_timestamp_millis.into_bytes()?;
-            bytes.append(&mut step_request.next_era_id.into_bytes()?);
+            let mut bytes = step_request.era_end_timestamp_millis.try_to_vec()?;
+            bytes.append(&mut step_request.next_era_id.try_to_vec()?);
             DeployHash::new(Digest::hash(&bytes).value())
         };
 

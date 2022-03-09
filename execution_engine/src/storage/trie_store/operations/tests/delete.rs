@@ -9,8 +9,8 @@ fn checked_delete<K, V, T, S, E>(
     key_to_delete: &K,
 ) -> Result<DeleteResult, E>
 where
-    K: ToBytes + FromBytes + Clone + std::fmt::Debug + Eq,
-    V: ToBytes + FromBytes + Clone + std::fmt::Debug,
+    K: BorshSerialize + BorshDeserialize + Clone + std::fmt::Debug + Eq,
+    V: BorshSerialize + BorshDeserialize + Clone + std::fmt::Debug,
     T: Readable<Handle = S::Handle> + Writable<Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
@@ -33,8 +33,8 @@ mod partial_tries {
         expected_tries_after_delete: &[HashedTrie<K, V>],
     ) -> Result<(), E>
     where
-        K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-        V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+        K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+        V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
         R: TransactionSource<'a, Handle = S::Handle>,
         S: TrieStore<K, V>,
         S::Error: From<R::Error>,
@@ -113,8 +113,8 @@ mod partial_tries {
         key_to_delete: &K,
     ) -> Result<(), E>
     where
-        K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-        V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+        K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+        V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
         R: TransactionSource<'a, Handle = S::Handle>,
         S: TrieStore<K, V>,
         S::Error: From<R::Error>,
@@ -186,7 +186,7 @@ mod full_tries {
     use proptest::{collection, proptest};
 
     use casper_types::{
-        bytesrepr::{self, FromBytes, ToBytes},
+        bytesrepr::{self, BorshDeserialize, BorshSerialize},
         gens::{colliding_key_arb, stored_value_arb},
         Key, StoredValue,
     };
@@ -219,8 +219,8 @@ mod full_tries {
         pairs: &[(K, V)],
     ) -> Result<(), E>
     where
-        K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-        V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+        K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+        V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
         R: TransactionSource<'a, Handle = S::Handle>,
         S: TrieStore<K, V>,
         S::Error: From<R::Error>,
@@ -317,8 +317,8 @@ mod full_tries {
         keys_to_delete: &[K],
     ) -> Result<(), E>
     where
-        K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
-        V: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
+        K: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
+        V: BorshSerialize + BorshDeserialize + Clone + Eq + std::fmt::Debug,
         R: TransactionSource<'a, Handle = S::Handle>,
         S: TrieStore<K, V>,
         S::Error: From<R::Error>,

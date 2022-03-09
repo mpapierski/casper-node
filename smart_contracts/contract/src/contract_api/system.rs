@@ -1,6 +1,7 @@
 //! Functions for interacting with the system contracts.
 
 use alloc::vec::Vec;
+use borsh::BorshDeserialize;
 use core::mem::MaybeUninit;
 
 use casper_types::{
@@ -82,7 +83,7 @@ pub fn create_purse() -> URef {
                 UREF_SERIALIZED_LENGTH,
                 UREF_SERIALIZED_LENGTH,
             );
-            bytesrepr::deserialize(bytes).unwrap_or_revert()
+            URef::try_from_slice(&bytes).ok().unwrap_or_revert()
         } else {
             runtime::revert(ApiError::PurseNotCreated)
         }

@@ -3,6 +3,7 @@
 
 use alloc::vec::Vec;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -16,7 +17,7 @@ use crate::{
 };
 
 /// Represents a party delegating their stake to a validator (or "delegatee")
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -152,91 +153,5 @@ impl Delegator {
 impl CLTyped for Delegator {
     fn cl_type() -> CLType {
         CLType::Any
-    }
-}
-
-impl ToBytes for Delegator {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut buffer = bytesrepr::allocate_buffer(self)?;
-        buffer.extend(self.delegator_public_key.to_bytes()?);
-        buffer.extend(self.staked_amount.to_bytes()?);
-        buffer.extend(self.bonding_purse.to_bytes()?);
-        buffer.extend(self.validator_public_key.to_bytes()?);
-        buffer.extend(self.vesting_schedule.to_bytes()?);
-        Ok(buffer)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.delegator_public_key.serialized_length()
-            + self.staked_amount.serialized_length()
-            + self.bonding_purse.serialized_length()
-            + self.validator_public_key.serialized_length()
-            + self.vesting_schedule.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.delegator_public_key.write_bytes(writer)?;
-        self.staked_amount.write_bytes(writer)?;
-        self.bonding_purse.write_bytes(writer)?;
-        self.validator_public_key.write_bytes(writer)?;
-        self.vesting_schedule.write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for Delegator {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (delegator_public_key, bytes) = PublicKey::from_bytes(bytes)?;
-        let (staked_amount, bytes) = U512::from_bytes(bytes)?;
-        let (bonding_purse, bytes) = URef::from_bytes(bytes)?;
-        let (validator_public_key, bytes) = PublicKey::from_bytes(bytes)?;
-        let (vesting_schedule, bytes) = FromBytes::from_bytes(bytes)?;
-        Ok((
-            Delegator {
-                delegator_public_key,
-                staked_amount,
-                bonding_purse,
-                validator_public_key,
-                vesting_schedule,
-            },
-            bytes,
-        ))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::{
-        bytesrepr, system::auction::Delegator, AccessRights, PublicKey, SecretKey, URef, U512,
-    };
-
-    #[test]
-    fn serialization_roundtrip() {
-        let staked_amount = U512::one();
-        let bonding_purse = URef::new([42; 32], AccessRights::READ_ADD_WRITE);
-        let delegator_public_key: PublicKey = PublicKey::from(
-            &SecretKey::ed25519_from_bytes([42; SecretKey::ED25519_LENGTH]).unwrap(),
-        );
-
-        let validator_public_key: PublicKey = PublicKey::from(
-            &SecretKey::ed25519_from_bytes([43; SecretKey::ED25519_LENGTH]).unwrap(),
-        );
-        let unlocked_delegator = Delegator::unlocked(
-            delegator_public_key.clone(),
-            staked_amount,
-            bonding_purse,
-            validator_public_key.clone(),
-        );
-        bytesrepr::test_serialization_roundtrip(&unlocked_delegator);
-
-        let release_timestamp_millis = 42;
-        let locked_delegator = Delegator::locked(
-            delegator_public_key,
-            staked_amount,
-            bonding_purse,
-            validator_public_key,
-            release_timestamp_millis,
-        );
-        bytesrepr::test_serialization_roundtrip(&locked_delegator);
     }
 }

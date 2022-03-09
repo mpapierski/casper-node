@@ -1,11 +1,11 @@
 use std::{collections::BTreeSet, convert::TryFrom};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use wasmi::{Externals, RuntimeArgs, RuntimeValue, Trap};
 
 use casper_types::{
     account::AccountHash,
-    api_error,
-    bytesrepr::{self, ToBytes},
+    api_error, bytesrepr,
     contracts::{ContractPackageStatus, EntryPoints, NamedKeys},
     crypto,
     system::auction::EraInfo,
@@ -281,7 +281,7 @@ where
                     [dest_ptr, dest_size],
                 )?;
                 let purse = self.create_purse()?;
-                let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
+                let purse_bytes = purse.try_to_vec().map_err(Error::from)?;
                 assert_eq!(dest_size, purse_bytes.len() as u32);
                 self.memory
                     .set(dest_ptr, &purse_bytes)
@@ -313,15 +313,15 @@ where
                 )?;
                 let account_hash: AccountHash = {
                     let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let amount: U512 = {
                     let bytes = self.bytes_from_mem(amount_ptr, amount_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let id: Option<u64> = {
                     let bytes = self.bytes_from_mem(id_ptr, id_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
 
                 let ret = match self.transfer_to_account(account_hash, amount, id)? {
@@ -375,19 +375,19 @@ where
                 )?;
                 let source_purse = {
                     let bytes = self.bytes_from_mem(source_ptr, source_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let account_hash: AccountHash = {
                     let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let amount: U512 = {
                     let bytes = self.bytes_from_mem(amount_ptr, amount_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let id: Option<u64> = {
                     let bytes = self.bytes_from_mem(id_ptr, id_size as usize)?;
-                    bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+                    BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?
                 };
                 let ret = match self.transfer_from_purse_to_account(
                     source_purse,

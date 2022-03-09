@@ -34,7 +34,7 @@ impl<K, V> TrieStore<K, V> for InMemoryTrieStore {}
 #[cfg(test)]
 mod tests {
     use casper_hashing::Digest;
-    use casper_types::bytesrepr::{Bytes, ToBytes};
+    use casper_types::bytesrepr::{BorshSerialize, Bytes};
 
     use crate::storage::{
         store::Store,
@@ -99,7 +99,7 @@ mod tests {
             // Observe that nothing has been persisted to the store
             for hash in vec![&leaf_1_hash, &leaf_2_hash, &node_hash].iter() {
                 // We need to use a type annotation here to help the compiler choose
-                // a suitable FromBytes instance
+                // a suitable BorshDeserialize instance
                 let maybe_trie: Option<Trie<Bytes, Bytes>> = store.get(&txn, hash).unwrap();
                 assert!(maybe_trie.is_none());
             }

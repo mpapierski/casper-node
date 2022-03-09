@@ -1,5 +1,5 @@
 //! Costs of the standard payment system contract.
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 use datasize::DataSize;
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
@@ -19,25 +19,6 @@ impl Default for StandardPaymentCosts {
         Self {
             pay: DEFAULT_PAY_COST,
         }
-    }
-}
-
-impl ToBytes for StandardPaymentCosts {
-    fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-        ret.append(&mut self.pay.to_bytes()?);
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.pay.serialized_length()
-    }
-}
-
-impl FromBytes for StandardPaymentCosts {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), casper_types::bytesrepr::Error> {
-        let (pay, rem) = FromBytes::from_bytes(bytes)?;
-        Ok((Self { pay }, rem))
     }
 }
 

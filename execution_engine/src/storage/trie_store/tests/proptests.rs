@@ -5,7 +5,7 @@ use proptest::{collection::vec, prelude::proptest};
 use tempfile::tempdir;
 
 use casper_hashing::Digest;
-use casper_types::{bytesrepr::ToBytes, Key, StoredValue};
+use casper_types::{bytesrepr::BorshSerialize, Key, StoredValue};
 
 use crate::storage::{
     store::tests as store_tests,

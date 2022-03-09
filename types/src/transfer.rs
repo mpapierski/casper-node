@@ -2,6 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::{format, string::String, vec::Vec};
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -32,7 +33,19 @@ pub(super) const TRANSFER_ADDR_FORMATTED_STRING_PREFIX: &str = "transfer-";
 
 /// A newtype wrapping a <code>[u8; [DEPLOY_HASH_LENGTH]]</code> which is the raw bytes of the
 /// deploy hash.
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, Debug)]
+#[derive(
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    Debug,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct DeployHash([u8; DEPLOY_HASH_LENGTH]);
 
@@ -67,34 +80,12 @@ impl JsonSchema for DeployHash {
     }
 }
 
-impl ToBytes for DeployHash {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.0.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.0.write_bytes(writer)?;
-        Ok(())
-    }
-}
-
-impl FromBytes for DeployHash {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        <[u8; DEPLOY_HASH_LENGTH]>::from_bytes(bytes)
-            .map(|(inner, remainder)| (DeployHash(inner), remainder))
-    }
-}
-
 impl Serialize for DeployHash {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            base16::encode_lower(&self.0).serialize(serializer)
+            Serialize::serialize(&base16::encode_lower(&self.0), serializer)
         } else {
-            self.0.serialize(serializer)
+            Serialize::serialize(&self.0, serializer)
         }
     }
 }
@@ -102,12 +93,12 @@ impl Serialize for DeployHash {
 impl<'de> Deserialize<'de> for DeployHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = if deserializer.is_human_readable() {
-            let hex_string = String::deserialize(deserializer)?;
+            let hex_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
             let vec_bytes =
                 checksummed_hex::decode(hex_string.as_bytes()).map_err(SerdeError::custom)?;
             <[u8; DEPLOY_HASH_LENGTH]>::try_from(vec_bytes.as_ref()).map_err(SerdeError::custom)?
         } else {
-            <[u8; DEPLOY_HASH_LENGTH]>::deserialize(deserializer)?
+            <[u8; 32] as Deserialize>::deserialize(deserializer)?
         };
         Ok(DeployHash(bytes))
     }
@@ -120,7 +111,20 @@ impl Distribution<DeployHash> for Standard {
 }
 
 /// Represents a transfer from one purse to another
-#[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[derive(
+    Debug,
+    Copy,
+    Clone,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Serialize,
+    Deserialize,
+    Default,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
@@ -169,70 +173,6 @@ impl Transfer {
     }
 }
 
-impl FromBytes for Transfer {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (deploy_hash, rem) = FromBytes::from_bytes(bytes)?;
-        let (from, rem) = AccountHash::from_bytes(rem)?;
-        let (to, rem) = <Option<AccountHash>>::from_bytes(rem)?;
-        let (source, rem) = URef::from_bytes(rem)?;
-        let (target, rem) = URef::from_bytes(rem)?;
-        let (amount, rem) = U512::from_bytes(rem)?;
-        let (gas, rem) = U512::from_bytes(rem)?;
-        let (id, rem) = <Option<u64>>::from_bytes(rem)?;
-        Ok((
-            Transfer {
-                deploy_hash,
-                from,
-                to,
-                source,
-                target,
-                amount,
-                gas,
-                id,
-            },
-            rem,
-        ))
-    }
-}
-
-impl ToBytes for Transfer {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        (&self.deploy_hash).write_bytes(&mut result)?;
-        (&self.from).write_bytes(&mut result)?;
-        (&self.to).write_bytes(&mut result)?;
-        (&self.source).write_bytes(&mut result)?;
-        (&self.target).write_bytes(&mut result)?;
-        (&self.amount).write_bytes(&mut result)?;
-        (&self.gas).write_bytes(&mut result)?;
-        (&self.id).write_bytes(&mut result)?;
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.deploy_hash.serialized_length()
-            + self.from.serialized_length()
-            + self.to.serialized_length()
-            + self.source.serialized_length()
-            + self.target.serialized_length()
-            + self.amount.serialized_length()
-            + self.gas.serialized_length()
-            + self.id.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        (&self.deploy_hash).write_bytes(writer)?;
-        (&self.from).write_bytes(writer)?;
-        self.to.write_bytes(writer)?;
-        self.source.write_bytes(writer)?;
-        self.target.write_bytes(writer)?;
-        self.amount.write_bytes(writer)?;
-        self.gas.write_bytes(writer)?;
-        self.id.write_bytes(writer)?;
-        Ok(())
-    }
-}
-
 /// Error returned when decoding a `TransferAddr` from a formatted string.
 #[derive(Debug)]
 pub enum FromStrError {
@@ -270,7 +210,9 @@ impl Display for FromStrError {
 
 /// A newtype wrapping a <code>[u8; [TRANSFER_ADDR_LENGTH]]</code> which is the raw bytes of the
 /// transfer address.
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy)]
+#[derive(
+    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct TransferAddr([u8; TRANSFER_ADDR_LENGTH]);
 
@@ -327,9 +269,9 @@ impl JsonSchema for TransferAddr {
 impl Serialize for TransferAddr {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {
-            self.to_formatted_string().serialize(serializer)
+            Serialize::serialize(&self.to_formatted_string(), serializer)
         } else {
-            self.0.serialize(serializer)
+            Serialize::serialize(&self.0, serializer)
         }
     }
 }
@@ -337,10 +279,10 @@ impl Serialize for TransferAddr {
 impl<'de> Deserialize<'de> for TransferAddr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = String::deserialize(deserializer)?;
+            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
             TransferAddr::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
-            let bytes = <[u8; TRANSFER_ADDR_LENGTH]>::deserialize(deserializer)?;
+            let bytes = <[u8; 32] as Deserialize>::deserialize(deserializer)?;
             Ok(TransferAddr(bytes))
         }
     }
@@ -446,13 +388,6 @@ mod tests {
     use crate::bytesrepr;
 
     use super::*;
-
-    proptest! {
-        #[test]
-        fn test_serialization_roundtrip(transfer in gens::transfer_arb()) {
-            bytesrepr::test_serialization_roundtrip(&transfer)
-        }
-    }
 
     #[test]
     fn transfer_addr_from_str() {

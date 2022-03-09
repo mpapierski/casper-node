@@ -1,7 +1,7 @@
 use lmdb::DatabaseFlags;
 use tempfile::tempdir;
 
-use casper_types::bytesrepr::{self, Bytes, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize, Bytes};
 
 use super::TestData;
 use crate::storage::{
@@ -21,8 +21,8 @@ fn put_succeeds<'a, K, V, S, X, E>(
     items: &[TestData<K, V>],
 ) -> Result<(), E>
 where
-    K: ToBytes,
-    V: ToBytes,
+    K: BorshSerialize,
+    V: BorshSerialize,
     S: TrieStore<K, V>,
     X: TransactionSource<'a, Handle = S::Handle>,
     S::Error: From<X::Error>,
@@ -68,8 +68,8 @@ fn put_get_succeeds<'a, K, V, S, X, E>(
     items: &[TestData<K, V>],
 ) -> Result<Vec<Option<Trie<K, V>>>, E>
 where
-    K: ToBytes + FromBytes,
-    V: ToBytes + FromBytes,
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
     S: TrieStore<K, V>,
     X: TransactionSource<'a, Handle = S::Handle>,
     S::Error: From<X::Error>,
@@ -180,8 +180,8 @@ fn uncommitted_read_write_txn_does_not_persist<'a, K, V, S, X, E>(
     items: &[TestData<K, V>],
 ) -> Result<Vec<Option<Trie<K, V>>>, E>
 where
-    K: ToBytes + FromBytes,
-    V: ToBytes + FromBytes,
+    K: BorshSerialize + BorshDeserialize,
+    V: BorshSerialize + BorshDeserialize,
     S: TrieStore<K, V>,
     X: TransactionSource<'a, Handle = S::Handle>,
     S::Error: From<X::Error>,

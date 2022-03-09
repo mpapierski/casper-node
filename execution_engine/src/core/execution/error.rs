@@ -1,7 +1,10 @@
 //! Execution error and supporting code.
+use std::{rc::Rc, sync::Arc};
+
 use parity_wasm::elements;
 use thiserror::Error;
 
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use casper_types::{
     account::{AddKeyFailure, RemoveKeyFailure, SetThresholdFailure, UpdateKeyFailure},
     bytesrepr, system, AccessRights, ApiError, CLType, CLValueError, ContractHash,
@@ -15,7 +18,7 @@ use crate::{
 };
 
 /// Possible execution errors.
-#[derive(Error, Debug, Clone)]
+#[derive(Error, Clone, Debug)]
 pub enum Error {
     /// WASM interpreter error.
     #[error("Interpreter error: {}", _0)]
@@ -26,6 +29,8 @@ pub enum Error {
     /// Failed to (de)serialize bytes.
     #[error("Serialization error: {}", _0)]
     BytesRepr(bytesrepr::Error),
+    #[error("Borsh {0:?}")]
+    Serialization(io::ErrorKind),
     /// Unable to find named key.
     #[error("Named key {} not found", _0)]
     NamedKeyNotFound(String),
@@ -198,6 +203,12 @@ impl From<wasmi::Error> for Error {
             Some(error) => error.clone(),
             None => Error::Interpreter(error.into()),
         }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self::Serialization(error.kind())
     }
 }
 

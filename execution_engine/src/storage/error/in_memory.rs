@@ -1,3 +1,4 @@
+use borsh::maybestd::io;
 use std::sync;
 
 use thiserror::Error;
@@ -12,6 +13,9 @@ pub enum Error {
     #[error("{0}")]
     BytesRepr(bytesrepr::Error),
 
+    #[error("{0:?}")]
+    Serialization(io::ErrorKind),
+
     /// Concurrency error.
     #[error("Another thread panicked while holding a lock")]
     Poison,
@@ -19,6 +23,12 @@ pub enum Error {
     /// Merkle proof construction error
     #[error("{0}")]
     MerkleConstruction(#[from] MerkleConstructionError),
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self::Serialization(error.kind())
+    }
 }
 
 impl From<bytesrepr::Error> for Error {

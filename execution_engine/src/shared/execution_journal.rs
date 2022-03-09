@@ -11,7 +11,7 @@ use casper_types::{
 use crate::shared::transform::Transform;
 
 /// A log of all transforms produced during execution.
-#[derive(Debug, Default, Clone, Eq, PartialEq, DataSize)]
+#[derive(Debug, Clone, Default, DataSize)]
 pub struct ExecutionJournal(Vec<(Key, Transform)>);
 
 impl ExecutionJournal {

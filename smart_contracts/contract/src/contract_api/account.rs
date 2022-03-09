@@ -1,6 +1,7 @@
 //! Functions for managing accounts.
 
 use alloc::vec::Vec;
+use borsh::BorshDeserialize;
 use core::convert::TryFrom;
 
 use casper_types::{
@@ -25,7 +26,8 @@ pub fn get_main_purse() -> URef {
             UREF_SERIALIZED_LENGTH,
         )
     };
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    URef::try_from_slice(&bytes).ok().unwrap_or_revert()
+    // bytesrepr::deserialize(bytes).unwrap_or_revert()
 }
 
 /// Sets the given [`ActionType`]'s threshold to the provided value.

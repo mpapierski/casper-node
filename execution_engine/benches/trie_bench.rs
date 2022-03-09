@@ -4,7 +4,7 @@ use casper_execution_engine::storage::trie::{Pointer, PointerBlock, Trie};
 use casper_hashing::Digest;
 use casper_types::{
     account::AccountHash,
-    bytesrepr::{FromBytes, ToBytes},
+    bytesrepr::{BorshDeserialize, BorshSerialize},
     CLValue, Key, StoredValue,
 };
 
@@ -13,7 +13,7 @@ fn serialize_trie_leaf(b: &mut Bencher) {
         key: Key::Account(AccountHash::new([0; 32])),
         value: StoredValue::CLValue(CLValue::from_t(42_i32).unwrap()),
     };
-    b.iter(|| ToBytes::to_bytes(black_box(&leaf)));
+    b.iter(|| BorshSerialize::to_bytes(black_box(&leaf)));
 }
 
 fn deserialize_trie_leaf(b: &mut Bencher) {
@@ -29,7 +29,7 @@ fn serialize_trie_node(b: &mut Bencher) {
     let node = Trie::<Key, StoredValue>::Node {
         pointer_block: Box::new(PointerBlock::default()),
     };
-    b.iter(|| ToBytes::to_bytes(black_box(&node)));
+    b.iter(|| BorshSerialize::to_bytes(black_box(&node)));
 }
 
 fn deserialize_trie_node(b: &mut Bencher) {
@@ -47,7 +47,7 @@ fn serialize_trie_node_pointer(b: &mut Bencher) {
         pointer: Pointer::NodePointer(Digest::hash(&[0; 32])),
     };
 
-    b.iter(|| ToBytes::to_bytes(black_box(&node)));
+    b.iter(|| BorshSerialize::to_bytes(black_box(&node)));
 }
 
 fn deserialize_trie_node_pointer(b: &mut Bencher) {

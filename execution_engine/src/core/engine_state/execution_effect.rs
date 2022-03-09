@@ -7,7 +7,7 @@ use crate::shared::{
 };
 
 /// Represents the effects of executing a single [`crate::core::engine_state::DeployItem`].
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct ExecutionEffect {
     /// Operations on the keys that were used during the execution.
     pub ops: AdditiveMap<Key, Op>,

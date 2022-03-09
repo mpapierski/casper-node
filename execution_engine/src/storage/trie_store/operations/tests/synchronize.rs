@@ -1,5 +1,5 @@
 use casper_hashing::Digest;
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 
 use crate::{
     shared::newtypes::CorrelationId,
@@ -27,8 +27,8 @@ fn copy_state<'a, K, V, R, S, E>(
     root: &Digest,
 ) -> Result<(), E>
 where
-    K: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy + Clone + Ord,
-    V: ToBytes + FromBytes + Eq + std::fmt::Debug + Copy,
+    K: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy + Clone + Ord,
+    V: BorshSerialize + BorshDeserialize + Eq + std::fmt::Debug + Copy,
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<K, V>,
     S::Error: From<R::Error>,

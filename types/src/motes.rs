@@ -1,6 +1,7 @@
 //! The `motes` module is used for working with Motes.
 
 use alloc::vec::Vec;
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     fmt,
     iter::Sum,
@@ -18,7 +19,20 @@ use crate::{
 };
 
 /// A struct representing a number of `Motes`.
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Default,
+    Copy,
+    Clone,
+    Eq,
+    PartialEq,
+    Ord,
+    PartialOrd,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct Motes(U512);
 

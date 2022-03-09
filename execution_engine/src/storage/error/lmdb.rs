@@ -3,13 +3,14 @@ use std::sync;
 use lmdb as lmdb_external;
 use thiserror::Error;
 
+use borsh::maybestd::io;
 use casper_hashing::MerkleConstructionError;
 use casper_types::bytesrepr;
 
 use crate::storage::{error::in_memory, global_state::CommitError};
 
 /// Error enum representing possible error states in LMDB interactions.
-#[derive(Debug, Clone, Error, PartialEq, Eq)]
+#[derive(Debug, Clone, Error)]
 pub enum Error {
     /// LMDB error returned from underlying `lmdb` crate.
     #[error(transparent)]
@@ -18,6 +19,9 @@ pub enum Error {
     /// (De)serialization error.
     #[error("{0}")]
     BytesRepr(bytesrepr::Error),
+
+    #[error("{0:?}")]
+    Borsh(io::ErrorKind),
 
     /// Concurrency error.
     #[error("Another thread panicked while holding a lock")]
@@ -33,6 +37,12 @@ pub enum Error {
 }
 
 impl wasmi::HostError for Error {}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self::Borsh(error.kind())
+    }
+}
 
 impl From<bytesrepr::Error> for Error {
     fn from(error: bytesrepr::Error) -> Self {
@@ -52,6 +62,7 @@ impl From<in_memory::Error> for Error {
             in_memory::Error::BytesRepr(error) => Error::BytesRepr(error),
             in_memory::Error::Poison => Error::Poison,
             in_memory::Error::MerkleConstruction(error) => Error::MerkleConstruction(error),
+            in_memory::Error::Serialization(error) => Error::Borsh(error),
         }
     }
 }

@@ -9,6 +9,7 @@ pub mod lmdb;
 /// Lmdb implementation of global state with cache.
 pub mod scratch;
 
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use std::{collections::HashMap, hash::BuildHasher};
 
 use tracing::error;
@@ -56,7 +57,7 @@ pub trait StateReader<K, V> {
 }
 
 /// An error emitted by the execution engine on commit
-#[derive(Clone, Debug, thiserror::Error, Eq, PartialEq)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum CommitError {
     /// Root not found.
     #[error("Root not found: {0:?}")]
@@ -138,7 +139,7 @@ where
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<Key, StoredValue>,
     S::Error: From<R::Error>,
-    E: From<R::Error> + From<S::Error> + From<bytesrepr::Error> + From<CommitError>,
+    E: From<R::Error> + From<S::Error> + From<io::Error> + From<CommitError>,
 {
     let mut txn = environment.create_read_write_txn()?;
     let mut state_root = prestate_hash;
@@ -176,7 +177,7 @@ where
     R: TransactionSource<'a, Handle = S::Handle>,
     S: TrieStore<Key, StoredValue>,
     S::Error: From<R::Error>,
-    E: From<R::Error> + From<S::Error> + From<bytesrepr::Error> + From<CommitError>,
+    E: From<R::Error> + From<S::Error> + From<io::Error> + From<CommitError>,
     H: BuildHasher,
 {
     let mut txn = environment.create_read_write_txn()?;

@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
+use borsh::{BorshSerialize, BorshDeserialize};
 use casper_types::{
     account::AccountHash,
-    bytesrepr::{FromBytes, ToBytes},
     crypto,
     system::{
         auction::{Bid, EraInfo, Error, UnbondingPurse},
@@ -39,7 +39,7 @@ where
     R: StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
-    fn read<T: FromBytes + CLTyped>(&mut self, uref: URef) -> Result<Option<T>, Error> {
+    fn read<T: BorshDeserialize + CLTyped>(&mut self, uref: URef) -> Result<Option<T>, Error> {
         match self.context.read_gs(&uref.into()) {
             Ok(Some(StoredValue::CLValue(cl_value))) => {
                 Ok(Some(cl_value.into_t().map_err(|_| Error::CLValue)?))
@@ -54,7 +54,7 @@ where
         }
     }
 
-    fn write<T: ToBytes + CLTyped>(&mut self, uref: URef, value: T) -> Result<(), Error> {
+    fn write<T: BorshSerialize + CLTyped>(&mut self, uref: URef, value: T) -> Result<(), Error> {
         let cl_value = CLValue::from_t(value).map_err(|_| Error::CLValue)?;
         self.context
             .metered_write_gs(uref.into(), StoredValue::CLValue(cl_value))

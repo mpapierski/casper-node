@@ -2,15 +2,25 @@
 
 use std::collections::BTreeMap;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use serde::{Deserialize, Serialize};
 
-use casper_types::{
-    bytesrepr::{self, FromBytes, ToBytes},
-    CLType, CLTyped, ContractHash,
-};
+use casper_types::{bytesrepr, CLType, CLTyped, ContractHash};
 
 /// The system contract registry.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Debug)]
+#[derive(
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+    Debug,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 pub struct SystemContractRegistry(BTreeMap<String, ContractHash>);
 
 impl SystemContractRegistry {
@@ -35,23 +45,6 @@ impl SystemContractRegistry {
         self.0
             .values()
             .any(|system_contract_hash| system_contract_hash == contract_hash)
-    }
-}
-
-impl ToBytes for SystemContractRegistry {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.0.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length()
-    }
-}
-
-impl FromBytes for SystemContractRegistry {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (inner, remainder) = BTreeMap::from_bytes(bytes)?;
-        Ok((SystemContractRegistry(inner), remainder))
     }
 }
 

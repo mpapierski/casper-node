@@ -4,7 +4,7 @@ use casper_engine_test_support::{
     ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
     DEFAULT_RUN_GENESIS_REQUEST,
 };
-use casper_types::{bytesrepr::FromBytes, runtime_args, CLTyped, CLValue, Key, RuntimeArgs, U512};
+use casper_types::{bytesrepr::{FromBytes, BorshDeserialize}, runtime_args, CLTyped, CLValue, Key, RuntimeArgs, U512};
 
 const CONTRACT_NAMED_KEYS: &str = "named_keys.wasm";
 const EXPECTED_UREF_VALUE: u64 = 123_456_789u64;
@@ -32,7 +32,7 @@ fn run_command(builder: &mut InMemoryWasmTestBuilder, command: &str) {
     builder.exec(exec_request).commit().expect_success();
 }
 
-fn read_value<T: CLTyped + FromBytes>(builder: &mut InMemoryWasmTestBuilder, key: Key) -> T {
+fn read_value<T: CLTyped + BorshDeserialize>(builder: &mut InMemoryWasmTestBuilder, key: Key) -> T {
     CLValue::try_from(builder.query(None, key, &[]).expect("should have value"))
         .expect("should have CLValue")
         .into_t()

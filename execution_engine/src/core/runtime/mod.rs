@@ -15,6 +15,7 @@ use std::{
     iter::{FromIterator, IntoIterator},
 };
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use itertools::Itertools;
 use parity_wasm::elements::Module;
 use tracing::error;
@@ -22,7 +23,6 @@ use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef, Trap, TrapKind
 
 use casper_types::{
     account::{Account, AccountHash, ActionType, Weight},
-    bytesrepr::{self, FromBytes, ToBytes},
     contracts::{
         self, Contract, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
         DisabledVersions, EntryPoint, EntryPointAccess, EntryPoints, Group, Groups, NamedKeys,
@@ -754,12 +754,13 @@ fn extract_urefs(cl_value: &CLValue) -> Result<Vec<URef>, Error> {
         },
         CLType::Tuple1([ty]) => match **ty {
             CLType::URef => {
-                let val: (URef,) = cl_value.to_owned().into_t()?;
-                Ok(vec![val.0])
+                let val: URef = cl_value.to_owned().into_t()?;
+                Ok(vec![val])
             }
             CLType::Key => {
-                let val: (Key,) = cl_value.to_owned().into_t()?;
-                Ok(val.0.into_uref().into_iter().collect())
+                // todo in borsh theres no specialization for (tuple,)
+                let val: Key = cl_value.to_owned().into_t()?;
+                Ok(val.into_uref().into_iter().collect())
             }
             _ => Ok(vec![]),
         },
@@ -1094,15 +1095,15 @@ where
     }
 
     /// Returns a deserialized type from the WASM memory instance.
-    fn t_from_mem<T: FromBytes>(&self, ptr: u32, size: u32) -> Result<T, Error> {
+    fn t_from_mem<T: BorshDeserialize>(&self, ptr: u32, size: u32) -> Result<T, Error> {
         let bytes = self.bytes_from_mem(ptr, size as usize)?;
-        bytesrepr::deserialize(bytes).map_err(Into::into)
+        BorshDeserialize::try_from_slice(&bytes).map_err(Into::into)
     }
 
     /// Reads key (defined as `key_ptr` and `key_size` tuple) from Wasm memory.
     fn key_from_mem(&mut self, key_ptr: u32, key_size: u32) -> Result<Key, Error> {
         let bytes = self.bytes_from_mem(key_ptr, key_size as usize)?;
-        bytesrepr::deserialize(bytes).map_err(Into::into)
+        BorshDeserialize::try_from_slice(&bytes).map_err(Into::into)
     }
 
     /// Reads `CLValue` (defined as `cl_value_ptr` and `cl_value_size` tuple) from Wasm memory.
@@ -1112,13 +1113,14 @@ where
         cl_value_size: u32,
     ) -> Result<CLValue, Error> {
         let bytes = self.bytes_from_mem(cl_value_ptr, cl_value_size as usize)?;
-        bytesrepr::deserialize(bytes).map_err(Into::into)
+        BorshDeserialize::try_from_slice(&bytes).map_err(Into::into)
     }
 
     /// Returns a deserialized string from the WASM memory instance.
     fn string_from_mem(&self, ptr: u32, size: u32) -> Result<String, Trap> {
         let bytes = self.bytes_from_mem(ptr, size as usize)?;
-        bytesrepr::deserialize(bytes).map_err(|e| Error::BytesRepr(e).into())
+        let s = String::try_from_slice(&bytes).map_err(Error::from)?;
+        Ok(s)
     }
 
     fn get_module_from_entry_points(
@@ -1154,7 +1156,7 @@ where
     #[allow(clippy::wrong_self_convention)]
     fn is_valid_uref(&self, uref_ptr: u32, uref_size: u32) -> Result<bool, Trap> {
         let bytes = self.bytes_from_mem(uref_ptr, uref_size as usize)?;
-        let uref: URef = bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?;
+        let uref: URef = BorshDeserialize::try_from_slice(&bytes).map_err(Error::from)?;
         Ok(self.context.validate_uref(&uref).is_ok())
     }
 
@@ -1175,7 +1177,7 @@ where
             None => return Ok(Err(ApiError::MissingKey)),
         };
 
-        let key_bytes = match key.to_bytes() {
+        let key_bytes = match key.try_to_vec() {
             Ok(bytes) => bytes,
             Err(error) => return Ok(Err(error.into())),
         };
@@ -1233,7 +1235,7 @@ where
     /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
     fn get_main_purse(&mut self, dest_ptr: u32) -> Result<(), Trap> {
         let purse = self.context.get_main_purse()?;
-        let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
+        let purse_bytes = purse.try_to_vec().map_err(Error::from)?;
         self.memory
             .set(dest_ptr, &purse_bytes)
             .map_err(|e| Error::Interpreter(e.into()).into())
@@ -1283,7 +1285,7 @@ where
     /// Writes runtime context's phase to dest_ptr in the Wasm memory.
     fn get_phase(&mut self, dest_ptr: u32) -> Result<(), Trap> {
         let phase = self.context.phase();
-        let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
+        let bytes = phase.try_to_vec().map_err(Error::from)?;
         self.memory
             .set(dest_ptr, &bytes)
             .map_err(|e| Error::Interpreter(e.into()).into())
@@ -1294,8 +1296,8 @@ where
         let blocktime = self
             .context
             .get_blocktime()
-            .into_bytes()
-            .map_err(Error::BytesRepr)?;
+            .try_to_vec()
+            .map_err(Error::from)?;
         self.memory
             .set(dest_ptr, &blocktime)
             .map_err(|e| Error::Interpreter(e.into()).into())
@@ -1364,7 +1366,7 @@ where
             Ok(buf) => {
                 // Set the result field in the runtime and return the proper element of the `Error`
                 // enum indicating that the reason for exiting the module was a call to ret.
-                self.host_buffer = bytesrepr::deserialize(buf).ok();
+                self.host_buffer = BorshDeserialize::try_from_slice(&buf).ok();
 
                 let urefs = match &self.host_buffer {
                     Some(buf) => extract_urefs(buf),
@@ -1415,7 +1417,7 @@ where
         key.into_hash() == Some(hash.value())
     }
 
-    fn get_named_argument<T: FromBytes + CLTyped>(
+    fn get_named_argument<T: BorshDeserialize + CLTyped>(
         args: &RuntimeArgs,
         name: &str,
     ) -> Result<T, Error> {
@@ -2371,7 +2373,7 @@ where
         if let Err(err) = self.check_host_buffer() {
             return Ok(Err(err));
         }
-        let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
+        let args: RuntimeArgs = BorshDeserialize::try_from_slice(&args_bytes)?;
         let result = self.call_contract(contract_hash, entry_point_name, args)?;
         self.manage_call_contract_host_buffer(result_size_ptr, result)
     }
@@ -2388,7 +2390,7 @@ where
         if let Err(err) = self.check_host_buffer() {
             return Ok(Err(err));
         }
-        let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
+        let args: RuntimeArgs = BorshDeserialize::try_from_slice(&args_bytes)?;
         let result = self.call_versioned_contract(
             contract_package_hash,
             contract_version,
@@ -2638,9 +2640,9 @@ where
 
         // return contract key to caller
         {
-            let key_bytes = match contract_hash.to_bytes() {
+            let key_bytes = match contract_hash.try_to_vec() {
                 Ok(bytes) => bytes,
-                Err(error) => return Ok(Err(error.into())),
+                Err(error) => return Ok(Err(ApiError::Formatting)),
             };
 
             // `output_size` must be >= actual length of serialized Key bytes
@@ -2714,7 +2716,7 @@ where
         let cl_value = self.cl_value_from_mem(value_ptr, value_size)?; // read initial value from memory
         let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
         self.memory
-            .set(uref_ptr, &uref.into_bytes().map_err(Error::BytesRepr)?)
+            .set(uref_ptr, &uref.try_to_vec().map_err(Error::from)?)
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
@@ -2851,7 +2853,7 @@ where
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
             // Account hash deserialized
             let source: AccountHash =
-                bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
+                BorshDeserialize::try_from_slice(&source_serialized).map_err(Error::from)?;
             source
         };
         let weight = Weight::new(weight_value);
@@ -2878,7 +2880,7 @@ where
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
             // Account hash deserialized
             let source: AccountHash =
-                bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
+                BorshDeserialize::try_from_slice(&source_serialized).map_err(Error::from)?;
             source
         };
         match self.context.remove_associated_key(account_hash) {
@@ -2899,7 +2901,7 @@ where
             let source_serialized = self.bytes_from_mem(account_hash_ptr, account_hash_size)?;
             // Account hash deserialized
             let source: AccountHash =
-                bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
+                BorshDeserialize::try_from_slice(&source_serialized).map_err(Error::from)?;
             source
         };
         let weight = Weight::new(weight_value);
@@ -3204,22 +3206,22 @@ where
     ) -> Result<Result<(), mint::Error>, Error> {
         let source: URef = {
             let bytes = self.bytes_from_mem(source_ptr, source_size as usize)?;
-            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+            BorshDeserialize::try_from_slice(&bytes)?
         };
 
         let target: URef = {
             let bytes = self.bytes_from_mem(target_ptr, target_size as usize)?;
-            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+            BorshDeserialize::try_from_slice(&bytes)?
         };
 
         let amount: U512 = {
             let bytes = self.bytes_from_mem(amount_ptr, amount_size as usize)?;
-            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+            BorshDeserialize::try_from_slice(&bytes)?
         };
 
         let id: Option<u64> = {
             let bytes = self.bytes_from_mem(id_ptr, id_size as usize)?;
-            bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
+            BorshDeserialize::try_from_slice(&bytes)?
         };
 
         let mint_contract_key = self.get_mint_contract()?;
@@ -3255,7 +3257,7 @@ where
 
         let purse: URef = {
             let bytes = self.bytes_from_mem(purse_ptr, purse_size)?;
-            match bytesrepr::deserialize(bytes) {
+            match BorshDeserialize::try_from_slice(&bytes) {
                 Ok(purse) => purse,
                 Err(error) => return Ok(Err(error.into())),
             }

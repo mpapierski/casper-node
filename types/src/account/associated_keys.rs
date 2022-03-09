@@ -4,6 +4,7 @@ use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec::Vec,
 };
+use borsh::{BorshDeserialize, BorshSerialize};
 
 use core::convert::TryInto;
 #[cfg(feature = "datasize")]
@@ -11,13 +12,22 @@ use datasize::DataSize;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    account::{AccountHash, AddKeyFailure, RemoveKeyFailure, UpdateKeyFailure, Weight},
-    bytesrepr::{self, Error, FromBytes, ToBytes},
-};
+use crate::account::{AccountHash, AddKeyFailure, RemoveKeyFailure, UpdateKeyFailure, Weight};
 
 /// A mapping that represents the association of a [`Weight`] with an [`AccountHash`].
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+#[derive(
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct AssociatedKeys(BTreeMap<AccountHash, Weight>);
 
@@ -124,37 +134,6 @@ impl AssociatedKeys {
 impl From<BTreeMap<AccountHash, Weight>> for AssociatedKeys {
     fn from(associated_keys: BTreeMap<AccountHash, Weight>) -> Self {
         Self(associated_keys)
-    }
-}
-
-impl ToBytes for AssociatedKeys {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        self.0.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.serialized_length()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        let length_32: u32 = self
-            .0
-            .len()
-            .try_into()
-            .map_err(|_| Error::NotRepresentable)?;
-        writer.extend_from_slice(&length_32.to_le_bytes());
-        for (key, weight) in self.0.iter() {
-            key.write_bytes(writer)?;
-            weight.write_bytes(writer)?;
-        }
-        Ok(())
-    }
-}
-
-impl FromBytes for AssociatedKeys {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (associated_keys, rem) = FromBytes::from_bytes(bytes)?;
-        Ok((AssociatedKeys(associated_keys), rem))
     }
 }
 
@@ -338,17 +317,5 @@ mod tests {
             ])),
             saturated_weight,
         );
-    }
-
-    #[test]
-    fn serialization_roundtrip() {
-        let mut keys = AssociatedKeys::default();
-        keys.add_key(AccountHash::new([1; 32]), Weight::new(1))
-            .unwrap();
-        keys.add_key(AccountHash::new([2; 32]), Weight::new(2))
-            .unwrap();
-        keys.add_key(AccountHash::new([3; 32]), Weight::new(3))
-            .unwrap();
-        bytesrepr::test_serialization_roundtrip(&keys);
     }
 }

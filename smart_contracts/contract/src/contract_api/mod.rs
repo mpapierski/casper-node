@@ -9,9 +9,10 @@ use alloc::{
     alloc::{alloc, Layout},
     vec::Vec,
 };
+use borsh::BorshSerialize;
 use core::{mem, ptr::NonNull};
 
-use casper_types::{bytesrepr::ToBytes, ApiError};
+use casper_types::ApiError;
 
 use crate::unwrap_or_revert::UnwrapOrRevert;
 
@@ -34,8 +35,8 @@ pub fn alloc_bytes(n: usize) -> NonNull<u8> {
         .unwrap_or_revert()
 }
 
-fn to_ptr<T: ToBytes>(t: T) -> (*const u8, usize, Vec<u8>) {
-    let bytes = t.into_bytes().unwrap_or_revert();
+fn to_ptr<T: BorshSerialize>(t: T) -> (*const u8, usize, Vec<u8>) {
+    let bytes = borsh::to_vec(&t).ok().unwrap_or_revert();
     let ptr = bytes.as_ptr();
     let size = bytes.len();
     (ptr, size, bytes)

@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 
+use borsh::{BorshSerialize, BorshDeserialize};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 
@@ -22,7 +23,7 @@ pub enum CallStackElementTag {
 }
 
 /// Represents the origin of a sub-call.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq,  BorshSerialize, BorshDeserialize)]
 pub enum CallStackElement {
     /// Session
     Session {
@@ -95,94 +96,6 @@ impl CallStackElement {
             CallStackElement::Session { .. } => None,
             CallStackElement::StoredSession { contract_hash, .. }
             | CallStackElement::StoredContract { contract_hash, .. } => Some(contract_hash),
-        }
-    }
-}
-
-impl ToBytes for CallStackElement {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        result.push(self.tag() as u8);
-        match self {
-            CallStackElement::Session { account_hash } => {
-                result.append(&mut account_hash.to_bytes()?)
-            }
-            CallStackElement::StoredSession {
-                account_hash,
-                contract_package_hash,
-                contract_hash,
-            } => {
-                result.append(&mut account_hash.to_bytes()?);
-                result.append(&mut contract_package_hash.to_bytes()?);
-                result.append(&mut contract_hash.to_bytes()?);
-            }
-            CallStackElement::StoredContract {
-                contract_package_hash,
-                contract_hash,
-            } => {
-                result.append(&mut contract_package_hash.to_bytes()?);
-                result.append(&mut contract_hash.to_bytes()?);
-            }
-        };
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        U8_SERIALIZED_LENGTH
-            + match self {
-                CallStackElement::Session { account_hash } => account_hash.serialized_length(),
-                CallStackElement::StoredSession {
-                    account_hash,
-                    contract_package_hash,
-                    contract_hash,
-                } => {
-                    account_hash.serialized_length()
-                        + contract_package_hash.serialized_length()
-                        + contract_hash.serialized_length()
-                }
-                CallStackElement::StoredContract {
-                    contract_package_hash,
-                    contract_hash,
-                } => contract_package_hash.serialized_length() + contract_hash.serialized_length(),
-            }
-    }
-}
-
-impl FromBytes for CallStackElement {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, remainder): (u8, &[u8]) = FromBytes::from_bytes(bytes)?;
-        let tag = CallStackElementTag::from_u8(tag).ok_or(bytesrepr::Error::Formatting)?;
-        match tag {
-            CallStackElementTag::Session => {
-                let (account_hash, remainder) = AccountHash::from_bytes(remainder)?;
-                Ok((CallStackElement::Session { account_hash }, remainder))
-            }
-            CallStackElementTag::StoredSession => {
-                let (account_hash, remainder) = AccountHash::from_bytes(remainder)?;
-                let (contract_package_hash, remainder) =
-                    ContractPackageHash::from_bytes(remainder)?;
-                let (contract_hash, remainder) = ContractHash::from_bytes(remainder)?;
-                Ok((
-                    CallStackElement::StoredSession {
-                        account_hash,
-                        contract_package_hash,
-                        contract_hash,
-                    },
-                    remainder,
-                ))
-            }
-            CallStackElementTag::StoredContract => {
-                let (contract_package_hash, remainder) =
-                    ContractPackageHash::from_bytes(remainder)?;
-                let (contract_hash, remainder) = ContractHash::from_bytes(remainder)?;
-                Ok((
-                    CallStackElement::StoredContract {
-                        contract_package_hash,
-                        contract_hash,
-                    },
-                    remainder,
-                ))
-            }
         }
     }
 }

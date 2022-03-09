@@ -1,16 +1,16 @@
 //! Functions for interacting with the current runtime.
 
 use alloc::{collections::BTreeSet, vec, vec::Vec};
+use borsh::BorshDeserialize;
 use core::mem::MaybeUninit;
 
 use casper_types::{
     account::AccountHash,
     api_error,
-    bytesrepr::{self, FromBytes},
     contracts::{ContractVersion, NamedKeys},
     system::CallStackElement,
     ApiError, BlockTime, CLTyped, CLValue, ContractHash, ContractPackageHash, Key, Phase,
-    RuntimeArgs, URef, BLAKE2B_DIGEST_LENGTH, BLOCKTIME_SERIALIZED_LENGTH, PHASE_SERIALIZED_LENGTH,
+    RuntimeArgs, URef, BLAKE2B_DIGEST_LENGTH, PHASE_SERIALIZED_LENGTH,
 };
 
 use crate::{contract_api, ext_ffi, unwrap_or_revert::UnwrapOrRevert};
@@ -42,7 +42,7 @@ pub fn revert<T: Into<ApiError>>(error: T) -> ! {
 /// If the stored contract calls [`ret`], then that value is returned from `call_contract`.  If the
 /// stored contract calls [`revert`], then execution stops and `call_contract` doesn't return.
 /// Otherwise `call_contract` returns `()`.
-pub fn call_contract<T: CLTyped + FromBytes>(
+pub fn call_contract<T: CLTyped + BorshDeserialize>(
     contract_hash: ContractHash,
     entry_point_name: &str,
     runtime_args: RuntimeArgs,
@@ -78,7 +78,7 @@ pub fn call_contract<T: CLTyped + FromBytes>(
 /// If the stored contract calls [`ret`], then that value is returned from
 /// `call_versioned_contract`.  If the stored contract calls [`revert`], then execution stops and
 /// `call_versioned_contract` doesn't return. Otherwise `call_versioned_contract` returns `()`.
-pub fn call_versioned_contract<T: CLTyped + FromBytes>(
+pub fn call_versioned_contract<T: CLTyped + BorshDeserialize>(
     contract_package_hash: ContractPackageHash,
     contract_version: Option<ContractVersion>,
     entry_point_name: &str,
@@ -113,7 +113,7 @@ pub fn call_versioned_contract<T: CLTyped + FromBytes>(
     deserialize_contract_result(bytes_written)
 }
 
-fn deserialize_contract_result<T: CLTyped + FromBytes>(bytes_written: usize) -> T {
+fn deserialize_contract_result<T: CLTyped + BorshDeserialize>(bytes_written: usize) -> T {
     let serialized_result = if bytes_written == 0 {
         // If no bytes were written, the host buffer hasn't been set and hence shouldn't be read.
         vec![]
@@ -128,7 +128,9 @@ fn deserialize_contract_result<T: CLTyped + FromBytes>(bytes_written: usize) -> 
         dest
     };
 
-    bytesrepr::deserialize(serialized_result).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&serialized_result)
+        .ok()
+        .unwrap_or_revert()
 }
 
 fn get_named_arg_size(name: &str) -> Option<usize> {
@@ -151,7 +153,7 @@ fn get_named_arg_size(name: &str) -> Option<usize> {
 ///
 /// Note that this is only relevant to contracts stored on-chain since a contract deployed directly
 /// is not invoked with any arguments.
-pub fn get_named_arg<T: FromBytes>(name: &str) -> T {
+pub fn get_named_arg<T: BorshDeserialize>(name: &str) -> T {
     let arg_size = get_named_arg_size(name).unwrap_or_revert_with(ApiError::MissingArgument);
     let arg_bytes = if arg_size > 0 {
         let res = {
@@ -174,7 +176,9 @@ pub fn get_named_arg<T: FromBytes>(name: &str) -> T {
         // Avoids allocation with 0 bytes and a call to get_named_arg
         Vec::new()
     };
-    bytesrepr::deserialize(arg_bytes).unwrap_or_revert_with(ApiError::InvalidArgument)
+    BorshDeserialize::try_from_slice(&arg_bytes)
+        .ok()
+        .unwrap_or_revert_with(ApiError::InvalidArgument)
 }
 
 /// Returns the caller of the current context, i.e. the [`AccountHash`] of the account which made
@@ -187,11 +191,14 @@ pub fn get_caller() -> AccountHash {
         unsafe { output_size.assume_init() }
     };
     let buf = read_host_buffer(output_size).unwrap_or_revert();
-    bytesrepr::deserialize(buf).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&buf)
+        .ok()
+        .unwrap_or_revert()
 }
 
 /// Returns the current [`BlockTime`].
 pub fn get_blocktime() -> BlockTime {
+    const BLOCKTIME_SERIALIZED_LENGTH: usize = 4;
     let dest_non_null_ptr = contract_api::alloc_bytes(BLOCKTIME_SERIALIZED_LENGTH);
     let bytes = unsafe {
         ext_ffi::casper_get_blocktime(dest_non_null_ptr.as_ptr());
@@ -201,12 +208,14 @@ pub fn get_blocktime() -> BlockTime {
             BLOCKTIME_SERIALIZED_LENGTH,
         )
     };
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .unwrap_or_revert()
 }
 
 /// Returns the current [`Phase`].
 pub fn get_phase() -> Phase {
-    let dest_non_null_ptr = contract_api::alloc_bytes(PHASE_SERIALIZED_LENGTH);
+    let dest_non_null_ptr = contract_api::alloc_bytes(4);
     unsafe { ext_ffi::casper_get_phase(dest_non_null_ptr.as_ptr()) };
     let bytes = unsafe {
         Vec::from_raw_parts(
@@ -215,7 +224,9 @@ pub fn get_phase() -> Phase {
             PHASE_SERIALIZED_LENGTH,
         )
     };
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .unwrap_or_revert()
 }
 
 /// Returns the requested named [`Key`] from the current context.
@@ -241,7 +252,9 @@ pub fn get_key(name: &str) -> Option<Key> {
         Err(e) => revert(e),
     }
     key_bytes.truncate(total_bytes);
-    let key: Key = bytesrepr::deserialize(key_bytes).unwrap_or_revert();
+    let key: Key = BorshDeserialize::try_from_slice(&key_bytes)
+        .ok()
+        .unwrap_or_revert();
     Some(key)
 }
 
@@ -296,7 +309,9 @@ pub fn list_authorization_keys() -> BTreeSet<AccountHash> {
     }
 
     let bytes = read_host_buffer(result_size).unwrap_or_revert();
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .unwrap_or_revert()
 }
 
 /// Returns the named keys of the current context.
@@ -318,7 +333,9 @@ pub fn list_named_keys() -> NamedKeys {
         return NamedKeys::new();
     }
     let bytes = read_host_buffer(result_size).unwrap_or_revert();
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .unwrap_or_revert()
 }
 
 /// Validates uref against named keys.
@@ -384,7 +401,9 @@ pub fn get_call_stack() -> Vec<CallStackElement> {
         return Vec::new();
     }
     let bytes = read_host_buffer(result_size).unwrap_or_revert();
-    bytesrepr::deserialize(bytes).unwrap_or_revert()
+    BorshDeserialize::try_from_slice(&bytes)
+        .ok()
+        .unwrap_or_revert()
 }
 
 #[cfg(feature = "test-support")]

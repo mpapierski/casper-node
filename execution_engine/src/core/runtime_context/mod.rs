@@ -7,6 +7,7 @@ use std::{
     rc::Rc,
 };
 
+use borsh::BorshSerialize;
 use tracing::error;
 
 use casper_types::{
@@ -14,7 +15,6 @@ use casper_types::{
         Account, AccountHash, ActionType, AddKeyFailure, RemoveKeyFailure, SetThresholdFailure,
         UpdateKeyFailure, Weight,
     },
-    bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::auction::EraInfo,
     AccessRights, BlockTime, CLType, CLValue, Contract, ContractHash, ContractPackage,
@@ -856,12 +856,13 @@ where
     pub(crate) fn metered_write_gs_unsafe<K, V>(&mut self, key: K, value: V) -> Result<(), Error>
     where
         K: Into<Key>,
-        V: Into<StoredValue>,
+        V: BorshSerialize + Into<StoredValue>,
     {
         let stored_value = value.into();
 
         // Charge for amount as measured by serialized length
-        let bytes_count = stored_value.serialized_length();
+        let bytes = stored_value.try_to_vec()?;
+        let bytes_count = bytes.len();
         self.charge_gas_storage(bytes_count)?;
 
         self.tracking_copy
@@ -893,7 +894,7 @@ where
         key: Key,
         value: StoredValue,
     ) -> Result<(), Error> {
-        let value_bytes_count = value.serialized_length();
+        let value_bytes_count = value.try_to_vec().map(|vec| vec.len()).unwrap_or(1024);
         self.charge_gas_storage(value_bytes_count)?;
 
         match self
@@ -906,6 +907,7 @@ where
             Ok(AddResult::KeyNotFound(key)) => Err(Error::KeyNotFound(key)),
             Ok(AddResult::TypeMismatch(type_mismatch)) => Err(Error::TypeMismatch(type_mismatch)),
             Ok(AddResult::Serialization(error)) => Err(Error::BytesRepr(error)),
+            Ok(AddResult::BorshSerialization(error)) => Err(Error::Serialization(error)),
         }
     }
 

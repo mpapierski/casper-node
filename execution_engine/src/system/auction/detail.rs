@@ -1,10 +1,10 @@
 use std::{collections::BTreeMap, convert::TryInto};
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use num_rational::Ratio;
 
 use casper_types::{
     account::AccountHash,
-    bytesrepr::{FromBytes, ToBytes},
     system::auction::{
         Bids, Delegator, Error, SeigniorageAllocation, SeigniorageRecipientsSnapshot,
         UnbondingPurse, UnbondingPurses, AUCTION_DELAY_KEY, ERA_END_TIMESTAMP_MILLIS_KEY,
@@ -21,7 +21,7 @@ use super::{
 fn read_from<P, T>(provider: &mut P, name: &str) -> Result<T, Error>
 where
     P: StorageProvider + RuntimeProvider + ?Sized,
-    T: FromBytes + CLTyped,
+    T: BorshDeserialize + CLTyped,
 {
     let key = provider.named_keys_get(name).ok_or(Error::MissingKey)?;
     let uref = key.into_uref().ok_or(Error::InvalidKeyVariant)?;
@@ -32,7 +32,7 @@ where
 fn write_to<P, T>(provider: &mut P, name: &str, value: T) -> Result<(), Error>
 where
     P: StorageProvider + RuntimeProvider + ?Sized,
-    T: ToBytes + CLTyped,
+    T: BorshSerialize + CLTyped,
 {
     let key = provider.named_keys_get(name).ok_or(Error::MissingKey)?;
     let uref = key.into_uref().ok_or(Error::InvalidKeyVariant)?;

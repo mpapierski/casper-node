@@ -7,11 +7,12 @@ use std::{
     ops::{Add, AddAssign},
 };
 
+use borsh::maybestd::io;
 use datasize::DataSize;
 use num::traits::{AsPrimitive, WrappingAdd};
 
 use casper_types::{
-    bytesrepr::{self, FromBytes, ToBytes},
+    bytesrepr::{self, BorshDeserialize, BorshSerialize},
     contracts::NamedKeys,
     CLType, CLTyped, CLValue, CLValueError, StoredValue, StoredValueTypeMismatch, U128, U256, U512,
 };
@@ -23,11 +24,13 @@ use casper_types::{
 /// value overflowing its size in memory (e.g. if a, b are i32 and a +
 /// b > i32::MAX then a `AddInt32(a).apply(Value::Int32(b))` would
 /// cause an overflow).
-#[derive(PartialEq, Eq, Debug, Clone, thiserror::Error)]
+#[derive(Debug, PartialEq, Eq, Clone, thiserror::Error)]
 pub enum Error {
     /// Error while (de)serializing data.
     #[error("{0}")]
     Serialization(bytesrepr::Error),
+    #[error("{0:?}")]
+    BorshSerialization(io::ErrorKind),
     /// Type mismatch error.
     #[error("{0}")]
     TypeMismatch(StoredValueTypeMismatch),
@@ -49,6 +52,7 @@ impl From<CLValueError> for Error {
                 let type_mismatch = StoredValueTypeMismatch::new(expected, found);
                 Error::TypeMismatch(type_mismatch)
             }
+            CLValueError::BorshSerialization(error) => Error::BorshSerialization(error),
         }
     }
 }
@@ -58,7 +62,7 @@ impl From<CLValueError> for Error {
 /// Note that all arithmetic variants of [`Transform`] are commutative which means that a given
 /// collection of them can be executed in any order to produce the same end result.
 #[allow(clippy::large_enum_variant)]
-#[derive(PartialEq, Eq, Debug, Clone, DataSize)]
+#[derive(Debug, Clone, DataSize, PartialEq, Eq)]
 pub enum Transform {
     /// An identity transformation that does not modify a value in the global state.
     ///
@@ -155,7 +159,7 @@ where
 /// Attempts a wrapping addition of `to_add` to the value represented by `cl_value`.
 fn do_wrapping_addition<X, Y>(cl_value: CLValue, to_add: Y) -> Result<StoredValue, Error>
 where
-    X: WrappingAdd + CLTyped + ToBytes + FromBytes + Copy + 'static,
+    X: WrappingAdd + CLTyped + BorshSerialize + BorshDeserialize + Copy + 'static,
     Y: AsPrimitive<X>,
 {
     let x: X = cl_value.into_t()?;
@@ -501,7 +505,7 @@ mod tests {
 
     fn uint_overflow_test<T>()
     where
-        T: Num + Bounded + CLTyped + ToBytes + Into<Transform> + Copy,
+        T: Num + Bounded + CLTyped + BorshSerialize + Into<Transform> + Copy,
     {
         let max = T::max_value();
         let min = T::min_value();
@@ -634,7 +638,7 @@ mod tests {
     fn wrapping_addition_should_succeed() {
         fn add<X, Y>(current_value: X, to_add: Y) -> X
         where
-            X: CLTyped + ToBytes + FromBytes + PartialEq + fmt::Debug,
+            X: CLTyped + BorshSerialize + BorshDeserialize + PartialEq + fmt::Debug,
             Y: AsPrimitive<i32>
                 + AsPrimitive<i64>
                 + AsPrimitive<u8>

@@ -3,6 +3,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use borsh::{BorshDeserialize, BorshSerialize};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
@@ -15,7 +16,7 @@ use crate::{
 pub const PHASE_SERIALIZED_LENGTH: usize = 1;
 
 /// The phase in which a given contract is executing.
-#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, FromPrimitive, ToPrimitive, BorshSerialize, BorshDeserialize)]
 #[repr(u8)]
 pub enum Phase {
     /// Set while committing the genesis or upgrade configurations.

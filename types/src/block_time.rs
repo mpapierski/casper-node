@@ -1,12 +1,8 @@
 use alloc::vec::Vec;
-
-use crate::bytesrepr::{Error, FromBytes, ToBytes, U64_SERIALIZED_LENGTH};
-
-/// The number of bytes in a serialized [`BlockTime`].
-pub const BLOCKTIME_SERIALIZED_LENGTH: usize = U64_SERIALIZED_LENGTH;
+use borsh::{BorshSerialize, BorshDeserialize};
 
 /// A newtype wrapping a [`u64`] which represents the block time.
-#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd)]
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, PartialOrd, BorshSerialize, BorshDeserialize)]
 pub struct BlockTime(u64);
 
 impl BlockTime {
@@ -26,22 +22,5 @@ impl BlockTime {
 impl From<BlockTime> for u64 {
     fn from(blocktime: BlockTime) -> Self {
         blocktime.0
-    }
-}
-
-impl ToBytes for BlockTime {
-    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-        self.0.to_bytes()
-    }
-
-    fn serialized_length(&self) -> usize {
-        BLOCKTIME_SERIALIZED_LENGTH
-    }
-}
-
-impl FromBytes for BlockTime {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-        let (time, rem) = FromBytes::from_bytes(bytes)?;
-        Ok((BlockTime::new(time), rem))
     }
 }

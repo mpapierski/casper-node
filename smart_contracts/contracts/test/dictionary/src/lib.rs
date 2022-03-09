@@ -13,8 +13,11 @@ use casper_contract::{
     unwrap_or_revert::UnwrapOrRevert,
 };
 use casper_types::{
-    api_error, bytesrepr::ToBytes, contracts::NamedKeys, AccessRights, ApiError, CLType, CLValue,
-    EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, URef,
+    api_error,
+    bytesrepr::{BorshDeserialize, BorshSerialize},
+    contracts::NamedKeys,
+    AccessRights, ApiError, CLType, CLValue, EntryPoint, EntryPointAccess, EntryPointType,
+    EntryPoints, URef,
 };
 
 pub const DICTIONARY_NAME: &str = "local";
@@ -82,8 +85,8 @@ fn share_w() {
     runtime::ret(CLValue::from_t(uref_w).unwrap_or_revert())
 }
 
-fn to_ptr<T: ToBytes>(t: T) -> (*const u8, usize, Vec<u8>) {
-    let bytes = t.into_bytes().unwrap_or_revert();
+fn to_ptr<T: BorshSerialize>(t: T) -> (*const u8, usize, Vec<u8>) {
+    let bytes = t.try_to_vec().ok().unwrap_or_revert();
     let ptr = bytes.as_ptr();
     let size = bytes.len();
     (ptr, size, bytes)

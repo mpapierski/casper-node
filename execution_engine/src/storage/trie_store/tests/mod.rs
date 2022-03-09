@@ -3,7 +3,7 @@ mod proptests;
 mod simple;
 
 use casper_hashing::Digest;
-use casper_types::bytesrepr::{Bytes, ToBytes};
+use casper_types::bytesrepr::{BorshSerialize, Bytes};
 
 use crate::storage::trie::{Pointer, PointerBlock, Trie};
 

@@ -1,5 +1,5 @@
 //! Costs of the mint system contract.
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 use datasize::DataSize;
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
@@ -44,53 +44,6 @@ impl Default for MintCosts {
             transfer: DEFAULT_TRANSFER_COST,
             read_base_round_reward: DEFAULT_READ_BASE_ROUND_REWARD_COST,
         }
-    }
-}
-
-impl ToBytes for MintCosts {
-    fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-
-        ret.append(&mut self.mint.to_bytes()?);
-        ret.append(&mut self.reduce_total_supply.to_bytes()?);
-        ret.append(&mut self.create.to_bytes()?);
-        ret.append(&mut self.balance.to_bytes()?);
-        ret.append(&mut self.transfer.to_bytes()?);
-        ret.append(&mut self.read_base_round_reward.to_bytes()?);
-
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.mint.serialized_length()
-            + self.reduce_total_supply.serialized_length()
-            + self.create.serialized_length()
-            + self.balance.serialized_length()
-            + self.transfer.serialized_length()
-            + self.read_base_round_reward.serialized_length()
-    }
-}
-
-impl FromBytes for MintCosts {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), casper_types::bytesrepr::Error> {
-        let (mint, rem) = FromBytes::from_bytes(bytes)?;
-        let (reduce_total_supply, rem) = FromBytes::from_bytes(rem)?;
-        let (create, rem) = FromBytes::from_bytes(rem)?;
-        let (balance, rem) = FromBytes::from_bytes(rem)?;
-        let (transfer, rem) = FromBytes::from_bytes(rem)?;
-        let (read_base_round_reward, rem) = FromBytes::from_bytes(rem)?;
-
-        Ok((
-            Self {
-                mint,
-                reduce_total_supply,
-                create,
-                balance,
-                transfer,
-                read_base_round_reward,
-            },
-            rem,
-        ))
     }
 }
 

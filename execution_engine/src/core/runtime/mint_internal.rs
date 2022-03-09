@@ -1,6 +1,6 @@
+use borsh::{BorshDeserialize, BorshSerialize};
 use casper_types::{
     account::AccountHash,
-    bytesrepr::{FromBytes, ToBytes},
     system::{mint::Error, CallStackElement},
     CLTyped, CLValue, Key, Phase, StoredValue, URef, U512,
 };
@@ -61,14 +61,14 @@ where
     R: StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
-    fn new_uref<T: CLTyped + ToBytes>(&mut self, init: T) -> Result<URef, Error> {
+    fn new_uref<T: CLTyped + BorshSerialize>(&mut self, init: T) -> Result<URef, Error> {
         let cl_value: CLValue = CLValue::from_t(init).map_err(|_| Error::CLValue)?;
         self.context
             .new_uref(StoredValue::CLValue(cl_value))
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::NewURef))
     }
 
-    fn read<T: CLTyped + FromBytes>(&mut self, uref: URef) -> Result<Option<T>, Error> {
+    fn read<T: CLTyped + BorshDeserialize>(&mut self, uref: URef) -> Result<Option<T>, Error> {
         let maybe_value = self
             .context
             .read_gs(&Key::URef(uref))
@@ -83,14 +83,14 @@ where
         }
     }
 
-    fn write<T: CLTyped + ToBytes>(&mut self, uref: URef, value: T) -> Result<(), Error> {
+    fn write<T: CLTyped + BorshSerialize>(&mut self, uref: URef, value: T) -> Result<(), Error> {
         let cl_value = CLValue::from_t(value).map_err(|_| Error::CLValue)?;
         self.context
             .metered_write_gs(Key::URef(uref), StoredValue::CLValue(cl_value))
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Storage))
     }
 
-    fn add<T: CLTyped + ToBytes>(&mut self, uref: URef, value: T) -> Result<(), Error> {
+    fn add<T: CLTyped + BorshSerialize>(&mut self, uref: URef, value: T) -> Result<(), Error> {
         let cl_value = CLValue::from_t(value).map_err(|_| Error::CLValue)?;
         self.context
             .metered_add_gs(uref, cl_value)

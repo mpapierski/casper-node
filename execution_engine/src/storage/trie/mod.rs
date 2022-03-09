@@ -6,6 +6,7 @@ use std::{
     mem::MaybeUninit,
 };
 
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use serde::{
     de::{self, MapAccess, Visitor},
     ser::SerializeMap,
@@ -13,7 +14,7 @@ use serde::{
 };
 
 use casper_hashing::{ChunkWithProof, Digest};
-use casper_types::bytesrepr::{self, Bytes, FromBytes, ToBytes, U8_SERIALIZED_LENGTH};
+use casper_types::bytesrepr::{self, Bytes, U8_SERIALIZED_LENGTH};
 use datasize::DataSize;
 
 #[cfg(test)]
@@ -31,7 +32,9 @@ pub(crate) const RADIX: usize = 256;
 pub type Parents<K, V> = Vec<(u8, Trie<K, V>)>;
 
 /// Represents a pointer to the next object in a Merkle Trie
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+)]
 pub enum Pointer {
     /// Leaf pointer.
     LeafPointer(Digest),
@@ -73,43 +76,6 @@ impl Pointer {
     }
 }
 
-impl ToBytes for Pointer {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-        self.write_bytes(&mut ret)?;
-        Ok(ret)
-    }
-
-    #[inline(always)]
-    fn serialized_length(&self) -> usize {
-        U8_SERIALIZED_LENGTH + Digest::LENGTH
-    }
-
-    #[inline]
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        writer.push(self.tag());
-        writer.extend_from_slice(self.hash().as_ref());
-        Ok(())
-    }
-}
-
-impl FromBytes for Pointer {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, rem) = u8::from_bytes(bytes)?;
-        match tag {
-            0 => {
-                let (hash, rem) = Digest::from_bytes(rem)?;
-                Ok((Pointer::LeafPointer(hash), rem))
-            }
-            1 => {
-                let (hash, rem) = Digest::from_bytes(rem)?;
-                Ok((Pointer::NodePointer(hash), rem))
-            }
-            _ => Err(bytesrepr::Error::Formatting),
-        }
-    }
-}
-
 /// Type alias for values under pointer blocks.
 pub type PointerBlockValue = Option<Pointer>;
 
@@ -117,7 +83,7 @@ pub type PointerBlockValue = Option<Pointer>;
 pub type PointerBlockArray = [PointerBlockValue; RADIX];
 
 /// Represents the underlying structure of a node in a Merkle Trie
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, BorshSerialize, BorshDeserialize)]
 pub struct PointerBlock(PointerBlockArray);
 
 impl Serialize for PointerBlock {
@@ -230,52 +196,6 @@ impl Default for PointerBlock {
     }
 }
 
-impl ToBytes for PointerBlock {
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut result = bytesrepr::allocate_buffer(self)?;
-        for pointer in self.0.iter() {
-            result.append(&mut pointer.to_bytes()?);
-        }
-        Ok(result)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.0.iter().map(ToBytes::serialized_length).sum()
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        for pointer in self.0.iter() {
-            pointer.write_bytes(writer)?;
-        }
-        Ok(())
-    }
-}
-
-impl FromBytes for PointerBlock {
-    fn from_bytes(mut bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let pointer_block_array = {
-            // With MaybeUninit here we can avoid default initialization of result array below.
-            let mut result: MaybeUninit<PointerBlockArray> = MaybeUninit::uninit();
-            let result_ptr = result.as_mut_ptr() as *mut PointerBlockValue;
-            for i in 0..RADIX {
-                let (t, remainder) = match FromBytes::from_bytes(bytes) {
-                    Ok(success) => success,
-                    Err(error) => {
-                        for j in 0..i {
-                            unsafe { result_ptr.add(j).drop_in_place() }
-                        }
-                        return Err(error);
-                    }
-                };
-                unsafe { result_ptr.add(i).write(t) };
-                bytes = remainder;
-            }
-            unsafe { result.assume_init() }
-        };
-        Ok((PointerBlock(pointer_block_array), bytes))
-    }
-}
-
 impl core::ops::Index<usize> for PointerBlock {
     type Output = PointerBlockValue;
 
@@ -380,54 +300,6 @@ impl TrieOrChunk {
     }
 }
 
-impl ToBytes for TrieOrChunk {
-    fn write_bytes(&self, buf: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        buf.push(self.tag());
-
-        match self {
-            TrieOrChunk::Trie(trie) => {
-                buf.append(&mut trie.to_bytes()?);
-            }
-            TrieOrChunk::ChunkWithProof(chunk) => {
-                buf.append(&mut chunk.to_bytes()?);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::allocate_buffer(self)?;
-        self.write_bytes(&mut ret)?;
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        U8_SERIALIZED_LENGTH
-            + match self {
-                TrieOrChunk::Trie(trie) => trie.serialized_length(),
-                TrieOrChunk::ChunkWithProof(chunk) => chunk.serialized_length(),
-            }
-    }
-}
-
-impl FromBytes for TrieOrChunk {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, rem) = u8::from_bytes(bytes)?;
-        match tag {
-            0 => {
-                let (trie_bytes, rem) = Bytes::from_bytes(rem)?;
-                Ok((TrieOrChunk::Trie(trie_bytes), rem))
-            }
-            1 => {
-                let (chunk, rem) = ChunkWithProof::from_bytes(rem)?;
-                Ok((TrieOrChunk::ChunkWithProof(chunk), rem))
-            }
-            _ => Err(bytesrepr::Error::Formatting),
-        }
-    }
-}
-
 /// Represents the ID of a `TrieOrChunk` - containing the index and the root hash.
 /// The root hash is the hash of the trie node as a whole.
 /// The index is the index of a chunk if the node's size is too large and requires chunking. For
@@ -449,7 +321,7 @@ impl Display for TrieOrChunkId {
 }
 
 /// Represents a Merkle Trie.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
 pub enum Trie<K, V> {
     /// Trie leaf.
     Leaf {
@@ -520,11 +392,11 @@ impl<K, V> Trie<K, V> {
     }
 
     /// Returns the hash of this Trie.
-    pub fn trie_hash(&self) -> Result<Digest, bytesrepr::Error>
+    pub fn trie_hash(&self) -> Result<Digest, io::Error>
     where
-        Self: ToBytes,
+        Self: BorshSerialize,
     {
-        self.to_bytes()
+        self.try_to_vec()
             .map(|bytes| hash_bytes_into_chunks_if_necessary(&bytes))
     }
 }
@@ -542,87 +414,20 @@ pub(crate) fn hash_bytes_into_chunks_if_necessary(bytes: &[u8]) -> Digest {
     }
 }
 
-impl<K, V> ToBytes for Trie<K, V>
-where
-    K: ToBytes,
-    V: ToBytes,
-{
-    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        let mut ret = bytesrepr::allocate_buffer(self)?;
-        self.write_bytes(&mut ret)?;
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        U8_SERIALIZED_LENGTH
-            + match self {
-                Trie::Leaf { key, value } => key.serialized_length() + value.serialized_length(),
-                Trie::Node { pointer_block } => pointer_block.serialized_length(),
-                Trie::Extension { affix, pointer } => {
-                    affix.serialized_length() + pointer.serialized_length()
-                }
-            }
-    }
-
-    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        writer.push(self.tag());
-        match self {
-            Trie::Leaf { key, value } => {
-                key.write_bytes(writer)?;
-                value.write_bytes(writer)?;
-            }
-            Trie::Node { pointer_block } => pointer_block.write_bytes(writer)?,
-            Trie::Extension { affix, pointer } => {
-                affix.write_bytes(writer)?;
-                pointer.write_bytes(writer)?;
-            }
-        }
-        Ok(())
-    }
-}
-
-impl<K: FromBytes, V: FromBytes> FromBytes for Trie<K, V> {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (tag, rem) = u8::from_bytes(bytes)?;
-        match tag {
-            0 => {
-                let (key, rem) = K::from_bytes(rem)?;
-                let (value, rem) = V::from_bytes(rem)?;
-                Ok((Trie::Leaf { key, value }, rem))
-            }
-            1 => {
-                let (pointer_block, rem) = PointerBlock::from_bytes(rem)?;
-                Ok((
-                    Trie::Node {
-                        pointer_block: Box::new(pointer_block),
-                    },
-                    rem,
-                ))
-            }
-            2 => {
-                let (affix, rem) = FromBytes::from_bytes(rem)?;
-                let (pointer, rem) = Pointer::from_bytes(rem)?;
-                Ok((Trie::Extension { affix, pointer }, rem))
-            }
-            _ => Err(bytesrepr::Error::Formatting),
-        }
-    }
-}
-
 pub(crate) mod operations {
-    use casper_types::bytesrepr::{self, ToBytes};
+    use borsh::{maybestd::io, BorshSerialize};
 
     use crate::storage::trie::Trie;
     use casper_hashing::Digest;
 
     /// Creates a tuple containing an empty root hash and an empty root (a node
     /// with an empty pointer block)
-    pub fn create_hashed_empty_trie<K: ToBytes, V: ToBytes>(
-    ) -> Result<(Digest, Trie<K, V>), bytesrepr::Error> {
+    pub fn create_hashed_empty_trie<K: BorshSerialize, V: BorshSerialize>(
+    ) -> Result<(Digest, Trie<K, V>), io::Error> {
         let root: Trie<K, V> = Trie::Node {
             pointer_block: Default::default(),
         };
-        let root_bytes: Vec<u8> = root.to_bytes()?;
+        let root_bytes: Vec<u8> = root.try_to_vec()?;
         Ok((Digest::hash(&root_bytes), root))
     }
 }

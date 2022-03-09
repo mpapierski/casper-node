@@ -1,5 +1,5 @@
 //! Costs of the auction system contract.
-use casper_types::bytesrepr::{self, FromBytes, ToBytes};
+use casper_types::bytesrepr::{self, BorshDeserialize, BorshSerialize};
 use datasize::DataSize;
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
@@ -79,80 +79,6 @@ impl Default for AuctionCosts {
             read_era_id: DEFAULT_READ_ERA_ID_COST,
             activate_bid: DEFAULT_ACTIVATE_BID_COST,
         }
-    }
-}
-
-impl ToBytes for AuctionCosts {
-    fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
-        let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-
-        ret.append(&mut self.get_era_validators.to_bytes()?);
-        ret.append(&mut self.read_seigniorage_recipients.to_bytes()?);
-        ret.append(&mut self.add_bid.to_bytes()?);
-        ret.append(&mut self.withdraw_bid.to_bytes()?);
-        ret.append(&mut self.delegate.to_bytes()?);
-        ret.append(&mut self.undelegate.to_bytes()?);
-        ret.append(&mut self.run_auction.to_bytes()?);
-        ret.append(&mut self.slash.to_bytes()?);
-        ret.append(&mut self.distribute.to_bytes()?);
-        ret.append(&mut self.withdraw_delegator_reward.to_bytes()?);
-        ret.append(&mut self.withdraw_validator_reward.to_bytes()?);
-        ret.append(&mut self.read_era_id.to_bytes()?);
-        ret.append(&mut self.activate_bid.to_bytes()?);
-
-        Ok(ret)
-    }
-
-    fn serialized_length(&self) -> usize {
-        self.get_era_validators.serialized_length()
-            + self.read_seigniorage_recipients.serialized_length()
-            + self.add_bid.serialized_length()
-            + self.withdraw_bid.serialized_length()
-            + self.delegate.serialized_length()
-            + self.undelegate.serialized_length()
-            + self.run_auction.serialized_length()
-            + self.slash.serialized_length()
-            + self.distribute.serialized_length()
-            + self.withdraw_delegator_reward.serialized_length()
-            + self.withdraw_validator_reward.serialized_length()
-            + self.read_era_id.serialized_length()
-            + self.activate_bid.serialized_length()
-    }
-}
-
-impl FromBytes for AuctionCosts {
-    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), casper_types::bytesrepr::Error> {
-        let (get_era_validators, rem) = FromBytes::from_bytes(bytes)?;
-        let (read_seigniorage_recipients, rem) = FromBytes::from_bytes(rem)?;
-        let (add_bid, rem) = FromBytes::from_bytes(rem)?;
-        let (withdraw_bid, rem) = FromBytes::from_bytes(rem)?;
-        let (delegate, rem) = FromBytes::from_bytes(rem)?;
-        let (undelegate, rem) = FromBytes::from_bytes(rem)?;
-        let (run_auction, rem) = FromBytes::from_bytes(rem)?;
-        let (slash, rem) = FromBytes::from_bytes(rem)?;
-        let (distribute, rem) = FromBytes::from_bytes(rem)?;
-        let (withdraw_delegator_reward, rem) = FromBytes::from_bytes(rem)?;
-        let (withdraw_validator_reward, rem) = FromBytes::from_bytes(rem)?;
-        let (read_era_id, rem) = FromBytes::from_bytes(rem)?;
-        let (activate_bid, rem) = FromBytes::from_bytes(rem)?;
-        Ok((
-            Self {
-                get_era_validators,
-                read_seigniorage_recipients,
-                add_bid,
-                withdraw_bid,
-                delegate,
-                undelegate,
-                run_auction,
-                slash,
-                distribute,
-                withdraw_delegator_reward,
-                withdraw_validator_reward,
-                read_era_id,
-                activate_bid,
-            },
-            rem,
-        ))
     }
 }
 
