@@ -187,6 +187,7 @@ where
                     .as_indexed_pointers()
                     .filter(|(index, _)| *index as usize != hole_index)
                     .collect();
+
                 let next = match store.get(txn, pointer.hash())? {
                     Some(next) => next,
                     None => {

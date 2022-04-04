@@ -15,6 +15,7 @@ use serde_bytes::ByteBuf;
 
 use crate::{
     account::Account,
+    bytesrepr::{self, FromBytes, ToBytes, U8_SERIALIZED_LENGTH},
     contracts::ContractPackage,
     system::auction::{Bid, EraInfo, UnbondingPurse, WithdrawPurse},
     CLValue, Contract, ContractWasm, DeployInfo, Transfer,
@@ -320,12 +321,122 @@ impl TryFrom<StoredValue> for EraInfo {
     }
 }
 
+impl ToBytes for StoredValue {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        let (tag, mut serialized_data) = match self {
+            StoredValue::CLValue(cl_value) => (Tag::CLValue, cl_value.to_bytes()?),
+            StoredValue::Account(account) => (Tag::Account, account.to_bytes()?),
+            StoredValue::ContractWasm(contract_wasm) => {
+                (Tag::ContractWasm, contract_wasm.to_bytes()?)
+            }
+            StoredValue::Contract(contract_header) => (Tag::Contract, contract_header.to_bytes()?),
+            StoredValue::ContractPackage(contract_package) => {
+                (Tag::ContractPackage, contract_package.to_bytes()?)
+            }
+            StoredValue::Transfer(transfer) => (Tag::Transfer, transfer.to_bytes()?),
+            StoredValue::DeployInfo(deploy_info) => (Tag::DeployInfo, deploy_info.to_bytes()?),
+            StoredValue::EraInfo(era_info) => (Tag::EraInfo, era_info.to_bytes()?),
+            StoredValue::Bid(bid) => (Tag::Bid, bid.to_bytes()?),
+            StoredValue::Withdraw(withdraw_purses) => (Tag::Withdraw, withdraw_purses.to_bytes()?),
+            StoredValue::Unbonding(unbonding_purses) => {
+                (Tag::Unbonding, unbonding_purses.to_bytes()?)
+            }
+        };
+        result.push(tag as u8);
+        result.append(&mut serialized_data);
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        U8_SERIALIZED_LENGTH
+            + match self {
+                StoredValue::CLValue(cl_value) => cl_value.serialized_length(),
+                StoredValue::Account(account) => account.serialized_length(),
+                StoredValue::ContractWasm(contract_wasm) => contract_wasm.serialized_length(),
+                StoredValue::Contract(contract_header) => contract_header.serialized_length(),
+                StoredValue::ContractPackage(contract_package) => {
+                    contract_package.serialized_length()
+                }
+                StoredValue::Transfer(transfer) => transfer.serialized_length(),
+                StoredValue::DeployInfo(deploy_info) => deploy_info.serialized_length(),
+                StoredValue::EraInfo(era_info) => era_info.serialized_length(),
+                StoredValue::Bid(bid) => bid.serialized_length(),
+                StoredValue::Withdraw(withdraw_purses) => withdraw_purses.serialized_length(),
+                StoredValue::Unbonding(unbonding_purses) => unbonding_purses.serialized_length(),
+            }
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.tag() as u8);
+        match self {
+            StoredValue::CLValue(cl_value) => cl_value.write_bytes(writer)?,
+            StoredValue::Account(account) => account.write_bytes(writer)?,
+            StoredValue::ContractWasm(contract_wasm) => contract_wasm.write_bytes(writer)?,
+            StoredValue::Contract(contract_header) => contract_header.write_bytes(writer)?,
+            StoredValue::ContractPackage(contract_package) => {
+                contract_package.write_bytes(writer)?
+            }
+            StoredValue::Transfer(transfer) => transfer.write_bytes(writer)?,
+            StoredValue::DeployInfo(deploy_info) => deploy_info.write_bytes(writer)?,
+            StoredValue::EraInfo(era_info) => era_info.write_bytes(writer)?,
+            StoredValue::Bid(bid) => bid.write_bytes(writer)?,
+            StoredValue::Withdraw(unbonding_purses) => unbonding_purses.write_bytes(writer)?,
+            StoredValue::Unbonding(unbonding_purses) => unbonding_purses.write_bytes(writer)?,
+        };
+        Ok(())
+    }
+}
+
+impl FromBytes for StoredValue {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (tag, remainder): (u8, &[u8]) = FromBytes::from_bytes(bytes)?;
+        match tag {
+            tag if tag == Tag::CLValue as u8 => CLValue::from_bytes(remainder)
+                .map(|(cl_value, remainder)| (StoredValue::CLValue(cl_value), remainder)),
+            tag if tag == Tag::Account as u8 => Account::from_bytes(remainder)
+                .map(|(account, remainder)| (StoredValue::Account(account), remainder)),
+            tag if tag == Tag::ContractWasm as u8 => {
+                ContractWasm::from_bytes(remainder).map(|(contract_wasm, remainder)| {
+                    (StoredValue::ContractWasm(contract_wasm), remainder)
+                })
+            }
+            tag if tag == Tag::ContractPackage as u8 => {
+                ContractPackage::from_bytes(remainder).map(|(contract_package, remainder)| {
+                    (StoredValue::ContractPackage(contract_package), remainder)
+                })
+            }
+            tag if tag == Tag::Contract as u8 => Contract::from_bytes(remainder)
+                .map(|(contract, remainder)| (StoredValue::Contract(contract), remainder)),
+            tag if tag == Tag::Transfer as u8 => Transfer::from_bytes(remainder)
+                .map(|(transfer, remainder)| (StoredValue::Transfer(transfer), remainder)),
+            tag if tag == Tag::DeployInfo as u8 => DeployInfo::from_bytes(remainder)
+                .map(|(deploy_info, remainder)| (StoredValue::DeployInfo(deploy_info), remainder)),
+            tag if tag == Tag::EraInfo as u8 => EraInfo::from_bytes(remainder)
+                .map(|(deploy_info, remainder)| (StoredValue::EraInfo(deploy_info), remainder)),
+            tag if tag == Tag::Bid as u8 => Bid::from_bytes(remainder)
+                .map(|(bid, remainder)| (StoredValue::Bid(Box::new(bid)), remainder)),
+            tag if tag == Tag::Withdraw as u8 => {
+                Vec::<WithdrawPurse>::from_bytes(remainder).map(|(withdraw_purses, remainder)| {
+                    (StoredValue::Withdraw(withdraw_purses), remainder)
+                })
+            }
+            tag if tag == Tag::Unbonding as u8 => {
+                Vec::<UnbondingPurse>::from_bytes(remainder).map(|(unbonding_purses, remainder)| {
+                    (StoredValue::Unbonding(unbonding_purses), remainder)
+                })
+            }
+            _ => Err(bytesrepr::Error::Formatting),
+        }
+    }
+}
+
 impl Serialize for StoredValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // The JSON representation of a StoredValue is just its bytesrepr
         // While this makes it harder to inspect, it makes deterministic representation simple.
-        let bytes =
-            borsh::to_vec(self).map_err(|error| ser::Error::custom(format!("{:?}", error)))?;
+        let bytes = bytesrepr::serialize(self)
+            .map_err(|error| ser::Error::custom(format!("{:?}", error)))?;
         ByteBuf::from(bytes).serialize(serializer)
     }
 }
@@ -333,7 +444,7 @@ impl Serialize for StoredValue {
 impl<'de> Deserialize<'de> for StoredValue {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = ByteBuf::deserialize(deserializer)?.into_vec();
-        let stored_value = BorshDeserialize::try_from_slice(&bytes)
+        let stored_value = bytesrepr::deserialize_from_slice(&bytes)
             .map_err(|error| de::Error::custom(format!("{:?}", error)))?;
         Ok(stored_value)
     }

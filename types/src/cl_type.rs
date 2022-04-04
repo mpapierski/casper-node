@@ -7,7 +7,7 @@ use alloc::{
     string::String,
     vec::Vec,
 };
-use borsh::{BorshSerialize, BorshDeserialize, maybestd::io};
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use core::mem;
 
 #[cfg(feature = "datasize")]
@@ -18,6 +18,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    bytesrepr::{self, FromBytes, ToBytes},
     Key, URef, U128, U256, U512,
 };
 
@@ -142,7 +143,7 @@ impl BorshDeserialize for CLType {
             CL_TYPE_TAG_BYTE_ARRAY => {
                 let len = u32::try_from_slice(buf)?;
                 let cl_type = CLType::ByteArray(len);
-               cl_type
+                cl_type
             }
             CL_TYPE_TAG_RESULT => {
                 let ok_type = CLType::try_from_slice(buf)?;
@@ -151,7 +152,7 @@ impl BorshDeserialize for CLType {
                     ok: Box::new(ok_type),
                     err: Box::new(err_type),
                 };
-               cl_type
+                cl_type
             }
             CL_TYPE_TAG_MAP => {
                 let key_type = CLType::try_from_slice(buf)?;
@@ -160,14 +161,14 @@ impl BorshDeserialize for CLType {
                     key: Box::new(key_type),
                     value: Box::new(value_type),
                 };
-               cl_type
+                cl_type
             }
             CL_TYPE_TAG_TUPLE1 => {
                 let mut inner_types = parse_cl_tuple_types(1, buf)?;
                 // NOTE: Assumed safe as `parse_cl_tuple_types` is expected to have exactly 1
                 // element
                 let cl_type = CLType::Tuple1([inner_types.pop_front().unwrap()]);
-               cl_type
+                cl_type
             }
             CL_TYPE_TAG_TUPLE2 => {
                 let mut inner_types = parse_cl_tuple_types(2, buf)?;
@@ -177,7 +178,7 @@ impl BorshDeserialize for CLType {
                     inner_types.pop_front().unwrap(),
                     inner_types.pop_front().unwrap(),
                 ]);
-               cl_type
+                cl_type
             }
             CL_TYPE_TAG_TUPLE3 => {
                 let mut inner_types = parse_cl_tuple_types(3, buf)?;
@@ -188,10 +189,15 @@ impl BorshDeserialize for CLType {
                     inner_types.pop_front().unwrap(),
                     inner_types.pop_front().unwrap(),
                 ]);
-               cl_type
-            },
+                cl_type
+            }
             CL_TYPE_TAG_ANY => CLType::Any,
-            _ => return Err(io::Error::new(io::ErrorKind::InvalidInput, "Invalid CLType variant")),
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid CLType variant",
+                ))
+            }
         };
         Ok(cl_type)
     }
@@ -252,6 +258,40 @@ impl BorshSerialize for CLType {
 }
 
 impl CLType {
+    /// The `len()` of the `Vec<u8>` resulting from `self.to_bytes()`.
+    pub fn serialized_length(&self) -> usize {
+        mem::size_of::<u8>()
+            + match self {
+                CLType::Bool
+                | CLType::I32
+                | CLType::I64
+                | CLType::U8
+                | CLType::U32
+                | CLType::U64
+                | CLType::U128
+                | CLType::U256
+                | CLType::U512
+                | CLType::Unit
+                | CLType::String
+                | CLType::Key
+                | CLType::URef
+                | CLType::PublicKey
+                | CLType::Any => 0,
+                CLType::Option(cl_type) | CLType::List(cl_type) => cl_type.serialized_length(),
+                CLType::ByteArray(list_len) => list_len.serialized_length(),
+                CLType::Result { ok, err } => ok.serialized_length() + err.serialized_length(),
+                CLType::Map { key, value } => key.serialized_length() + value.serialized_length(),
+                CLType::Tuple1(cl_type_array) => {
+                    serialized_length_of_cl_tuple_type_bytesrepr(cl_type_array)
+                }
+                CLType::Tuple2(cl_type_array) => {
+                    serialized_length_of_cl_tuple_type_bytesrepr(cl_type_array)
+                }
+                CLType::Tuple3(cl_type_array) => {
+                    serialized_length_of_cl_tuple_type_bytesrepr(cl_type_array)
+                }
+            }
+    }
     /// Returns `true` if the [`CLType`] is [`Option`].
     pub fn is_option(&self) -> bool {
         matches!(self, Self::Option(..))
@@ -263,6 +303,178 @@ pub fn named_key_type() -> CLType {
     CLType::Tuple2([Box::new(CLType::String), Box::new(CLType::Key)])
 }
 
+fn serialized_length_of_cl_tuple_type_bytesrepr<'a, T: IntoIterator<Item = &'a Box<CLType>>>(
+    cl_type_array: T,
+) -> usize {
+    cl_type_array
+        .into_iter()
+        .map(|cl_type| cl_type.serialized_length())
+        .sum()
+}
+
+#[allow(clippy::cognitive_complexity)]
+impl FromBytes for CLType {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (tag, remainder) = u8::from_bytes(bytes)?;
+        match tag {
+            CL_TYPE_TAG_BOOL => Ok((CLType::Bool, remainder)),
+            CL_TYPE_TAG_I32 => Ok((CLType::I32, remainder)),
+            CL_TYPE_TAG_I64 => Ok((CLType::I64, remainder)),
+            CL_TYPE_TAG_U8 => Ok((CLType::U8, remainder)),
+            CL_TYPE_TAG_U32 => Ok((CLType::U32, remainder)),
+            CL_TYPE_TAG_U64 => Ok((CLType::U64, remainder)),
+            CL_TYPE_TAG_U128 => Ok((CLType::U128, remainder)),
+            CL_TYPE_TAG_U256 => Ok((CLType::U256, remainder)),
+            CL_TYPE_TAG_U512 => Ok((CLType::U512, remainder)),
+            CL_TYPE_TAG_UNIT => Ok((CLType::Unit, remainder)),
+            CL_TYPE_TAG_STRING => Ok((CLType::String, remainder)),
+            CL_TYPE_TAG_KEY => Ok((CLType::Key, remainder)),
+            CL_TYPE_TAG_UREF => Ok((CLType::URef, remainder)),
+            CL_TYPE_TAG_PUBLIC_KEY => Ok((CLType::PublicKey, remainder)),
+            CL_TYPE_TAG_OPTION => {
+                let (inner_type, remainder) = CLType::from_bytes(remainder)?;
+                let cl_type = CLType::Option(Box::new(inner_type));
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_LIST => {
+                let (inner_type, remainder) = CLType::from_bytes(remainder)?;
+                let cl_type = CLType::List(Box::new(inner_type));
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_BYTE_ARRAY => {
+                let (len, remainder) = u32::from_bytes(remainder)?;
+                let cl_type = CLType::ByteArray(len);
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_RESULT => {
+                let (ok_type, remainder) = CLType::from_bytes(remainder)?;
+                let (err_type, remainder) = CLType::from_bytes(remainder)?;
+                let cl_type = CLType::Result {
+                    ok: Box::new(ok_type),
+                    err: Box::new(err_type),
+                };
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_MAP => {
+                let (key_type, remainder) = CLType::from_bytes(remainder)?;
+                let (value_type, remainder) = CLType::from_bytes(remainder)?;
+                let cl_type = CLType::Map {
+                    key: Box::new(key_type),
+                    value: Box::new(value_type),
+                };
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_TUPLE1 => {
+                let (mut inner_types, remainder) = parse_cl_tuple_types_bytesrepr(1, remainder)?;
+                // NOTE:    Assumed safe as `parse_cl_tuple_types` is expected to have exactly 1
+                // element
+                let cl_type = CLType::Tuple1([inner_types.pop_front().unwrap()]);
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_TUPLE2 => {
+                let (mut inner_types, remainder) = parse_cl_tuple_types_bytesrepr(2, remainder)?;
+                // NOTE: Assumed safe as `parse_cl_tuple_types` is expected to have exactly 2
+                // elements
+                let cl_type = CLType::Tuple2([
+                    inner_types.pop_front().unwrap(),
+                    inner_types.pop_front().unwrap(),
+                ]);
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_TUPLE3 => {
+                let (mut inner_types, remainder) = parse_cl_tuple_types_bytesrepr(3, remainder)?;
+                // NOTE: Assumed safe as `parse_cl_tuple_types` is expected to have exactly 3
+                // elements
+                let cl_type = CLType::Tuple3([
+                    inner_types.pop_front().unwrap(),
+                    inner_types.pop_front().unwrap(),
+                    inner_types.pop_front().unwrap(),
+                ]);
+                Ok((cl_type, remainder))
+            }
+            CL_TYPE_TAG_ANY => Ok((CLType::Any, remainder)),
+            _ => Err(bytesrepr::Error::Formatting),
+        }
+    }
+}
+impl CLType {
+    pub(crate) fn append_bytes(&self, stream: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        match self {
+            CLType::Bool => stream.push(CL_TYPE_TAG_BOOL),
+            CLType::I32 => stream.push(CL_TYPE_TAG_I32),
+            CLType::I64 => stream.push(CL_TYPE_TAG_I64),
+            CLType::U8 => stream.push(CL_TYPE_TAG_U8),
+            CLType::U32 => stream.push(CL_TYPE_TAG_U32),
+            CLType::U64 => stream.push(CL_TYPE_TAG_U64),
+            CLType::U128 => stream.push(CL_TYPE_TAG_U128),
+            CLType::U256 => stream.push(CL_TYPE_TAG_U256),
+            CLType::U512 => stream.push(CL_TYPE_TAG_U512),
+            CLType::Unit => stream.push(CL_TYPE_TAG_UNIT),
+            CLType::String => stream.push(CL_TYPE_TAG_STRING),
+            CLType::Key => stream.push(CL_TYPE_TAG_KEY),
+            CLType::URef => stream.push(CL_TYPE_TAG_UREF),
+            CLType::PublicKey => stream.push(CL_TYPE_TAG_PUBLIC_KEY),
+            CLType::Option(cl_type) => {
+                stream.push(CL_TYPE_TAG_OPTION);
+                cl_type.append_bytes(stream)?;
+            }
+            CLType::List(cl_type) => {
+                stream.push(CL_TYPE_TAG_LIST);
+                cl_type.append_bytes(stream)?;
+            }
+            CLType::ByteArray(len) => {
+                stream.push(CL_TYPE_TAG_BYTE_ARRAY);
+                stream.append(&mut len.to_bytes()?);
+            }
+            CLType::Result { ok, err } => {
+                stream.push(CL_TYPE_TAG_RESULT);
+                ok.append_bytes(stream)?;
+                err.append_bytes(stream)?;
+            }
+            CLType::Map { key, value } => {
+                stream.push(CL_TYPE_TAG_MAP);
+                key.append_bytes(stream)?;
+                value.append_bytes(stream)?;
+            }
+            CLType::Tuple1(cl_type_array) => {
+                serialize_cl_tuple_type_bytesrepr(CL_TYPE_TAG_TUPLE1, cl_type_array, stream)?
+            }
+            CLType::Tuple2(cl_type_array) => {
+                serialize_cl_tuple_type_bytesrepr(CL_TYPE_TAG_TUPLE2, cl_type_array, stream)?
+            }
+            CLType::Tuple3(cl_type_array) => {
+                serialize_cl_tuple_type_bytesrepr(CL_TYPE_TAG_TUPLE3, cl_type_array, stream)?
+            }
+            CLType::Any => stream.push(CL_TYPE_TAG_ANY),
+        }
+        Ok(())
+    }
+}
+fn serialize_cl_tuple_type_bytesrepr<'a, T: IntoIterator<Item = &'a Box<CLType>>>(
+    tag: u8,
+    cl_type_array: T,
+    stream: &mut Vec<u8>,
+) -> Result<(), bytesrepr::Error> {
+    stream.push(tag);
+    for cl_type in cl_type_array {
+        cl_type.append_bytes(stream)?;
+    }
+    Ok(())
+}
+
+fn parse_cl_tuple_types_bytesrepr(
+    count: usize,
+    mut bytes: &[u8],
+) -> Result<(VecDeque<Box<CLType>>, &[u8]), bytesrepr::Error> {
+    let mut cl_types = VecDeque::with_capacity(count);
+    for _ in 0..count {
+        let (cl_type, remainder) = CLType::from_bytes(bytes)?;
+        cl_types.push_back(Box::new(cl_type));
+        bytes = remainder;
+    }
+
+    Ok((cl_types, bytes))
+}
 fn serialize_cl_tuple_type<'a, T: IntoIterator<Item = &'a Box<CLType>>>(
     tag: u8,
     cl_type_array: T,
@@ -659,7 +871,6 @@ impl<T: CLTyped> CLTyped for Ratio<T> {
 //                 CLType::Any
 //             }
 //         }
-
 
 //         let any = Any("Any test".to_string());
 //         round_trip(&any);

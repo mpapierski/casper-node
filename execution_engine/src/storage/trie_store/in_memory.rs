@@ -56,8 +56,8 @@ mod tests {
         };
 
         // Get their hashes
-        let leaf_1_hash = Digest::hash(&leaf_1.to_bytes().unwrap());
-        let leaf_2_hash = Digest::hash(&leaf_2.to_bytes().unwrap());
+        let leaf_1_hash = Digest::hash(&leaf_1.try_to_vec().unwrap());
+        let leaf_2_hash = Digest::hash(&leaf_2.try_to_vec().unwrap());
 
         // Create a node
         let node: Trie<Bytes, Bytes> = {
@@ -69,7 +69,7 @@ mod tests {
         };
 
         // Get its hash
-        let node_hash = Digest::hash(&node.to_bytes().unwrap());
+        let node_hash = Digest::hash(&node.try_to_vec().unwrap());
 
         // Create the environment and the store. For both the in-memory and
         // LMDB-backed implementations, the environment is the source of

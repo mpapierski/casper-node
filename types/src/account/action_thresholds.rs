@@ -7,7 +7,12 @@ use borsh::{BorshDeserialize, BorshSerialize};
 use datasize::DataSize;
 use serde::{Deserialize, Serialize};
 
-use crate::account::{ActionType, SetThresholdFailure, Weight};
+use crate::{
+    account::{ActionType, SetThresholdFailure, Weight},
+    bytesrepr::{self, Error, FromBytes, ToBytes},
+};
+
+use super::weight::WEIGHT_SERIALIZED_LENGTH;
 
 /// Thresholds that have to be met when executing an action of a certain type.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
@@ -100,6 +105,36 @@ impl Default for ActionThresholds {
     }
 }
 
+impl ToBytes for ActionThresholds {
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut result = bytesrepr::unchecked_allocate_buffer(self);
+        result.append(&mut self.deployment.to_bytes()?);
+        result.append(&mut self.key_management.to_bytes()?);
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        2 * WEIGHT_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.deployment().write_bytes(writer)?;
+        self.key_management().write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for ActionThresholds {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (deployment, rem) = Weight::from_bytes(bytes)?;
+        let (key_management, rem) = Weight::from_bytes(rem)?;
+        let ret = ActionThresholds {
+            deployment,
+            key_management,
+        };
+        Ok((ret, rem))
+    }
+}
 #[doc(hidden)]
 #[cfg(any(feature = "gens", test))]
 pub mod gens {

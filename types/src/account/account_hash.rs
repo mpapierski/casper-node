@@ -15,7 +15,10 @@ use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::FromStrError;
-use crate::{checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH};
+use crate::{
+    bytesrepr::{Error, ToBytes, FromBytes},
+    checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH,
+};
 
 /// The length in bytes of a [`AccountHash`].
 pub const ACCOUNT_HASH_LENGTH: usize = 32;
@@ -96,6 +99,30 @@ impl AccountHash {
     }
 }
 
+impl ToBytes for AccountHash {
+    #[inline(always)]
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        self.0.to_bytes()
+    }
+
+    #[inline(always)]
+    fn serialized_length(&self) -> usize {
+        self.0.serialized_length()
+    }
+
+    #[inline(always)]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.0);
+        Ok(())
+    }
+}
+
+impl FromBytes for AccountHash {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (bytes, rem) = FromBytes::from_bytes(bytes)?;
+        Ok((AccountHash::new(bytes), rem))
+    }
+}
 #[cfg(feature = "json-schema")]
 impl JsonSchema for AccountHash {
     fn schema_name() -> String {

@@ -695,6 +695,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "base16",
+ "borsh",
  "casper-execution-engine",
  "casper-types",
  "clap 3.0.12",

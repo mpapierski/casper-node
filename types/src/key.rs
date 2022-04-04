@@ -610,6 +610,179 @@ impl From<ContractPackageHash> for Key {
     }
 }
 
+impl ToBytes for Key {
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut result = bytesrepr::unchecked_allocate_buffer(self);
+        result.push(self.tag());
+        match self {
+            Key::Account(account_hash) => {
+                result.append(&mut account_hash.to_bytes()?);
+            }
+            Key::Hash(hash) => {
+                result.append(&mut hash.to_bytes()?);
+            }
+            Key::URef(uref) => {
+                result.append(&mut uref.to_bytes()?);
+            }
+            Key::Transfer(addr) => {
+                result.append(&mut addr.to_bytes()?);
+            }
+            Key::DeployInfo(addr) => {
+                result.append(&mut addr.to_bytes()?);
+            }
+            Key::EraInfo(era_id) => {
+                result.append(&mut era_id.to_bytes()?);
+            }
+            Key::Balance(uref_addr) => {
+                result.append(&mut uref_addr.to_bytes()?);
+            }
+            Key::Bid(account_hash) => {
+                result.append(&mut account_hash.to_bytes()?);
+            }
+            Key::Withdraw(account_hash) => {
+                result.append(&mut account_hash.to_bytes()?);
+            }
+            Key::Unbond(account_hash) => {
+                result.append(&mut account_hash.to_bytes()?);
+            }
+            Key::Dictionary(addr) => {
+                result.append(&mut addr.to_bytes()?);
+            }
+            Key::SystemContractRegistry => {
+                result.append(&mut SYSTEM_CONTRACT_REGISTRY_KEY_BYTES.to_bytes()?)
+            }
+            Key::ChainspecRegistry => result.append(&mut CHAINSPEC_REGISTRY_KEY_BYTES.to_bytes()?),
+        }
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        match self {
+            Key::Account(account_hash) => {
+                KEY_ID_SERIALIZED_LENGTH + account_hash.serialized_length()
+            }
+            Key::Hash(_) => KEY_HASH_SERIALIZED_LENGTH,
+            Key::URef(_) => KEY_UREF_SERIALIZED_LENGTH,
+            Key::Transfer(_) => KEY_TRANSFER_SERIALIZED_LENGTH,
+            Key::DeployInfo(_) => KEY_DEPLOY_INFO_SERIALIZED_LENGTH,
+            Key::EraInfo(_) => KEY_ERA_INFO_SERIALIZED_LENGTH,
+            Key::Balance(_) => KEY_BALANCE_SERIALIZED_LENGTH,
+            Key::Bid(_) => KEY_BID_SERIALIZED_LENGTH,
+            Key::Withdraw(_) => KEY_WITHDRAW_SERIALIZED_LENGTH,
+            Key::Unbond(_) => KEY_UNBOND_SERIALIZED_LENGTH,
+            Key::Dictionary(_) => KEY_DICTIONARY_SERIALIZED_LENGTH,
+            Key::SystemContractRegistry => KEY_SYSTEM_CONTRACT_REGISTRY_SERIALIZED_LENGTH,
+            Key::ChainspecRegistry => KEY_CHAINSPEC_REGISTRY_SERIALIZED_LENGTH,
+        }
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.tag());
+        match self {
+            Key::Account(account_hash) => {
+                writer.extend_from_slice(account_hash.as_bytes());
+            }
+            Key::Hash(hash) => {
+                writer.extend_from_slice(hash);
+            }
+            Key::URef(uref) => {
+                writer.extend_from_slice(&uref.addr());
+                writer.push(uref.access_rights().bits());
+            }
+            Key::Transfer(addr) => {
+                writer.extend_from_slice(addr.as_bytes());
+            }
+            Key::DeployInfo(addr) => {
+                writer.extend_from_slice(addr.as_bytes());
+            }
+            Key::EraInfo(era_id) => {
+                writer.extend_from_slice(&era_id.to_le_bytes());
+            }
+            Key::Balance(uref_addr) => {
+                writer.extend_from_slice(uref_addr);
+            }
+            Key::Bid(account_hash) => {
+                writer.extend_from_slice(account_hash.as_bytes());
+            }
+            Key::Withdraw(account_hash) => {
+                writer.extend_from_slice(account_hash.as_bytes());
+            }
+            Key::Unbond(account_hash) => {
+                writer.extend_from_slice(account_hash.as_bytes());
+            }
+            Key::Dictionary(addr) => {
+                writer.extend_from_slice(addr);
+            }
+            Key::SystemContractRegistry => {
+                writer.extend_from_slice(&SYSTEM_CONTRACT_REGISTRY_KEY_BYTES);
+            }
+            Key::ChainspecRegistry => writer.extend_from_slice(&CHAINSPEC_REGISTRY_KEY_BYTES),
+        };
+        Ok(())
+    }
+}
+
+impl FromBytes for Key {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (tag, remainder) = u8::from_bytes(bytes)?;
+        match tag {
+            tag if tag == KeyTag::Account as u8 => {
+                let (account_hash, rem) = AccountHash::from_bytes(remainder)?;
+                Ok((Key::Account(account_hash), rem))
+            }
+            tag if tag == KeyTag::Hash as u8 => {
+                let (hash, rem) = FromBytes::from_bytes(remainder)?;
+                Ok((Key::Hash(hash), rem))
+            }
+            tag if tag == KeyTag::URef as u8 => {
+                let (uref, rem) = URef::from_bytes(remainder)?;
+                Ok((Key::URef(uref), rem))
+            }
+            tag if tag == KeyTag::Transfer as u8 => {
+                let (transfer_addr, rem) = TransferAddr::from_bytes(remainder)?;
+                Ok((Key::Transfer(transfer_addr), rem))
+            }
+            tag if tag == KeyTag::DeployInfo as u8 => {
+                let (deploy_hash, rem) = FromBytes::from_bytes(remainder)?;
+                Ok((Key::DeployInfo(deploy_hash), rem))
+            }
+            tag if tag == KeyTag::EraInfo as u8 => {
+                let (era_id, rem) = FromBytes::from_bytes(remainder)?;
+                Ok((Key::EraInfo(era_id), rem))
+            }
+            tag if tag == KeyTag::Balance as u8 => {
+                let (uref_addr, rem) = URefAddr::from_bytes(remainder)?;
+                Ok((Key::Balance(uref_addr), rem))
+            }
+            tag if tag == KeyTag::Bid as u8 => {
+                let (account_hash, rem) = AccountHash::from_bytes(remainder)?;
+                Ok((Key::Bid(account_hash), rem))
+            }
+            tag if tag == KeyTag::Withdraw as u8 => {
+                let (account_hash, rem) = AccountHash::from_bytes(remainder)?;
+                Ok((Key::Withdraw(account_hash), rem))
+            }
+            tag if tag == KeyTag::Unbond as u8 => {
+                let (account_hash, rem) = AccountHash::from_bytes(remainder)?;
+                Ok((Key::Unbond(account_hash), rem))
+            }
+            tag if tag == KeyTag::Dictionary as u8 => {
+                let (addr, rem) = DictionaryAddr::from_bytes(remainder)?;
+                Ok((Key::Dictionary(addr), rem))
+            }
+            tag if tag == KeyTag::SystemContractRegistry as u8 => {
+                let (_, rem): ([u8; 32], &[u8]) = FromBytes::from_bytes(remainder)?;
+                Ok((Key::SystemContractRegistry, rem))
+            }
+            tag if tag == KeyTag::ChainspecRegistry as u8 => {
+                let (_, rem): ([u8; 32], &[u8]) = FromBytes::from_bytes(remainder)?;
+                Ok((Key::ChainspecRegistry, rem))
+            }
+            _ => Err(Error::Formatting),
+        }
+    }
+}
+
 impl Distribution<Key> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> Key {
         match rng.gen_range(0..=10) {

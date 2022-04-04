@@ -12,7 +12,9 @@ use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::{bytesrepr, checksummed_hex, CLType, CLTyped};
+use crate::{bytesrepr::{self, FromBytes, ToBytes},
+    checksummed_hex, CLType, CLTyped,
+};
 
 mod jsonrepr;
 
@@ -135,6 +137,37 @@ impl CLValue {
     /// Returns a reference to the serialized form of the underlying value held in this `CLValue`.
     pub fn inner_bytes(&self) -> &Vec<u8> {
         &self.bytes
+    }
+}
+
+impl ToBytes for CLValue {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        self.clone().into_bytes()
+    }
+
+    fn into_bytes(self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = self.bytes.into_bytes()?;
+        self.cl_type.append_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.bytes.serialized_length() + self.cl_type.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        (&self.bytes).write_bytes(writer)?;
+        self.cl_type.append_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for CLValue {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (bytes, remainder) = FromBytes::from_bytes(bytes)?;
+        let (cl_type, remainder) = FromBytes::from_bytes(remainder)?;
+        let cl_value = CLValue { cl_type, bytes };
+        Ok((cl_value, remainder))
     }
 }
 

@@ -58,12 +58,13 @@ fn apply_global_state_update(
 ) -> BTreeMap<Key, StoredValue> {
     let key = URef::new([0u8; 32], AccessRights::all()).into();
 
-    let system_contract_hashes = builder
+    let stored_value = builder
         .query(Some(post_state_hash), key, &Vec::new())
-        .expect("Must have stored system contract hashes")
-        .as_cl_value()
-        .expect("must be CLValue")
-        .clone()
+        .expect("Must have stored system contract hashes");
+
+    let cl_system_contract_hashes = stored_value.as_cl_value().expect("must be CLValue").clone();
+
+    let system_contract_hashes = cl_system_contract_hashes
         .into_t::<SystemContractRegistry>()
         .expect("must convert to btree map");
 

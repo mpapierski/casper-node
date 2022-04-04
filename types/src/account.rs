@@ -27,7 +27,11 @@ pub use self::{
     error::{FromStrError, SetThresholdFailure, TryFromIntError, TryFromSliceForAccountHashError},
     weight::Weight,
 };
-use crate::{contracts::NamedKeys, crypto, AccessRights, URef, BLAKE2B_DIGEST_LENGTH};
+use crate::{
+    bytesrepr::{self, FromBytes, ToBytes},
+    contracts::NamedKeys,
+    crypto, AccessRights, URef, BLAKE2B_DIGEST_LENGTH,
+};
 
 /// Represents an Account in the global state.
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, BorshSerialize, BorshDeserialize)]
@@ -240,6 +244,55 @@ impl Account {
             .calculate_keys_weight(authorization_keys);
 
         total_weight >= *self.action_thresholds().key_management()
+    }
+}
+
+impl ToBytes for Account {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        self.account_hash().write_bytes(&mut result)?;
+        self.named_keys().write_bytes(&mut result)?;
+        self.main_purse.write_bytes(&mut result)?;
+        self.associated_keys().write_bytes(&mut result)?;
+        self.action_thresholds().write_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.account_hash.serialized_length()
+            + self.named_keys.serialized_length()
+            + self.main_purse.serialized_length()
+            + self.associated_keys.serialized_length()
+            + self.action_thresholds.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.account_hash().write_bytes(writer)?;
+        self.named_keys().write_bytes(writer)?;
+        self.main_purse().write_bytes(writer)?;
+        self.associated_keys().write_bytes(writer)?;
+        self.action_thresholds().write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for Account {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (account_hash, rem) = AccountHash::from_bytes(bytes)?;
+        let (named_keys, rem) = NamedKeys::from_bytes(rem)?;
+        let (main_purse, rem) = URef::from_bytes(rem)?;
+        let (associated_keys, rem) = AssociatedKeys::from_bytes(rem)?;
+        let (action_thresholds, rem) = ActionThresholds::from_bytes(rem)?;
+        Ok((
+            Account {
+                account_hash,
+                named_keys,
+                main_purse,
+                associated_keys,
+                action_thresholds,
+            },
+            rem,
+        ))
     }
 }
 

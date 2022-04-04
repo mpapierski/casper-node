@@ -242,6 +242,33 @@ impl Debug for URef {
     }
 }
 
+impl bytesrepr::ToBytes for URef {
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut result = bytesrepr::unchecked_allocate_buffer(self);
+        result.append(&mut self.0.to_bytes()?);
+        result.append(&mut self.1.to_bytes()?);
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        UREF_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), self::Error> {
+        writer.extend_from_slice(&self.0);
+        self.1.write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for URef {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (id, rem) = FromBytes::from_bytes(bytes)?;
+        let (access_rights, rem) = FromBytes::from_bytes(rem)?;
+        Ok((URef(id, access_rights), rem))
+    }
+}
+
 impl Serialize for URef {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         if serializer.is_human_readable() {

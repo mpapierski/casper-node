@@ -66,6 +66,28 @@ impl DeployHash {
     }
 }
 
+impl ToBytes for DeployHash {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        self.0.to_bytes()
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.0.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.0.write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for DeployHash {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        <[u8; DEPLOY_HASH_LENGTH]>::from_bytes(bytes)
+            .map(|(inner, remainder)| (DeployHash(inner), remainder))
+    }
+}
+
 #[cfg(feature = "json-schema")]
 impl JsonSchema for DeployHash {
     fn schema_name() -> String {

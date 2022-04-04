@@ -12,7 +12,10 @@ use datasize::DataSize;
 
 use serde::{Deserialize, Serialize};
 
-use crate::account::{AccountHash, AddKeyFailure, RemoveKeyFailure, UpdateKeyFailure, Weight};
+use crate::{
+    account::{AccountHash, AddKeyFailure, RemoveKeyFailure, UpdateKeyFailure, Weight},
+    bytesrepr::{self, Error, FromBytes, ToBytes},
+};
 
 /// A mapping that represents the association of a [`Weight`] with an [`AccountHash`].
 #[derive(
@@ -134,6 +137,37 @@ impl AssociatedKeys {
 impl From<BTreeMap<AccountHash, Weight>> for AssociatedKeys {
     fn from(associated_keys: BTreeMap<AccountHash, Weight>) -> Self {
         Self(associated_keys)
+    }
+}
+
+impl ToBytes for AssociatedKeys {
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        self.0.to_bytes()
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.0.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        let length_32: u32 = self
+            .0
+            .len()
+            .try_into()
+            .map_err(|_| Error::NotRepresentable)?;
+        writer.extend_from_slice(&length_32.to_le_bytes());
+        for (key, weight) in self.0.iter() {
+            key.write_bytes(writer)?;
+            weight.write_bytes(writer)?;
+        }
+        Ok(())
+    }
+}
+
+impl FromBytes for AssociatedKeys {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (associated_keys, rem) = FromBytes::from_bytes(bytes)?;
+        Ok((AssociatedKeys(associated_keys), rem))
     }
 }
 

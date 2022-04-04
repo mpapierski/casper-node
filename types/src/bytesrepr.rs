@@ -71,6 +71,7 @@ pub use bytes::Bytes;
 
 use crate::{CLType, CLTyped};
 
+
 /// The number of bytes in a serialized `()`.
 pub const UNIT_SERIALIZED_LENGTH: usize = 0;
 /// The number of bytes in a serialized `bool`.

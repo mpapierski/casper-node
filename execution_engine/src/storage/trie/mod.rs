@@ -14,7 +14,7 @@ use serde::{
 };
 
 use casper_hashing::{ChunkWithProof, Digest};
-use casper_types::bytesrepr::{self, Bytes, U8_SERIALIZED_LENGTH};
+use casper_types::bytesrepr::{self, Bytes, FromBytes, ToBytes, U8_SERIALIZED_LENGTH};
 use datasize::DataSize;
 
 #[cfg(test)]
@@ -414,6 +414,73 @@ pub(crate) fn hash_bytes_into_chunks_if_necessary(bytes: &[u8]) -> Digest {
     }
 }
 
+// impl<K, V> ToBytes for Trie<K, V>
+// where
+//     K: ToBytes,
+//     V: ToBytes,
+// {
+//     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+//         let mut ret = bytesrepr::allocate_buffer(self)?;
+//         self.write_bytes(&mut ret)?;
+//         Ok(ret)
+//     }
+
+//     fn serialized_length(&self) -> usize {
+//         U8_SERIALIZED_LENGTH
+//             + match self {
+//                 Trie::Leaf { key, value } => key.serialized_length() + value.serialized_length(),
+//                 Trie::Node { pointer_block } => pointer_block.serialized_length(),
+//                 Trie::Extension { affix, pointer } => {
+//                     affix.serialized_length() + pointer.serialized_length()
+//                 }
+//             }
+//     }
+
+//     fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+//         writer.push(self.tag());
+//         match self {
+//             Trie::Leaf { key, value } => {
+//                 key.write_bytes(writer)?;
+//                 value.write_bytes(writer)?;
+//             }
+//             Trie::Node { pointer_block } => pointer_block.write_bytes(writer)?,
+//             Trie::Extension { affix, pointer } => {
+//                 affix.write_bytes(writer)?;
+//                 pointer.write_bytes(writer)?;
+//             }
+//         }
+//         Ok(())
+//     }
+// }
+
+// impl<K: FromBytes, V: FromBytes> FromBytes for Trie<K, V> {
+//     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+//         let (tag, rem) = u8::from_bytes(bytes)?;
+//         match tag {
+//             0 => {
+//                 let (key, rem) = K::from_bytes(rem)?;
+//                 let (value, rem) = V::from_bytes(rem)?;
+//                 Ok((Trie::Leaf { key, value }, rem))
+//             }
+//             1 => {
+//                 let (pointer_block, rem) = PointerBlock::from_bytes(rem)?;
+//                 Ok((
+//                     Trie::Node {
+//                         pointer_block: Box::new(pointer_block),
+//                     },
+//                     rem,
+//                 ))
+//             }
+//             2 => {
+//                 let (affix, rem) = FromBytes::from_bytes(rem)?;
+//                 let (pointer, rem) = Pointer::from_bytes(rem)?;
+//                 Ok((Trie::Extension { affix, pointer }, rem))
+//             }
+//             _ => Err(bytesrepr::Error::Formatting),
+//         }
+//     }
+// }
+
 pub(crate) mod operations {
     use borsh::{maybestd::io, BorshSerialize};
 
@@ -429,5 +496,24 @@ pub(crate) mod operations {
         };
         let root_bytes: Vec<u8> = root.try_to_vec()?;
         Ok((Digest::hash(&root_bytes), root))
+    }
+}
+
+#[cfg(test)]
+mod serialization_tests {
+    use casper_types::{CLValue, Key, StoredValue};
+
+    use super::*;
+
+    #[test]
+    fn trie_borsh_roundtrip_1() {
+        let key = Key::Hash([42; 32]);
+
+        let clvalue: CLValue = CLValue::from_t(42u64).unwrap();
+        let value = StoredValue::CLValue(clvalue);
+        let trie = Trie::Leaf { key, value };
+
+        let as_borsh = trie.try_to_vec().unwrap();
+        let as_bytesrepr = trie.to_bytes().unwrap();
     }
 }
