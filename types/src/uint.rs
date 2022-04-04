@@ -3,12 +3,12 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use core::{
     fmt::{self, Formatter},
     iter::Sum,
     ops::Add,
 };
-
 use num_integer::Integer;
 use num_traits::{
     AsPrimitive, Bounded, CheckedMul, CheckedSub, Num, One, Unsigned, WrappingAdd, WrappingSub,
@@ -37,18 +37,17 @@ mod macro_code {
     #[cfg(feature = "datasize")]
     use datasize::DataSize;
     use uint::construct_uint;
-    use borsh::{BorshSerialize, BorshDeserialize};
 
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize))]
         pub struct U512(8);
     }
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize))]
         pub struct U256(4);
     }
     construct_uint! {
-        #[cfg_attr(feature = "datasize", derive(DataSize, BorshSerialize, BorshDeserialize))]
+        #[cfg_attr(feature = "datasize", derive(DataSize))]
         pub struct U128(2);
     }
 }
@@ -71,7 +70,7 @@ macro_rules! impl_traits_for_uint {
         impl Serialize for $type {
             fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
                 if serializer.is_human_readable() {
-                    return self.to_string().serialize(serializer);
+                    return Serialize::serialize(&self.to_string(), serializer);
                 }
 
                 let mut buffer = [0u8; $total_bytes];
@@ -154,7 +153,7 @@ macro_rules! impl_traits_for_uint {
                 ];
 
                 if deserializer.is_human_readable() {
-                    let decimal_string = String::deserialize(deserializer)?;
+                    let decimal_string = <String as Deserialize>::deserialize(deserializer)?;
                     return Self::from_dec_str(&decimal_string)
                         .map_err(|error| de::Error::custom(format!("{:?}", error)));
                 }
@@ -193,6 +192,53 @@ macro_rules! impl_traits_for_uint {
                     let (value, rem) = bytesrepr::safe_split_at(rem, num_bytes as usize)?;
                     let result = $type::from_little_endian(value);
                     Ok((result, rem))
+                }
+            }
+        }
+
+        impl BorshSerialize for $type {
+            fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+                let mut buf = [0u8; $total_bytes];
+                self.to_little_endian(&mut buf);
+                let mut non_zero_bytes: Vec<u8> =
+                    buf.iter().rev().skip_while(|b| **b == 0).cloned().collect();
+                let num_bytes = non_zero_bytes.len() as u8;
+                non_zero_bytes.push(num_bytes);
+                non_zero_bytes.reverse();
+                writer.write_all(&non_zero_bytes)?;
+                Ok(())
+            }
+        }
+
+        impl BorshDeserialize for $type {
+            fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
+                let num_bytes: u8 = BorshDeserialize::try_from_slice(buf)?;
+                if num_bytes > $total_bytes {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid length prefix",
+                    ))
+                } else {
+                    if num_bytes as usize > buf.len() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "early end of stream",
+                        ));
+                    } else {
+                        let mut arr = [u8::default(); $total_bytes];
+                        for n in 0..num_bytes as usize {
+                            arr[n] = u8::try_from_slice(buf)?;
+                        }
+                        let result = $type::from_little_endian(&arr[0..num_bytes as usize]);
+                        Ok(result)
+
+                        // let result = $type::from_little_endian(&buf[..num_bytes as usize]);
+                        // buf = buf[num_bytes as usize..];
+                        // Ok(result)
+                    }
+                    // let (value, rem) = bytesrepr::safe_split_at(rem, num_bytes as usize)?;
+                    // let result = $type::from_little_endian(value);
+                    // Ok((result, rem))
                 }
             }
         }

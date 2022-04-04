@@ -1,5 +1,5 @@
 use alloc::vec::Vec;
-use borsh::{BorshSerialize, BorshDeserialize, maybestd::io};
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 use core::fmt::{self, Display, Formatter};
 
 use bitflags::bitflags;
@@ -40,16 +40,18 @@ bitflags! {
 }
 
 impl BorshSerialize for AccessRights {
-    fn serialize<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[self.bits])
     }
 }
 
-
 impl BorshDeserialize for AccessRights {
     fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
         let bits = u8::try_from_slice(buf)?;
-        AccessRights::from_bits(bits).ok_or(io::Error::new(io::ErrorKind::InvalidInput, "Invalid access right bits"))
+        AccessRights::from_bits(bits).ok_or(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Invalid access right bits",
+        ))
     }
 }
 

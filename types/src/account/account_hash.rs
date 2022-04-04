@@ -1,5 +1,5 @@
 use alloc::{string::String, vec::Vec};
-use borsh::{BorshSerialize, BorshDeserialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     convert::{From, TryFrom},
     fmt::{Debug, Display, Formatter},
@@ -15,9 +15,7 @@ use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 
 use super::FromStrError;
-use crate::{
-    checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH,
-};
+use crate::{checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH};
 
 /// The length in bytes of a [`AccountHash`].
 pub const ACCOUNT_HASH_LENGTH: usize = 32;
@@ -27,7 +25,9 @@ pub const ACCOUNT_HASH_FORMATTED_STRING_PREFIX: &str = "account-hash-";
 
 /// A newtype wrapping an array which contains the raw bytes of
 /// the AccountHash, a hash of Public Key and Algorithm
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct AccountHash(pub [u8; ACCOUNT_HASH_LENGTH]);
 
@@ -123,7 +123,7 @@ impl Serialize for AccountHash {
 impl<'de> Deserialize<'de> for AccountHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             AccountHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
             let bytes = <[u8; 32] as Deserialize>::deserialize(deserializer)?;

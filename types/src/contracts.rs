@@ -460,7 +460,7 @@ impl Serialize for ContractHash {
 impl<'de> Deserialize<'de> for ContractHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             ContractHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
             let bytes = <[u8; 32] as Deserialize>::deserialize(deserializer)?;
@@ -610,7 +610,7 @@ impl Serialize for ContractPackageHash {
 impl<'de> Deserialize<'de> for ContractPackageHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             ContractPackageHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
             let bytes = <HashAddr as Deserialize>::deserialize(deserializer)?;

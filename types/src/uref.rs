@@ -2,7 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::{format, string::String, vec::Vec};
-use borsh::{BorshSerialize, BorshDeserialize};
+use borsh::{BorshDeserialize, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -93,7 +93,9 @@ impl Display for FromStrError {
 /// the [`AccessRights`] of the reference.
 ///
 /// A `URef` can be used to index entities such as [`CLValue`](crate::CLValue)s, or smart contracts.
-#[derive(Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default, BorshSerialize, BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct URef(URefAddr, AccessRights);
 
@@ -253,10 +255,11 @@ impl Serialize for URef {
 impl<'de> Deserialize<'de> for URef {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             URef::from_formatted_str(&formatted_string).map_err(D::Error::custom)
         } else {
-            let (address, access_rights) = <([u8; 32], AccessRights) as Deserialize>::deserialize(deserializer)?;
+            let (address, access_rights) =
+                <([u8; 32], AccessRights) as Deserialize>::deserialize(deserializer)?;
             Ok(URef(address, access_rights))
         }
     }

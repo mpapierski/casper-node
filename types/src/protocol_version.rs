@@ -14,7 +14,19 @@ use crate::{
 };
 
 /// A newtype wrapping a [`SemVer`] which represents a Casper Platform protocol version.
-#[derive(Copy, Clone, Debug, Default, Hash, PartialEq, Eq, PartialOrd, Ord, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Copy,
+    Clone,
+    Debug,
+    Default,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ProtocolVersion(SemVer);
 
@@ -168,7 +180,7 @@ impl Serialize for ProtocolVersion {
 impl<'de> Deserialize<'de> for ProtocolVersion {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let semver = if deserializer.is_human_readable() {
-            let value_as_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let value_as_string = <String as Deserialize>::deserialize(deserializer)?;
             SemVer::try_from(value_as_string.as_str()).map_err(SerdeError::custom)?
         } else {
             <SemVer as Deserialize>::deserialize(deserializer)?

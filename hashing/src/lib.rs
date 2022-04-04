@@ -353,7 +353,7 @@ impl Serialize for Digest {
 impl<'de> Deserialize<'de> for Digest {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let hex_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let hex_string = <String as Deserialize>::deserialize(deserializer)?;
             let bytes =
                 checksummed_hex::decode(hex_string.as_bytes()).map_err(SerdeError::custom)?;
             let data =

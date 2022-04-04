@@ -191,7 +191,7 @@ impl<'de> Deserialize<'de> for CLValue {
                 checksummed_hex::decode(&json.bytes).map_err(D::Error::custom)?,
             )
         } else {
-            <(CLType, std::vec::Vec<u8>) as Deserialize>::deserialize(deserializer)?
+            <(CLType, Vec<u8>) as Deserialize>::deserialize(deserializer)?
         };
         Ok(CLValue {
             cl_type,

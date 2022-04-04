@@ -184,7 +184,7 @@ impl Serialize for ContractWasmHash {
 impl<'de> Deserialize<'de> for ContractWasmHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             ContractWasmHash::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
             let bytes = <HashAddr as Deserialize>::deserialize(deserializer)?;

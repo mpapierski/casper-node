@@ -93,7 +93,7 @@ impl Serialize for DeployHash {
 impl<'de> Deserialize<'de> for DeployHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = if deserializer.is_human_readable() {
-            let hex_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let hex_string = <String as Deserialize>::deserialize(deserializer)?;
             let vec_bytes =
                 checksummed_hex::decode(hex_string.as_bytes()).map_err(SerdeError::custom)?;
             <[u8; DEPLOY_HASH_LENGTH]>::try_from(vec_bytes.as_ref()).map_err(SerdeError::custom)?
@@ -279,7 +279,7 @@ impl Serialize for TransferAddr {
 impl<'de> Deserialize<'de> for TransferAddr {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         if deserializer.is_human_readable() {
-            let formatted_string = <std::string::String as Deserialize>::deserialize(deserializer)?;
+            let formatted_string = <String as Deserialize>::deserialize(deserializer)?;
             TransferAddr::from_formatted_str(&formatted_string).map_err(SerdeError::custom)
         } else {
             let bytes = <[u8; 32] as Deserialize>::deserialize(deserializer)?;
