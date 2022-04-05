@@ -1,3 +1,4 @@
+mod capnp;
 mod check_transfer_success;
 mod contract_api;
 mod contract_context;
@@ -16,4 +17,3 @@ mod system_contracts;
 mod system_costs;
 mod upgrade;
 mod wasmless_transfer;
-mod capnp;

@@ -9,11 +9,15 @@ use alloc::{
     vec::Vec,
 };
 
-use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
-use casper_contract::{contract_api::{runtime, storage}, unwrap_or_revert::UnwrapOrRevert};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
+use casper_contract::{
+    contract_api::{runtime, storage},
+    unwrap_or_revert::UnwrapOrRevert,
+};
 use casper_types::{
+    bytesrepr::{self, Bytes, ToBytes},
     contracts::{EntryPoint, EntryPoints, NamedKeys},
-    CLType, CLTyped, EntryPointAccess, EntryPointType, Parameter, bytesrepr::{Bytes, ToBytes, self},
+    CLType, CLTyped, EntryPointAccess, EntryPointType, Parameter,
 };
 
 pub mod addressbook_capnp {
@@ -44,7 +48,6 @@ impl ToBytes for Type {
         };
 
         tag.to_bytes()
-
     }
 
     fn serialized_length(&self) -> usize {
@@ -79,16 +82,23 @@ enum Employment {
     Employed,
 }
 
-
 impl ToBytes for Employment {
     fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
         let mut vec = bytesrepr::allocate_buffer(self)?;
 
         match self {
             Employment::Unemployed => vec.extend(0u8.to_bytes()?),
-            Employment::Employer(s) => { vec.extend(1u8.to_bytes()?); vec.extend(s.to_bytes()?); },
-            Employment::School(s) => { vec.extend(2u8.to_bytes()?); vec.extend(s.to_bytes()?); },
-            Employment::Employed => { vec.extend(3u8.to_bytes()?); },
+            Employment::Employer(s) => {
+                vec.extend(1u8.to_bytes()?);
+                vec.extend(s.to_bytes()?);
+            }
+            Employment::School(s) => {
+                vec.extend(2u8.to_bytes()?);
+                vec.extend(s.to_bytes()?);
+            }
+            Employment::Employed => {
+                vec.extend(3u8.to_bytes()?);
+            }
         }
 
         Ok(vec)
@@ -127,11 +137,11 @@ impl ToBytes for Person {
     }
 
     fn serialized_length(&self) -> usize {
-        self.id.serialized_length() +
-        self.name.serialized_length() +
-        self.email.serialized_length() +
-        self.phones.serialized_length() +
-        self.employment.serialized_length()
+        self.id.serialized_length()
+            + self.name.serialized_length()
+            + self.email.serialized_length()
+            + self.phones.serialized_length()
+            + self.employment.serialized_length()
     }
 }
 
@@ -139,7 +149,6 @@ impl ToBytes for Person {
 struct AddressBook {
     people: Vec<Person>,
 }
-
 
 impl ToBytes for AddressBook {
     fn to_bytes(&self) -> Result<Vec<u8>, casper_types::bytesrepr::Error> {
@@ -150,7 +159,6 @@ impl ToBytes for AddressBook {
         self.people.serialized_length()
     }
 }
-
 
 use addressbook_capnp::{address_book, person};
 use capnp::serialize_packed;
@@ -240,25 +248,33 @@ fn make_address_book() -> AddressBook {
 
 #[no_mangle]
 pub extern "C" fn write_capnp() {
-    let uref = runtime::get_key("storage").unwrap_or_revert().into_uref().unwrap_or_revert();
+    let uref = runtime::get_key("storage")
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert();
     let data = write_address_book().ok().unwrap_or_revert();
     storage::write(uref, Bytes::from(data));
 }
 
 #[no_mangle]
 pub extern "C" fn write_borsh() {
-    let uref = runtime::get_key("storage").unwrap_or_revert().into_uref().unwrap_or_revert();
+    let uref = runtime::get_key("storage")
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert();
     let address_book = make_address_book();
     let data = address_book.try_to_vec().ok().unwrap_or_revert();
     storage::write(uref, Bytes::from(data));
 }
 
-
 #[no_mangle]
 pub extern "C" fn write_tobytes() {
-    let uref = runtime::get_key("storage").unwrap_or_revert().into_uref().unwrap_or_revert();
+    let uref = runtime::get_key("storage")
+        .unwrap_or_revert()
+        .into_uref()
+        .unwrap_or_revert();
     let address_book = make_address_book();
-    let data = address_book.try_to_vec().ok().unwrap_or_revert();
+    let data = address_book.to_bytes().ok().unwrap_or_revert();
     storage::write(uref, Bytes::from(data));
 }
 

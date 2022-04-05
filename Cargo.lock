@@ -3930,6 +3930,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "serialization-simple-stored"
+version = "0.1.0"
+dependencies = [
+ "borsh",
+ "capnp",
+ "capnpc",
+ "casper-contract",
+ "casper-types",
+]
+
+[[package]]
 name = "serialization-stored"
 version = "0.1.0"
 dependencies = [
