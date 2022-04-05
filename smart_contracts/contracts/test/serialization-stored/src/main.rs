@@ -9,7 +9,9 @@ use alloc::{
     vec::Vec,
 };
 
+#[cfg(feature = "use_borsh")]
 use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
+
 use casper_contract::{
     contract_api::{runtime, storage},
     unwrap_or_revert::UnwrapOrRevert,
@@ -20,6 +22,7 @@ use casper_types::{
     CLType, CLTyped, EntryPointAccess, EntryPointType, Parameter,
 };
 
+#[cfg(feature = "use_capnp")]
 pub mod addressbook_capnp {
     include!(concat!(env!("OUT_DIR"), "/addressbook_capnp.rs"));
 }
@@ -31,7 +34,10 @@ const ACCESS_KEY_NAME: &str = "do_nothing_access";
 const CONTRACT_VERSION: &str = "contract_version";
 const ARG_PURSE_NAME: &str = "purse_name";
 
-#[derive(BorshSerialize, BorshDeserialize, BorshSchema)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 #[repr(u32)]
 enum Type {
     Mobile,
@@ -55,7 +61,10 @@ impl ToBytes for Type {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, BorshSchema)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 struct PhoneNumber {
     number: String,
     r#type: Type,
@@ -74,7 +83,10 @@ impl ToBytes for PhoneNumber {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, BorshSchema)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 enum Employment {
     Unemployed,
     Employer(String),
@@ -114,7 +126,10 @@ impl ToBytes for Employment {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, BorshSchema)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 struct Person {
     id: u32,
     name: String,
@@ -145,7 +160,10 @@ impl ToBytes for Person {
     }
 }
 
-#[derive(BorshSerialize, BorshDeserialize, BorshSchema)]
+#[cfg_attr(
+    feature = "borsh",
+    derive(BorshSerialize, BorshDeserialize, BorshSchema)
+)]
 struct AddressBook {
     people: Vec<Person>,
 }
@@ -160,9 +178,11 @@ impl ToBytes for AddressBook {
     }
 }
 
+#[cfg(feature = "use_capnp")]
 use addressbook_capnp::{address_book, person};
+#[cfg(feature = "use_capnp")]
 use capnp::serialize_packed;
-
+#[cfg(feature = "use_capnp")]
 pub fn write_address_book() -> ::capnp::Result<Vec<u8>> {
     let mut message = ::capnp::message::Builder::new_default();
     {
@@ -246,6 +266,7 @@ fn make_address_book() -> AddressBook {
     }
 }
 
+#[cfg(feature = "use_capnp")]
 #[no_mangle]
 pub extern "C" fn write_capnp() {
     let uref = runtime::get_key("storage")
@@ -255,7 +276,7 @@ pub extern "C" fn write_capnp() {
     let data = write_address_book().ok().unwrap_or_revert();
     storage::write(uref, Bytes::from(data));
 }
-
+#[cfg(feature = "use_borsh")]
 #[no_mangle]
 pub extern "C" fn write_borsh() {
     let uref = runtime::get_key("storage")
@@ -282,22 +303,31 @@ pub extern "C" fn write_tobytes() {
 pub extern "C" fn call() {
     let entry_points = {
         let mut entry_points = EntryPoints::new();
-        let entry_point = EntryPoint::new(
-            ENTRY_FUNCTION_NAME.to_string(),
-            Vec::new(),
-            CLType::Unit,
-            EntryPointAccess::Public,
-            EntryPointType::Contract,
-        );
-        entry_points.add_entry_point(entry_point);
-        let entry_point = EntryPoint::new(
-            "write_borsh",
-            Vec::new(),
-            CLType::Unit,
-            EntryPointAccess::Public,
-            EntryPointType::Contract,
-        );
-        entry_points.add_entry_point(entry_point);
+
+        #[cfg(feature = "use_capnp")]
+        {
+            let entry_point = EntryPoint::new(
+                ENTRY_FUNCTION_NAME.to_string(),
+                Vec::new(),
+                CLType::Unit,
+                EntryPointAccess::Public,
+                EntryPointType::Contract,
+            );
+            entry_points.add_entry_point(entry_point);
+        }
+
+        #[cfg(feature = "use_borsh")]
+        {
+            let entry_point = EntryPoint::new(
+                "write_borsh",
+                Vec::new(),
+                CLType::Unit,
+                EntryPointAccess::Public,
+                EntryPointType::Contract,
+            );
+            entry_points.add_entry_point(entry_point);
+        }
+
         let entry_point = EntryPoint::new(
             "write_tobytes",
             Vec::new(),

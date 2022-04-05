@@ -1,6 +1,6 @@
 //! Contains definitions for panic and allocation error handlers.
 
-// /// A panic handler for use in a `no_std` environment which simply aborts the process.
+/// A panic handler for use in a `no_std` environment which simply aborts the process.
 // #[panic_handler]
 // #[no_mangle]
 // pub fn panic(_info: &core::panic::PanicInfo) -> ! {

@@ -8,7 +8,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-
+#[cfg(feature = "use_borsh")]
 use borsh::{maybestd::io, BorshDeserialize, BorshSchema, BorshSerialize};
 use casper_contract::{
     contract_api::{runtime, storage},
@@ -20,6 +20,7 @@ use casper_types::{
     CLType, CLTyped, EntryPointAccess, EntryPointType, Parameter, U512,
 };
 
+#[cfg(feature = "use_capnp")]
 pub mod u512_capnp {
     include!(concat!(env!("OUT_DIR"), "/u512_capnp.rs"));
 }
@@ -33,9 +34,11 @@ const ARG_PURSE_NAME: &str = "purse_name";
 
 const RANDOM_U512: U512 = U512([20, 67, 64, 96, 209, 102, 99, 158]);
 
+#[cfg(feature = "use_borsh")]
 // #[derive(BorshDeserialize)]
 struct BorshU512<'a>(&'a U512);
 
+#[cfg(feature = "use_borsh")]
 impl<'a> BorshSerialize for BorshU512<'a> {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         // let U512(array) = self.0;
@@ -52,10 +55,11 @@ impl<'a> BorshSerialize for BorshU512<'a> {
         Ok(())
     }
 }
-
+#[cfg(feature = "use_capnp")]
 use capnp::serialize_packed;
+#[cfg(feature = "use_capnp")]
 use u512_capnp::u512;
-
+#[cfg(feature = "use_capnp")]
 pub fn write_u512_capnp(number: U512) -> ::capnp::Result<Vec<u8>> {
     let mut message = ::capnp::message::Builder::new_default();
     {
@@ -77,7 +81,7 @@ pub fn write_u512_capnp(number: U512) -> ::capnp::Result<Vec<u8>> {
     serialize_packed::write_message(&mut vec, &message)?;
     Ok(vec)
 }
-
+#[cfg(feature = "use_capnp")]
 #[no_mangle]
 pub extern "C" fn write_capnp() {
     let uref = runtime::get_key("storage")
@@ -87,7 +91,7 @@ pub extern "C" fn write_capnp() {
     let data = write_u512_capnp(RANDOM_U512).ok().unwrap_or_revert();
     storage::write(uref, Bytes::from(data));
 }
-
+#[cfg(feature = "use_borsh")]
 #[no_mangle]
 pub extern "C" fn write_borsh() {
     let uref = runtime::get_key("storage")
@@ -114,22 +118,28 @@ pub extern "C" fn write_tobytes() {
 pub extern "C" fn call() {
     let entry_points = {
         let mut entry_points = EntryPoints::new();
-        let entry_point = EntryPoint::new(
-            ENTRY_FUNCTION_NAME.to_string(),
-            Vec::new(),
-            CLType::Unit,
-            EntryPointAccess::Public,
-            EntryPointType::Contract,
-        );
-        entry_points.add_entry_point(entry_point);
-        let entry_point = EntryPoint::new(
-            "write_borsh",
-            Vec::new(),
-            CLType::Unit,
-            EntryPointAccess::Public,
-            EntryPointType::Contract,
-        );
-        entry_points.add_entry_point(entry_point);
+        #[cfg(feature = "use_capnp")]
+        {
+            let entry_point = EntryPoint::new(
+                ENTRY_FUNCTION_NAME.to_string(),
+                Vec::new(),
+                CLType::Unit,
+                EntryPointAccess::Public,
+                EntryPointType::Contract,
+            );
+            entry_points.add_entry_point(entry_point);
+        }
+        #[cfg(feature = "use_borsh")]
+        {
+            let entry_point = EntryPoint::new(
+                "write_borsh",
+                Vec::new(),
+                CLType::Unit,
+                EntryPointAccess::Public,
+                EntryPointType::Contract,
+            );
+            entry_points.add_entry_point(entry_point);
+        }
         let entry_point = EntryPoint::new(
             "write_tobytes",
             Vec::new(),

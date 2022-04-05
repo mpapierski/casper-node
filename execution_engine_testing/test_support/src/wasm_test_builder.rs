@@ -58,8 +58,8 @@ use casper_types::{
         AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
     CLTyped, CLValue, Contract, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
-    DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, PublicKey, RuntimeArgs, StoredValue, Transfer,
-    TransferAddr, URef, U512,
+    ContractWasmHash, DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, PublicKey, RuntimeArgs,
+    StoredValue, Transfer, TransferAddr, URef, U512,
 };
 
 use crate::{
@@ -875,10 +875,10 @@ where
         }
     }
 
-    /// Queries for a contract by `ContractHash` and returns an `Option<ContractWasm>`.
-    pub fn get_contract_wasm(&self, contract_hash: ContractHash) -> Option<ContractWasm> {
+    /// Queries for a contract by `ContractWasmHash` and returns an `Option<ContractWasm>`.
+    pub fn get_contract_wasm(&self, contract_wasm_hash: ContractWasmHash) -> Option<ContractWasm> {
         let contract_value: StoredValue = self
-            .query(None, contract_hash.into(), &[])
+            .query(None, contract_wasm_hash.into(), &[])
             .expect("should have contract value");
 
         if let StoredValue::ContractWasm(contract_wasm) = contract_value {

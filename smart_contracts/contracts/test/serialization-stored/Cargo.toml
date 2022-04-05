@@ -15,8 +15,14 @@ test = false
 [dependencies]
 casper-contract = { path = "../../../contract" }
 casper-types = { path = "../../../../types" }
-capnp = { version = "0.14" }#efault-features = false }
-borsh = { version = "0.9.3" }#//, default-features = false }
+capnp = { version = "0.14", optional=true }#efault-features = false }
+borsh = { version = "0.9.3", optional=true }#//, default-features = false }
 
 [build-dependencies]
-capnpc = "0.14"
+capnpc = { version = "0.14" }
+
+[features]
+# You have to change these default features and run `build-contracts-rs`
+default = []
+use_capnp = ["capnp"]
+use_borsh = ["borsh"]

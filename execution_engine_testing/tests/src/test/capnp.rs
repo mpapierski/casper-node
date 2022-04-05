@@ -54,8 +54,23 @@ fn addressbook_measure_capnp() {
 
     builder.exec(exec_request_2).expect_success().commit();
 
+    let contract_hash = account.named_keys()["do_nothing_hash"]
+        .into_hash()
+        .map(ContractHash::new)
+        .unwrap();
+    let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
+
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
 
 #[ignore]
@@ -81,7 +96,6 @@ fn addressbook_measure_borsh() {
     let proposer_balance_before = builder.get_proposer_purse_balance();
 
     let account_balance_before = builder.get_purse_balance(account.main_purse());
-
     let exec_request_2 = ExecuteRequestBuilder::contract_call_by_name(
         *DEFAULT_ACCOUNT_ADDR,
         "do_nothing_hash",
@@ -92,8 +106,24 @@ fn addressbook_measure_borsh() {
 
     builder.exec(exec_request_2).expect_success().commit();
 
+    let contract_hash = account.named_keys()["do_nothing_hash"]
+        .into_hash()
+        .map(ContractHash::new)
+        .unwrap();
+
+    let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
+
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
 
 #[ignore]
@@ -130,8 +160,24 @@ fn addressbook_measure_tobytes() {
 
     builder.exec(exec_request_2).expect_success().commit();
 
+    let contract_hash = account.named_keys()["do_nothing_hash"]
+        .into_hash()
+        .map(ContractHash::new)
+        .unwrap();
+
+    let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
+
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
 
 #[ignore]
@@ -168,8 +214,24 @@ fn u512_measure_capnp() {
 
     builder.exec(exec_request_2).expect_success().commit();
 
+    let contract_hash = account.named_keys()["do_nothing_hash"]
+        .into_hash()
+        .map(ContractHash::new)
+        .unwrap();
+
+    let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
+
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
 
 #[ignore]
@@ -210,12 +272,20 @@ fn u512_measure_borsh() {
         .into_hash()
         .map(ContractHash::new)
         .unwrap();
+
     let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
-    let value: U512 = bytesrepr::deserialize(value_bytes.into()).unwrap();
-    assert_eq!(value, EXPECTED_U512);
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
 
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
 
 #[ignore]
@@ -251,15 +321,21 @@ fn u512_measure_tobytes() {
     .build();
 
     builder.exec(exec_request_2).expect_success().commit();
-
     let contract_hash = account.named_keys()["do_nothing_hash"]
         .into_hash()
         .map(ContractHash::new)
         .unwrap();
     let value_bytes = builder.get_value::<Bytes>(contract_hash, "storage");
-    let value: U512 = bytesrepr::deserialize(value_bytes.into()).unwrap();
-    assert_eq!(value, EXPECTED_U512);
+
+    let contract = builder.get_contract(contract_hash).unwrap();
+    let contract_wasm = builder
+        .get_contract_wasm(contract.contract_wasm_hash())
+        .unwrap();
 
     let gas = builder.last_exec_gas_cost();
-    assert_eq!(gas, Gas::zero());
+    assert_eq!(
+        (value_bytes.len(), contract_wasm.bytes().len(), gas),
+        (0usize, 0usize, Gas::zero()),
+        "datalen, wasm, gas"
+    );
 }
