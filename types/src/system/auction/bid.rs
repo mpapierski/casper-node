@@ -286,6 +286,65 @@ impl CLTyped for Bid {
     }
 }
 
+impl ToBytes for Bid {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        (&self.validator_public_key).write_bytes(&mut result)?;
+        (&self.bonding_purse).write_bytes(&mut result)?;
+        self.staked_amount.write_bytes(&mut result)?;
+        self.delegation_rate.write_bytes(&mut result)?;
+        self.vesting_schedule.write_bytes(&mut result)?;
+        self.delegators().write_bytes(&mut result)?;
+        self.inactive.write_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.validator_public_key.serialized_length()
+            + self.bonding_purse.serialized_length()
+            + self.staked_amount.serialized_length()
+            + self.delegation_rate.serialized_length()
+            + self.vesting_schedule.serialized_length()
+            + self.delegators.serialized_length()
+            + self.inactive.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        (&self.validator_public_key).write_bytes(writer)?;
+        (&self.bonding_purse).write_bytes(writer)?;
+        self.staked_amount.write_bytes(writer)?;
+        self.delegation_rate.write_bytes(writer)?;
+        self.vesting_schedule.write_bytes(writer)?;
+        self.delegators().write_bytes(writer)?;
+        self.inactive.write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for Bid {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (validator_public_key, bytes) = FromBytes::from_bytes(bytes)?;
+        let (bonding_purse, bytes) = FromBytes::from_bytes(bytes)?;
+        let (staked_amount, bytes) = FromBytes::from_bytes(bytes)?;
+        let (delegation_rate, bytes) = FromBytes::from_bytes(bytes)?;
+        let (vesting_schedule, bytes) = FromBytes::from_bytes(bytes)?;
+        let (delegators, bytes) = FromBytes::from_bytes(bytes)?;
+        let (inactive, bytes) = FromBytes::from_bytes(bytes)?;
+        Ok((
+            Bid {
+                validator_public_key,
+                bonding_purse,
+                staked_amount,
+                delegation_rate,
+                vesting_schedule,
+                delegators,
+                inactive,
+            },
+            bytes,
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use alloc::collections::BTreeMap;

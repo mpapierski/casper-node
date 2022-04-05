@@ -87,6 +87,46 @@ impl WithdrawPurse {
     }
 }
 
+impl ToBytes for WithdrawPurse {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        result.extend(&self.bonding_purse.to_bytes()?);
+        result.extend(&self.validator_public_key.to_bytes()?);
+        result.extend(&self.unbonder_public_key.to_bytes()?);
+        result.extend(&self.era_of_creation.to_bytes()?);
+        result.extend(&self.amount.to_bytes()?);
+
+        Ok(result)
+    }
+    fn serialized_length(&self) -> usize {
+        self.bonding_purse.serialized_length()
+            + self.validator_public_key.serialized_length()
+            + self.unbonder_public_key.serialized_length()
+            + self.era_of_creation.serialized_length()
+            + self.amount.serialized_length()
+    }
+}
+
+impl FromBytes for WithdrawPurse {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (bonding_purse, remainder) = FromBytes::from_bytes(bytes)?;
+        let (validator_public_key, remainder) = FromBytes::from_bytes(remainder)?;
+        let (unbonder_public_key, remainder) = FromBytes::from_bytes(remainder)?;
+        let (era_of_creation, remainder) = FromBytes::from_bytes(remainder)?;
+        let (amount, remainder) = FromBytes::from_bytes(remainder)?;
+
+        Ok((
+            WithdrawPurse {
+                bonding_purse,
+                validator_public_key,
+                unbonder_public_key,
+                era_of_creation,
+                amount,
+            },
+            remainder,
+        ))
+    }
+}
 impl CLTyped for WithdrawPurse {
     fn cl_type() -> CLType {
         CLType::Any

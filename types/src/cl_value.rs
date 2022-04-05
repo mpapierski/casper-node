@@ -12,7 +12,8 @@ use schemars::{gen::SchemaGenerator, schema::Schema, JsonSchema};
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value;
 
-use crate::{bytesrepr::{self, FromBytes, ToBytes},
+use crate::{
+    bytesrepr::{self, Bytes, FromBytes, ToBytes},
     checksummed_hex, CLType, CLTyped,
 };
 
@@ -78,7 +79,7 @@ impl Display for CLValueError {
 #[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct CLValue {
-    bytes: Vec<u8>,
+    bytes: Bytes,
     cl_type: CLType,
 }
 
@@ -88,7 +89,7 @@ impl CLValue {
         let bytes = borsh::to_vec(&t)?;
 
         Ok(CLValue {
-            bytes,
+            bytes: Bytes::from(bytes),
             cl_type: T::cl_type(),
         })
     }
@@ -126,7 +127,7 @@ impl CLValue {
     // conversion to the Protobuf `CLValue`) in a separate module to this one.
     #[doc(hidden)]
     pub fn destructure(self) -> (CLType, Vec<u8>) {
-        (self.cl_type, self.bytes)
+        (self.cl_type, self.bytes.into())
     }
 
     /// The [`CLType`] of the underlying data.
@@ -136,7 +137,7 @@ impl CLValue {
 
     /// Returns a reference to the serialized form of the underlying value held in this `CLValue`.
     pub fn inner_bytes(&self) -> &Vec<u8> {
-        &self.bytes
+        self.bytes.inner_bytes()
     }
 }
 

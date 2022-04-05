@@ -117,6 +117,74 @@ impl VestingSchedule {
     }
 }
 
+impl ToBytes for [U512; LOCKED_AMOUNTS_LENGTH] {
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        for item in self.iter() {
+            result.append(&mut item.to_bytes()?);
+        }
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.iter().map(ToBytes::serialized_length).sum::<usize>()
+    }
+}
+
+impl FromBytes for [U512; LOCKED_AMOUNTS_LENGTH] {
+    fn from_bytes(mut bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let mut result: MaybeUninit<[U512; LOCKED_AMOUNTS_LENGTH]> = MaybeUninit::uninit();
+        let result_ptr = result.as_mut_ptr() as *mut U512;
+        for i in 0..LOCKED_AMOUNTS_LENGTH {
+            let (t, remainder) = match FromBytes::from_bytes(bytes) {
+                Ok(success) => success,
+                Err(error) => {
+                    for j in 0..i {
+                        unsafe { result_ptr.add(j).drop_in_place() }
+                    }
+                    return Err(error);
+                }
+            };
+            unsafe { result_ptr.add(i).write(t) };
+            bytes = remainder;
+        }
+        Ok((unsafe { result.assume_init() }, bytes))
+    }
+}
+
+impl ToBytes for VestingSchedule {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        result.append(&mut self.initial_release_timestamp_millis.to_bytes()?);
+        result.append(&mut self.locked_amounts.to_bytes()?);
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.initial_release_timestamp_millis.serialized_length()
+            + self.locked_amounts.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        (&self.initial_release_timestamp_millis).write_bytes(writer)?;
+        self.locked_amounts().write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for VestingSchedule {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (initial_release_timestamp_millis, bytes) = FromBytes::from_bytes(bytes)?;
+        let (locked_amounts, bytes) = FromBytes::from_bytes(bytes)?;
+        Ok((
+            VestingSchedule {
+                initial_release_timestamp_millis,
+                locked_amounts,
+            },
+            bytes,
+        ))
+    }
+}
 /// Generators for [`VestingSchedule`]
 #[cfg(test)]
 mod gens {

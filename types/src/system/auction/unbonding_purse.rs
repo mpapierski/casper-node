@@ -98,6 +98,59 @@ impl UnbondingPurse {
     }
 }
 
+impl ToBytes for UnbondingPurse {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        result.extend(&self.bonding_purse.to_bytes()?);
+        result.extend(&self.validator_public_key.to_bytes()?);
+        result.extend(&self.unbonder_public_key.to_bytes()?);
+        result.extend(&self.era_of_creation.to_bytes()?);
+        result.extend(&self.amount.to_bytes()?);
+        result.extend(&self.new_validator.to_bytes()?);
+        Ok(result)
+    }
+    fn serialized_length(&self) -> usize {
+        self.bonding_purse.serialized_length()
+            + self.validator_public_key.serialized_length()
+            + self.unbonder_public_key.serialized_length()
+            + self.era_of_creation.serialized_length()
+            + self.amount.serialized_length()
+            + self.new_validator.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.bonding_purse.write_bytes(writer)?;
+        self.validator_public_key.write_bytes(writer)?;
+        self.unbonder_public_key.write_bytes(writer)?;
+        self.era_of_creation.write_bytes(writer)?;
+        self.amount.write_bytes(writer)?;
+        self.new_validator.write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for UnbondingPurse {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (bonding_purse, remainder) = FromBytes::from_bytes(bytes)?;
+        let (validator_public_key, remainder) = FromBytes::from_bytes(remainder)?;
+        let (unbonder_public_key, remainder) = FromBytes::from_bytes(remainder)?;
+        let (era_of_creation, remainder) = FromBytes::from_bytes(remainder)?;
+        let (amount, remainder) = FromBytes::from_bytes(remainder)?;
+        let (new_validator, remainder) = Option::<PublicKey>::from_bytes(remainder)?;
+
+        Ok((
+            UnbondingPurse {
+                bonding_purse,
+                validator_public_key,
+                unbonder_public_key,
+                era_of_creation,
+                amount,
+                new_validator,
+            },
+            remainder,
+        ))
+    }
+}
 impl CLTyped for UnbondingPurse {
     fn cl_type() -> CLType {
         CLType::Any

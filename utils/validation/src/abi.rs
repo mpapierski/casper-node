@@ -123,7 +123,7 @@ impl ABITestCase {
         Ok(output)
     }
 
-    pub fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+    pub fn to_borsh_bytes(&self) -> Result<Vec<u8>, Error> {
         // let mut res = Vec::with_capacity(self.serialized_length()?);
         let mut res = Vec::new();
 
@@ -145,17 +145,25 @@ impl TestCase for ABITestCase {
     /// This gets executed for each test case.
     fn run_test(&self) -> Result<(), Error> {
         // let serialized_length = self.serialized_length()?;
-        let serialized_data = self.to_bytes()?;
+        let serialized_data = self.to_borsh_bytes()?;
 
         let output = self.output()?;
 
-        // // Serialized data should match the output
-        // if serialized_data != output {
-        //     return Err(Error::DataMismatch {
-        //         actual: serialized_data,
-        //         expected: output.to_vec(),
-        //     });
-        // }
+        // Serialized data should match the output
+        if serialized_data != output {
+            if serialized_data.len() == output.len() {
+                for (i, (a, b)) in serialized_data.iter().zip(output.iter()).enumerate() {
+                    if *a != *b {
+                        eprintln!("first mismatch at {} ({} != {})", i, a, b);
+                    }
+                }
+            }
+            // eprintln!("{} {}", serialized_data.len(), output.len());
+            return Err(Error::DataMismatch {
+                actual: serialized_data,
+                expected: output.to_vec(),
+            });
+        }
 
         // // Output from serialized_length should match the output data length
         // if serialized_length != output.len() {

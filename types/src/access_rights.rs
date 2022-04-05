@@ -11,6 +11,8 @@ use rand::{
 };
 use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Serializer};
 
+use crate::bytesrepr;
+
 /// The number of bytes in a serialized [`AccessRights`].
 pub const ACCESS_RIGHTS_SERIALIZED_LENGTH: usize = 1;
 
@@ -47,7 +49,7 @@ impl BorshSerialize for AccessRights {
 
 impl BorshDeserialize for AccessRights {
     fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
-        let bits = u8::try_from_slice(buf)?;
+        let bits: u8 = BorshDeserialize::deserialize(buf)?;
         AccessRights::from_bits(bits).ok_or(io::Error::new(
             io::ErrorKind::InvalidInput,
             "Invalid access right bits",
@@ -95,6 +97,31 @@ impl Display for AccessRights {
             AccessRights::ADD_WRITE => write!(f, "ADD_WRITE"),
             AccessRights::READ_ADD_WRITE => write!(f, "READ_ADD_WRITE"),
             _ => write!(f, "UNKNOWN"),
+        }
+    }
+}
+
+impl bytesrepr::ToBytes for AccessRights {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        self.bits.to_bytes()
+    }
+
+    fn serialized_length(&self) -> usize {
+        ACCESS_RIGHTS_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.bits());
+        Ok(())
+    }
+}
+
+impl bytesrepr::FromBytes for AccessRights {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (id, rem) = u8::from_bytes(bytes)?;
+        match AccessRights::from_bits(id) {
+            Some(rights) => Ok((rights, rem)),
+            None => Err(bytesrepr::Error::Formatting),
         }
     }
 }

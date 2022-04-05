@@ -1425,8 +1425,13 @@ where
             .get(name)
             .cloned()
             .ok_or(Error::Revert(ApiError::MissingArgument))?;
-        arg.into_t()
-            .map_err(|_| Error::Revert(ApiError::InvalidArgument))
+        arg.into_t().map_err(|error| {
+            eprintln!(
+                "arg into_t error {:?} at {:?} by name {}",
+                error, args, name
+            );
+            Error::Revert(ApiError::InvalidArgument)
+        })
     }
 
     fn reverter<T: Into<ApiError>>(error: T) -> Error {
@@ -3479,6 +3484,7 @@ where
                             return Ok(Err(contracts::Error::GroupInUse.into()));
                         }
                     }
+                    EntryPointAccess::Dummy => unreachable!(),
                 }
             }
         }

@@ -195,6 +195,70 @@ impl Transfer {
     }
 }
 
+impl FromBytes for Transfer {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (deploy_hash, rem) = FromBytes::from_bytes(bytes)?;
+        let (from, rem) = AccountHash::from_bytes(rem)?;
+        let (to, rem) = <Option<AccountHash>>::from_bytes(rem)?;
+        let (source, rem) = URef::from_bytes(rem)?;
+        let (target, rem) = URef::from_bytes(rem)?;
+        let (amount, rem) = U512::from_bytes(rem)?;
+        let (gas, rem) = U512::from_bytes(rem)?;
+        let (id, rem) = <Option<u64>>::from_bytes(rem)?;
+        Ok((
+            Transfer {
+                deploy_hash,
+                from,
+                to,
+                source,
+                target,
+                amount,
+                gas,
+                id,
+            },
+            rem,
+        ))
+    }
+}
+
+impl ToBytes for Transfer {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        (&self.deploy_hash).write_bytes(&mut result)?;
+        (&self.from).write_bytes(&mut result)?;
+        (&self.to).write_bytes(&mut result)?;
+        (&self.source).write_bytes(&mut result)?;
+        (&self.target).write_bytes(&mut result)?;
+        (&self.amount).write_bytes(&mut result)?;
+        (&self.gas).write_bytes(&mut result)?;
+        (&self.id).write_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.deploy_hash.serialized_length()
+            + self.from.serialized_length()
+            + self.to.serialized_length()
+            + self.source.serialized_length()
+            + self.target.serialized_length()
+            + self.amount.serialized_length()
+            + self.gas.serialized_length()
+            + self.id.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        (&self.deploy_hash).write_bytes(writer)?;
+        (&self.from).write_bytes(writer)?;
+        self.to.write_bytes(writer)?;
+        self.source.write_bytes(writer)?;
+        self.target.write_bytes(writer)?;
+        self.amount.write_bytes(writer)?;
+        self.gas.write_bytes(writer)?;
+        self.id.write_bytes(writer)?;
+        Ok(())
+    }
+}
+
 /// Error returned when decoding a `TransferAddr` from a formatted string.
 #[derive(Debug)]
 pub enum FromStrError {

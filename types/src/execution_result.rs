@@ -403,10 +403,10 @@ pub enum Transform {
     WriteContractPackage,
     /// Writes the given DeployInfo to global state.
     WriteDeployInfo(DeployInfo),
-    /// Writes the given EraInfo to global state.
-    WriteEraInfo(EraInfo),
     /// Writes the given Transfer to global state.
     WriteTransfer(Transfer),
+    /// Writes the given EraInfo to global state.
+    WriteEraInfo(EraInfo),
     /// Writes the given Bid to global state.
     WriteBid(Box<Bid>),
     /// Writes the given Withdraw to global state.

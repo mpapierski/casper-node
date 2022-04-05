@@ -435,7 +435,8 @@ impl Serialize for StoredValue {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         // The JSON representation of a StoredValue is just its bytesrepr
         // While this makes it harder to inspect, it makes deterministic representation simple.
-        let bytes = bytesrepr::serialize(self)
+        let bytes = self
+            .to_bytes()
             .map_err(|error| ser::Error::custom(format!("{:?}", error)))?;
         ByteBuf::from(bytes).serialize(serializer)
     }

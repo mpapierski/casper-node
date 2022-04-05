@@ -44,7 +44,8 @@ use casper_execution_engine::{
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
-    bytesrepr::{self, BorshDeserialize}, runtime_args,
+    bytesrepr::{self, BorshDeserialize},
+    runtime_args,
     system::{
         auction::{
             Bids, EraValidators, UnbondingPurses, ValidatorWeights, WithdrawPurses,

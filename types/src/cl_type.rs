@@ -116,7 +116,7 @@ pub enum CLType {
 
 impl BorshDeserialize for CLType {
     fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
-        let tag = u8::try_from_slice(buf)?;
+        let tag: u8 = BorshDeserialize::deserialize(buf)?;
         let cl_type = match tag {
             CL_TYPE_TAG_BOOL => CLType::Bool,
             CL_TYPE_TAG_I32 => CLType::I32,
@@ -133,21 +133,21 @@ impl BorshDeserialize for CLType {
             CL_TYPE_TAG_UREF => CLType::URef,
             CL_TYPE_TAG_PUBLIC_KEY => CLType::PublicKey,
             CL_TYPE_TAG_OPTION => {
-                let inner_type = CLType::try_from_slice(buf)?;
+                let inner_type: CLType = BorshDeserialize::deserialize(buf)?;
                 CLType::Option(Box::new(inner_type))
             }
             CL_TYPE_TAG_LIST => {
-                let inner_type = CLType::try_from_slice(buf)?;
+                let inner_type: CLType = BorshDeserialize::deserialize(buf)?;
                 CLType::List(Box::new(inner_type))
             }
             CL_TYPE_TAG_BYTE_ARRAY => {
-                let len = u32::try_from_slice(buf)?;
+                let len: u32 = BorshDeserialize::deserialize(buf)?;
                 let cl_type = CLType::ByteArray(len);
                 cl_type
             }
             CL_TYPE_TAG_RESULT => {
-                let ok_type = CLType::try_from_slice(buf)?;
-                let err_type = CLType::try_from_slice(buf)?;
+                let ok_type: CLType = BorshDeserialize::deserialize(buf)?;
+                let err_type: CLType = BorshDeserialize::deserialize(buf)?;
                 let cl_type = CLType::Result {
                     ok: Box::new(ok_type),
                     err: Box::new(err_type),
@@ -155,8 +155,8 @@ impl BorshDeserialize for CLType {
                 cl_type
             }
             CL_TYPE_TAG_MAP => {
-                let key_type = CLType::try_from_slice(buf)?;
-                let value_type = CLType::try_from_slice(buf)?;
+                let key_type: CLType = BorshDeserialize::deserialize(buf)?;
+                let value_type: CLType = BorshDeserialize::deserialize(buf)?;
                 let cl_type = CLType::Map {
                     key: Box::new(key_type),
                     value: Box::new(value_type),
@@ -475,14 +475,16 @@ fn parse_cl_tuple_types_bytesrepr(
 
     Ok((cl_types, bytes))
 }
-fn serialize_cl_tuple_type<'a, T: IntoIterator<Item = &'a Box<CLType>>>(
+
+fn serialize_cl_tuple_type<'a, T: IntoIterator<Item = &'a Box<CLType>>, W: io::Write>(
     tag: u8,
     cl_type_array: T,
-    stream: &mut dyn io::Write,
+    stream: &mut W,
 ) -> io::Result<()> {
     stream.write_all(&[tag])?;
     for cl_type in cl_type_array {
-        todo!("BorshSerialize::serialize(&cl_type, stream)?");
+        // BorshSerialize::serialize(&cl_type, &mut stream)?;
+        BorshSerialize::serialize(&cl_type, stream)?;
     }
     Ok(())
 }
@@ -493,7 +495,7 @@ fn parse_cl_tuple_types(
 ) -> Result<VecDeque<Box<CLType>>, io::Error> {
     let mut cl_types = VecDeque::with_capacity(count);
     for _ in 0..count {
-        let cl_type = CLType::try_from_slice(buf)?;
+        let cl_type: CLType = BorshDeserialize::deserialize(buf)?;
         cl_types.push_back(Box::new(cl_type));
     }
     Ok(cl_types)

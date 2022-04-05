@@ -212,22 +212,22 @@ macro_rules! impl_traits_for_uint {
 
         impl BorshDeserialize for $type {
             fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
-                let num_bytes: u8 = BorshDeserialize::try_from_slice(buf)?;
+                let num_bytes: u8 = BorshDeserialize::deserialize(buf)?;
                 if num_bytes > $total_bytes {
                     Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
+                        io::ErrorKind::NotFound,
                         "invalid length prefix",
                     ))
                 } else {
                     if num_bytes as usize > buf.len() {
                         return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
+                            io::ErrorKind::PermissionDenied,
                             "early end of stream",
                         ));
                     } else {
                         let mut arr = [u8::default(); $total_bytes];
                         for n in 0..num_bytes as usize {
-                            arr[n] = u8::try_from_slice(buf)?;
+                            arr[n] = BorshDeserialize::deserialize(buf)?;
                         }
                         let result = $type::from_little_endian(&arr[0..num_bytes as usize]);
                         Ok(result)

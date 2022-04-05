@@ -10,7 +10,10 @@ use datasize::DataSize;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{CLType, CLTyped, PublicKey, U512};
+use crate::{
+    bytesrepr::{self, FromBytes, ToBytes},
+    CLType, CLTyped, PublicKey, U512,
+};
 
 const SEIGNIORAGE_ALLOCATION_VALIDATOR_TAG: u8 = 0;
 const SEIGNIORAGE_ALLOCATION_DELEGATOR_TAG: u8 = 1;
@@ -153,6 +156,115 @@ impl EraInfo {
                     ..
                 } => public_key == *delegator_public_key,
             })
+    }
+}
+
+impl ToBytes for SeigniorageAllocation {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut buffer = bytesrepr::allocate_buffer(self)?;
+        self.write_bytes(&mut buffer)?;
+        Ok(buffer)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.tag().serialized_length()
+            + match self {
+                SeigniorageAllocation::Validator {
+                    validator_public_key,
+                    amount,
+                } => validator_public_key.serialized_length() + amount.serialized_length(),
+                SeigniorageAllocation::Delegator {
+                    delegator_public_key,
+                    validator_public_key,
+                    amount,
+                } => {
+                    delegator_public_key.serialized_length()
+                        + validator_public_key.serialized_length()
+                        + amount.serialized_length()
+                }
+            }
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.tag());
+        match self {
+            SeigniorageAllocation::Validator {
+                validator_public_key,
+                amount,
+            } => {
+                validator_public_key.write_bytes(writer)?;
+                amount.write_bytes(writer)?;
+            }
+            SeigniorageAllocation::Delegator {
+                delegator_public_key,
+                validator_public_key,
+                amount,
+            } => {
+                delegator_public_key.write_bytes(writer)?;
+                validator_public_key.write_bytes(writer)?;
+                amount.write_bytes(writer)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+impl FromBytes for SeigniorageAllocation {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (tag, rem) = <u8>::from_bytes(bytes)?;
+        match tag {
+            SEIGNIORAGE_ALLOCATION_VALIDATOR_TAG => {
+                let (validator_public_key, rem) = PublicKey::from_bytes(rem)?;
+                let (amount, rem) = U512::from_bytes(rem)?;
+                Ok((
+                    SeigniorageAllocation::validator(validator_public_key, amount),
+                    rem,
+                ))
+            }
+            SEIGNIORAGE_ALLOCATION_DELEGATOR_TAG => {
+                let (delegator_public_key, rem) = PublicKey::from_bytes(rem)?;
+                let (validator_public_key, rem) = PublicKey::from_bytes(rem)?;
+                let (amount, rem) = U512::from_bytes(rem)?;
+                Ok((
+                    SeigniorageAllocation::delegator(
+                        delegator_public_key,
+                        validator_public_key,
+                        amount,
+                    ),
+                    rem,
+                ))
+            }
+            _ => Err(bytesrepr::Error::Formatting),
+        }
+    }
+}
+
+impl ToBytes for EraInfo {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        self.seigniorage_allocations().write_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.seigniorage_allocations.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.seigniorage_allocations().write_bytes(writer)?;
+        Ok(())
+    }
+}
+
+impl FromBytes for EraInfo {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (seigniorage_allocations, rem) = Vec::<SeigniorageAllocation>::from_bytes(bytes)?;
+        Ok((
+            EraInfo {
+                seigniorage_allocations,
+            },
+            rem,
+        ))
     }
 }
 

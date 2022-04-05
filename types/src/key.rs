@@ -5,7 +5,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
 
 use core::{
     convert::TryFrom,
@@ -59,7 +59,6 @@ pub const KEY_DEPLOY_INFO_LENGTH: usize = DEPLOY_HASH_LENGTH;
 pub const KEY_DICTIONARY_LENGTH: usize = 32;
 /// The maximum length for a `dictionary_item_key`.
 pub const DICTIONARY_ITEM_KEY_MAX_LENGTH: usize = 128;
-
 const SYSTEM_CONTRACT_REGISTRY_KEY_BYTES: [u8; 32] = [0u8; 32];
 const CHAINSPEC_REGISTRY_KEY_BYTES: [u8; 32] = [1u8; 32];
 const KEY_ID_SERIALIZED_LENGTH: usize = 1;
@@ -107,7 +106,7 @@ pub enum KeyTag {
 /// The type under which data (e.g. [`CLValue`](crate::CLValue)s, smart contracts, user accounts)
 /// are indexed on the network.
 #[repr(C)]
-#[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash, BorshSerialize, BorshDeserialize)]
+#[derive(PartialEq, Eq, Clone, Copy, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub enum Key {
     /// A `Key` under which a user account is stored.
@@ -779,6 +778,120 @@ impl FromBytes for Key {
                 Ok((Key::ChainspecRegistry, rem))
             }
             _ => Err(Error::Formatting),
+        }
+    }
+}
+
+impl BorshSerialize for Key {
+    fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
+        let tag: u8 = self.tag();
+        BorshSerialize::serialize(&tag, writer)?;
+
+        match self {
+            Key::Account(account_hash) => {
+                BorshSerialize::serialize(account_hash, writer)?;
+            }
+            Key::Hash(hash) => {
+                BorshSerialize::serialize(hash, writer)?;
+            }
+            Key::URef(uref) => {
+                BorshSerialize::serialize(uref, writer)?;
+            }
+            Key::Transfer(addr) => {
+                BorshSerialize::serialize(addr, writer)?;
+            }
+            Key::DeployInfo(addr) => {
+                BorshSerialize::serialize(addr, writer)?;
+            }
+            Key::EraInfo(era_id) => {
+                BorshSerialize::serialize(&era_id, writer)?;
+            }
+            Key::Balance(uref_addr) => {
+                BorshSerialize::serialize(uref_addr, writer)?;
+            }
+            Key::Bid(account_hash) => {
+                BorshSerialize::serialize(account_hash, writer)?;
+            }
+            Key::Withdraw(account_hash) => {
+                BorshSerialize::serialize(account_hash, writer)?;
+            }
+            Key::Unbond(account_hash) => {
+                BorshSerialize::serialize(account_hash, writer)?;
+            }
+            Key::Dictionary(addr) => {
+                BorshSerialize::serialize(addr, writer)?;
+            }
+            Key::SystemContractRegistry => {
+                BorshSerialize::serialize(&SYSTEM_CONTRACT_REGISTRY_KEY_BYTES, writer)?;
+            }
+            Key::ChainspecRegistry => {
+                BorshSerialize::serialize(&CHAINSPEC_REGISTRY_KEY_BYTES, writer)?;
+            }
+        };
+        Ok(())
+    }
+}
+
+impl BorshDeserialize for Key {
+    fn deserialize(buf: &mut &[u8]) -> io::Result<Self> {
+        let tag: u8 = BorshDeserialize::deserialize(buf)?;
+        match tag {
+            tag if tag == KeyTag::Account as u8 => {
+                let account_hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Account(account_hash))
+            }
+            tag if tag == KeyTag::Hash as u8 => {
+                let hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Hash(hash))
+            }
+            tag if tag == KeyTag::URef as u8 => {
+                let uref = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::URef(uref))
+            }
+            tag if tag == KeyTag::Transfer as u8 => {
+                let transfer_addr = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Transfer(transfer_addr))
+            }
+            tag if tag == KeyTag::DeployInfo as u8 => {
+                let deploy_hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::DeployInfo(deploy_hash))
+            }
+            tag if tag == KeyTag::EraInfo as u8 => {
+                let era_id = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::EraInfo(era_id))
+            }
+            tag if tag == KeyTag::Balance as u8 => {
+                let uref_addr = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Balance(uref_addr))
+            }
+            tag if tag == KeyTag::Bid as u8 => {
+                let account_hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Bid(account_hash))
+            }
+            tag if tag == KeyTag::Withdraw as u8 => {
+                let account_hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Withdraw(account_hash))
+            }
+            tag if tag == KeyTag::Unbond as u8 => {
+                let account_hash = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Unbond(account_hash))
+            }
+            tag if tag == KeyTag::Dictionary as u8 => {
+                let addr = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::Dictionary(addr))
+            }
+            tag if tag == KeyTag::SystemContractRegistry as u8 => {
+                let _bytes: [u8; 32] = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::SystemContractRegistry)
+            }
+            tag if tag == KeyTag::ChainspecRegistry as u8 => {
+                let _bytes: [u8; 32] = BorshDeserialize::deserialize(buf)?;
+                Ok(Key::ChainspecRegistry)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid key tag",
+            )),
         }
     }
 }

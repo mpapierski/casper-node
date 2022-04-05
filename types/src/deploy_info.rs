@@ -10,7 +10,11 @@ use datasize::DataSize;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{account::AccountHash, DeployHash, TransferAddr, URef, U512};
+use crate::{
+    account::AccountHash,
+    bytesrepr::{self, ToBytes, FromBytes},
+    DeployHash, TransferAddr, URef, U512,
+};
 
 /// Information relating to the given Deploy.
 #[derive(
@@ -58,6 +62,55 @@ impl DeployInfo {
             source,
             gas,
         }
+    }
+}
+
+impl FromBytes for DeployInfo {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (deploy_hash, rem) = DeployHash::from_bytes(bytes)?;
+        let (transfers, rem) = Vec::<TransferAddr>::from_bytes(rem)?;
+        let (from, rem) = AccountHash::from_bytes(rem)?;
+        let (source, rem) = URef::from_bytes(rem)?;
+        let (gas, rem) = U512::from_bytes(rem)?;
+        Ok((
+            DeployInfo {
+                deploy_hash,
+                transfers,
+                from,
+                source,
+                gas,
+            },
+            rem,
+        ))
+    }
+}
+
+impl ToBytes for DeployInfo {
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut result = bytesrepr::allocate_buffer(self)?;
+        (&self.deploy_hash).write_bytes(&mut result)?;
+        self.transfers.write_bytes(&mut result)?;
+        (&self.from).write_bytes(&mut result)?;
+        (&self.source).write_bytes(&mut result)?;
+        self.gas.write_bytes(&mut result)?;
+        Ok(result)
+    }
+
+    fn serialized_length(&self) -> usize {
+        self.deploy_hash.serialized_length()
+            + self.transfers.serialized_length()
+            + self.from.serialized_length()
+            + self.source.serialized_length()
+            + self.gas.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        (&self.deploy_hash).write_bytes(writer)?;
+        self.transfers.write_bytes(writer)?;
+        (&self.from).write_bytes(writer)?;
+        (&self.source).write_bytes(writer)?;
+        self.gas.write_bytes(writer)?;
+        Ok(())
     }
 }
 
