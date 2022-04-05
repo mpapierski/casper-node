@@ -1,5 +1,5 @@
 use alloc::{format, string::String, vec::Vec};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -85,7 +85,17 @@ impl Display for FromStrError {
 /// A newtype wrapping a `HashAddr` which is the raw bytes of
 /// the ContractWasmHash
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractWasmHash(HashAddr);
@@ -235,7 +245,7 @@ impl JsonSchema for ContractWasmHash {
 }
 
 /// A container for contract's WASM bytes.
-#[derive(PartialEq, Eq, Clone, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(PartialEq, Eq, Clone, Serialize, BorshSchema, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractWasm {
     bytes: Bytes,

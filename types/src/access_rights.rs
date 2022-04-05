@@ -1,5 +1,10 @@
 use alloc::vec::Vec;
-use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
+use borsh::{
+    maybestd::{collections::HashMap, io},
+    schema::{Declaration, Definition},
+    BorshDeserialize, BorshSchema, BorshSerialize,
+};
+
 use core::fmt::{self, Display, Formatter};
 
 use bitflags::bitflags;
@@ -41,6 +46,15 @@ bitflags! {
     }
 }
 
+impl BorshSchema for AccessRights {
+    fn add_definitions_recursively(definitions: &mut HashMap<Declaration, Definition>) {
+        u8::add_definitions_recursively(definitions)
+    }
+
+    fn declaration() -> Declaration {
+        u8::declaration()
+    }
+}
 impl BorshSerialize for AccessRights {
     fn serialize<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         writer.write_all(&[self.bits])

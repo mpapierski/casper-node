@@ -2,7 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::{format, string::String, vec::Vec};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -94,7 +94,17 @@ impl Display for FromStrError {
 ///
 /// A `URef` can be used to index entities such as [`CLValue`](crate::CLValue)s, or smart contracts.
 #[derive(
-    Copy, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Default, BorshSerialize, BorshDeserialize,
+    Copy,
+    Clone,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    BorshSerialize,
+    BorshDeserialize,
+    BorshSchema,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct URef(URefAddr, AccessRights);

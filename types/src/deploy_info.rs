@@ -3,7 +3,7 @@
 
 use alloc::vec::Vec;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     account::AccountHash,
-    bytesrepr::{self, ToBytes, FromBytes},
+    bytesrepr::{self, FromBytes, ToBytes},
     DeployHash, TransferAddr, URef, U512,
 };
 
@@ -26,6 +26,7 @@ use crate::{
     PartialEq,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

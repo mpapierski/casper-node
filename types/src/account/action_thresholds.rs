@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 use serde::{Deserialize, Serialize};
@@ -15,7 +15,17 @@ use crate::{
 use super::weight::WEIGHT_SERIALIZED_LENGTH;
 
 /// Thresholds that have to be met when executing an action of a certain type.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Clone,
+    Debug,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ActionThresholds {
     /// Threshold for deploy execution.

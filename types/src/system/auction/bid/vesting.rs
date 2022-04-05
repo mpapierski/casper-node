@@ -2,7 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::vec::Vec;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 use core::mem::MaybeUninit;
 
 #[cfg(feature = "datasize")]
@@ -37,6 +37,7 @@ const LOCKED_AMOUNTS_LENGTH: usize = (VESTING_SCHEDULE_LENGTH_DAYS / DAYS_IN_WEE
     Eq,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

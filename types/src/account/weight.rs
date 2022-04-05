@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 use serde::{Deserialize, Serialize};
@@ -25,6 +25,7 @@ pub const WEIGHT_SERIALIZED_LENGTH: usize = U8_SERIALIZED_LENGTH;
     Debug,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

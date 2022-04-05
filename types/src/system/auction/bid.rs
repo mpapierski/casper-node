@@ -5,7 +5,7 @@ mod vesting;
 
 use alloc::{collections::BTreeMap, vec::Vec};
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -21,7 +21,17 @@ use crate::{
 pub use vesting::{VestingSchedule, VESTING_SCHEDULE_LENGTH_MILLIS};
 
 /// An entry in the validator map.
-#[derive(PartialEq, Eq, Debug, Serialize, Deserialize, Clone, BorshSerialize, BorshDeserialize)]
+#[derive(
+    PartialEq,
+    Eq,
+    Debug,
+    Serialize,
+    Deserialize,
+    Clone,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]

@@ -2,7 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::vec::Vec;
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 use core::{
     fmt::{self, Debug, Display, Formatter},
     num::ParseIntError,
@@ -27,7 +27,20 @@ use crate::{
 
 /// Era ID newtype.
 #[derive(
-    Debug, Default, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Debug,
+    Default,
+    Clone,
+    Copy,
+    Hash,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]

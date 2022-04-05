@@ -5,19 +5,30 @@
 
 use alloc::{collections::BTreeMap, string::String, vec::Vec};
 
-use borsh::{BorshSerialize, BorshDeserialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    CLTyped, CLValue, CLValueError,
-};
+use crate::{CLTyped, CLValue, CLValueError};
 
 /// Named arguments to a contract
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Serialize,
+    Deserialize,
+    Debug,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct NamedArg(String, CLValue);
@@ -44,7 +55,21 @@ impl From<(String, CLValue)> for NamedArg {
 }
 
 /// Represents a collection of arguments passed to a smart contract.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Serialize, Deserialize, Debug, Default, BorshSerialize, BorshDeserialize)]
+#[derive(
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Clone,
+    Serialize,
+    Deserialize,
+    Debug,
+    Default,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct RuntimeArgs(Vec<NamedArg>);

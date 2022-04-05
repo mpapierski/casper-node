@@ -1,5 +1,5 @@
 use alloc::{string::String, vec::Vec};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 use core::{
     convert::{From, TryFrom},
     fmt::{Debug, Display, Formatter},
@@ -16,7 +16,7 @@ use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Seria
 
 use super::FromStrError;
 use crate::{
-    bytesrepr::{Error, ToBytes, FromBytes},
+    bytesrepr::{Error, FromBytes, ToBytes},
     checksummed_hex, crypto, CLType, CLTyped, PublicKey, BLAKE2B_DIGEST_LENGTH,
 };
 
@@ -29,7 +29,17 @@ pub const ACCOUNT_HASH_FORMATTED_STRING_PREFIX: &str = "account-hash-";
 /// A newtype wrapping an array which contains the raw bytes of
 /// the AccountHash, a hash of Public Key and Algorithm
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct AccountHash(pub [u8; ACCOUNT_HASH_LENGTH]);

@@ -4,7 +4,7 @@ use alloc::{
     collections::{btree_map::Entry, BTreeMap, BTreeSet},
     vec::Vec,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 
 use core::convert::TryInto;
 #[cfg(feature = "datasize")]
@@ -28,6 +28,7 @@ use crate::{
     Debug,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

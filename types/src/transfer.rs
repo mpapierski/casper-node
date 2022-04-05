@@ -2,7 +2,7 @@
 #![allow(clippy::field_reassign_with_default)]
 
 use alloc::{format, string::String, vec::Vec};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -43,6 +43,7 @@ pub(super) const TRANSFER_ADDR_FORMATTED_STRING_PREFIX: &str = "transfer-";
     Clone,
     Copy,
     Debug,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -144,6 +145,7 @@ impl Distribution<DeployHash> for Standard {
     Serialize,
     Deserialize,
     Default,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -297,7 +299,17 @@ impl Display for FromStrError {
 /// A newtype wrapping a <code>[u8; [TRANSFER_ADDR_LENGTH]]</code> which is the raw bytes of the
 /// transfer address.
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct TransferAddr([u8; TRANSFER_ADDR_LENGTH]);

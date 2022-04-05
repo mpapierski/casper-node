@@ -5,7 +5,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{convert::TryFrom, fmt::Debug};
 
 #[cfg(feature = "datasize")]
@@ -39,7 +39,7 @@ enum Tag {
 }
 
 #[allow(clippy::large_enum_variant)]
-#[derive(Eq, PartialEq, Clone, Debug, BorshSerialize, BorshDeserialize)]
+#[derive(Eq, PartialEq, Clone, Debug, BorshSerialize, BorshSchema, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 /// StoredValue represents all possible variants of values stored in Global State.
 pub enum StoredValue {

@@ -3,7 +3,11 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
+use borsh::{
+    maybestd::{collections::HashMap, io},
+    schema::{Declaration, Definition, Fields},
+    BorshDeserialize, BorshSchema, BorshSerialize,
+};
 use core::{
     fmt::{self, Formatter},
     iter::Sum,
@@ -193,6 +197,14 @@ macro_rules! impl_traits_for_uint {
                     let result = $type::from_little_endian(value);
                     Ok((result, rem))
                 }
+            }
+        }
+
+        impl BorshSchema for $type {
+            fn add_definitions_recursively(definitions: &mut HashMap<Declaration, Definition>) {}
+
+            fn declaration() -> Declaration {
+                format!(r#"U{}"#, $total_bytes * 8)
             }
         }
 

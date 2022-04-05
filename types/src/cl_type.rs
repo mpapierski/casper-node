@@ -7,7 +7,11 @@ use alloc::{
     string::String,
     vec::Vec,
 };
-use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
+use borsh::{
+    maybestd::{collections::HashMap, io},
+    schema::{Declaration, Definition},
+    BorshDeserialize, BorshSchema, BorshSerialize,
+};
 use core::mem;
 
 #[cfg(feature = "datasize")]
@@ -112,6 +116,51 @@ pub enum CLType {
     Tuple3([Box<CLType>; 3]),
     /// Unspecified type.
     Any,
+}
+
+impl BorshSchema for CLType {
+    fn add_definitions_recursively(definitions: &mut HashMap<Declaration, Definition>) {
+        let definition = Definition::Enum {
+            variants: vec![
+                ("Bool".to_string(), <()>::declaration()),
+                ("I32".to_string(), <()>::declaration()),
+                ("I64".to_string(), <()>::declaration()),
+                ("U8".to_string(), <()>::declaration()),
+                ("U32".to_string(), <()>::declaration()),
+                ("U64".to_string(), <()>::declaration()),
+                ("U128".to_string(), <()>::declaration()),
+                ("U256".to_string(), <()>::declaration()),
+                ("U512".to_string(), <()>::declaration()),
+                ("Unit".to_string(), <()>::declaration()),
+                ("String".to_string(), <()>::declaration()),
+                ("Key".to_string(), <()>::declaration()),
+                ("URef".to_string(), <()>::declaration()),
+                ("PublicKey".to_string(), <()>::declaration()),
+                ("Option".to_string(), CLType::declaration()),
+                ("List".to_string(), CLType::declaration()),
+                ("ByteArray".to_string(), u32::declaration()),
+                (
+                    "Result".to_string(),
+                    <Result<CLType, CLType>>::declaration(),
+                ),
+                // todo how to represent map?
+                ("Map".to_string(), <()>::declaration()),
+                ("Tuple1".to_string(), <(CLType,)>::declaration()),
+                ("Tuple2".to_string(), <(CLType, CLType)>::declaration()),
+                (
+                    "Tuple3".to_string(),
+                    <(CLType, CLType, CLType)>::declaration(),
+                ),
+                ("Any".to_string(), <()>::declaration()),
+            ],
+        };
+
+        Self::add_definition(Self::declaration(), definition, definitions);
+    }
+
+    fn declaration() -> borsh::schema::Declaration {
+        format!("CLType")
+    }
 }
 
 impl BorshDeserialize for CLType {

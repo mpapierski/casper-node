@@ -2,7 +2,7 @@ use alloc::{
     string::String,
     vec::{IntoIter, Vec},
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{
     cmp, fmt,
     iter::FromIterator,
@@ -24,7 +24,17 @@ use crate::{checksummed_hex, CLType, CLTyped};
 
 /// A newtype wrapper for bytes that has efficient serialization routines.
 #[derive(
-    Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Default, Hash, BorshSerialize, BorshDeserialize,
+    Clone,
+    Ord,
+    PartialOrd,
+    Eq,
+    PartialEq,
+    Debug,
+    Default,
+    Hash,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 pub struct Bytes(Vec<u8>);
 

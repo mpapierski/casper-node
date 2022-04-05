@@ -14,7 +14,11 @@ use core::{
     marker::Copy,
 };
 
-use borsh::{maybestd::io, BorshDeserialize, BorshSerialize};
+use borsh::{
+    maybestd::{collections::HashMap, io},
+    schema::{Declaration, Definition},
+    BorshDeserialize, BorshSchema, BorshSerialize,
+};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 use ed25519_dalek::{
@@ -208,6 +212,29 @@ pub enum PublicKey {
     /// secp256k1 public key.
     #[cfg_attr(feature = "datasize", data_size(skip))]
     Secp256k1(Secp256k1PublicKey),
+}
+
+impl BorshSchema for PublicKey {
+    fn add_definitions_recursively(definitions: &mut HashMap<Declaration, Definition>) {
+        let definition = Definition::Enum {
+            variants: vec![
+                ("System".to_string(), <()>::declaration()),
+                (
+                    "Ed25519".to_string(),
+                    <[u8; ED25519_PUBLIC_KEY_LENGTH]>::declaration(),
+                ),
+                (
+                    "Secp256k1".to_string(),
+                    <[u8; SECP256K1_COMPRESSED_PUBLIC_KEY_LENGTH]>::declaration(),
+                ),
+            ],
+        };
+        Self::add_definition(Self::declaration(), definition, definitions);
+    }
+
+    fn declaration() -> Declaration {
+        r#"PuiblicKey"#.into()
+    }
 }
 
 impl PublicKey {

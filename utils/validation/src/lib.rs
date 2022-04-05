@@ -96,3 +96,54 @@ pub fn load_fixtures(path: &Path) -> Result<TestFixtures, Error> {
     }
     Ok(test_fixtures)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs::File, io::Write};
+
+    use borsh::{BorshSchema, BorshSerialize};
+    use casper_execution_engine::core::engine_state::ExecutableDeployItem;
+    use casper_types::{bytesrepr::Bytes, runtime_args, Contract, RuntimeArgs, StoredValue};
+
+    #[test]
+    fn gen_schema_for_stored_value() {
+        // let container = StoredValue::schema_container();
+        // // eprintln!("{:?}", container);
+        // File::create("/tmp/stored_value.txt")
+        //     .unwrap()
+        //     .write_all(&format!("{:#?}", container).as_bytes())
+        //     .unwrap();
+
+        // let contract = Contract::new(ContractPackageHash::new([42;32]), ContractPackageHash::new([43;32]), {
+        //     let mut keys = NamedKeys::new();
+        //     keys.insert("named key 1", Key::Hash([44; 32])),
+        //     keys,
+        // }, {
+        //     let mut eps = EntryPoints::new();
+        //     eps.add_entry_point(EntryPoint::new());
+        //     eps
+        // }, ProtocolVersion::new(1, 0, 0));
+    }
+
+    #[test]
+    fn deploy_item() {
+        let args = runtime_args! {
+            "hello" => "world",
+        };
+        let container = ExecutableDeployItem::ModuleBytes {
+            module_bytes: Bytes::from(vec![0, 1, 2, 3, 4, 5]),
+            args,
+        };
+
+        File::create("/tmp/executable_deploy_item.schema")
+            .unwrap()
+            .write_all(&borsh::to_vec(&container).unwrap())
+            .unwrap();
+
+        let blob = borsh::try_to_vec_with_schema(&container).unwrap();
+        File::create("/tmp/module_bytes_with_schema.data")
+            .unwrap()
+            .write_all(&blob)
+            .unwrap();
+    }
+}

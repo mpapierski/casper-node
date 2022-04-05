@@ -3,7 +3,7 @@
 
 use alloc::{boxed::Box, vec::Vec};
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 #[cfg(feature = "datasize")]
 use datasize::DataSize;
 #[cfg(feature = "json-schema")]
@@ -28,6 +28,7 @@ const SEIGNIORAGE_ALLOCATION_DELEGATOR_TAG: u8 = 1;
     PartialEq,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -108,6 +109,7 @@ impl CLTyped for SeigniorageAllocation {
     PartialEq,
     Serialize,
     Deserialize,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

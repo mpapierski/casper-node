@@ -8,7 +8,7 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use core::{
     array::TryFromSliceError,
     convert::TryFrom,
@@ -210,6 +210,7 @@ impl Display for FromStrError {
     Serialize,
     Deserialize,
     Hash,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -276,6 +277,7 @@ pub type ProtocolVersionMajor = u32;
     Ord,
     Serialize,
     Hash,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -357,7 +359,17 @@ pub type Groups = BTreeMap<Group, BTreeSet<URef>>;
 
 /// A newtype wrapping a `HashAddr` which references a [`Contract`] in the global state.
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractHash(HashAddr);
@@ -511,7 +523,17 @@ impl JsonSchema for ContractHash {
 
 /// A newtype wrapping a `HashAddr` which references a [`ContractPackage`] in the global state.
 #[derive(
-    Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, BorshSerialize, BorshDeserialize,
+    Default,
+    PartialOrd,
+    Ord,
+    PartialEq,
+    Eq,
+    Hash,
+    Clone,
+    Copy,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractPackageHash(HashAddr);
@@ -661,7 +683,7 @@ impl JsonSchema for ContractPackageHash {
 }
 
 /// A enum to determine the lock status of the contract package.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSchema, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub enum ContractPackageStatus {
     /// The package is unlocked and can be versioned.
@@ -722,7 +744,9 @@ impl FromBytes for ContractPackageStatus {
 }
 
 /// Contract definition, metadata, and security container.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Default, Serialize, BorshSchema, BorshSerialize, BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractPackage {
     /// Key used to add or disable versions
@@ -960,7 +984,7 @@ impl FromBytes for ContractPackage {
 pub type EntryPointsMap = BTreeMap<String, EntryPoint>;
 
 /// Collection of named entry points
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSchema, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct EntryPoints(EntryPointsMap);
 
@@ -1049,7 +1073,7 @@ impl From<Vec<EntryPoint>> for EntryPoints {
 pub type NamedKeys = BTreeMap<String, Key>;
 
 /// Methods and type signatures supported by a contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, BorshSchema, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct Contract {
     contract_package_hash: ContractPackageHash,
@@ -1232,7 +1256,16 @@ impl Default for Contract {
 /// Context of method execution
 #[repr(u8)]
 #[derive(
-    Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize,
+    Debug,
+    Copy,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
 )]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
@@ -1283,7 +1316,17 @@ pub type Parameters = Vec<Parameter>;
 
 /// Type signature of a method. Order of arguments matter since can be
 /// referenced by index as well as name.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct EntryPoint {
@@ -1423,7 +1466,17 @@ impl FromBytes for EntryPoint {
 }
 /// Enum describing the possible access control options for a contract entry
 /// point (method).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub enum EntryPointAccess {
@@ -1505,7 +1558,17 @@ impl FromBytes for EntryPointAccess {
 }
 
 /// Parameter to a method
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, BorshSerialize, BorshDeserialize)]
+#[derive(
+    Debug,
+    Clone,
+    PartialEq,
+    Eq,
+    Serialize,
+    Deserialize,
+    BorshSchema,
+    BorshSerialize,
+    BorshDeserialize,
+)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 pub struct Parameter {

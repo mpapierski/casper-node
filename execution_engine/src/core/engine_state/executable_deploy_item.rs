@@ -8,7 +8,7 @@ use std::{
     rc::Rc,
 };
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use datasize::DataSize;
 use hex_buffer_serde::{Hex, HexForm};
 use hex_fmt::HexFmt;
@@ -107,9 +107,10 @@ impl ContractPackageIdentifier {
     PartialOrd,
     Ord,
     Hash,
+    BorshSchema,
     Serialize,
     Deserialize,
-    JsonSchema,
+    // JsonSchema,
     BorshSerialize,
     BorshDeserialize,
 )]
@@ -119,8 +120,8 @@ pub enum ExecutableDeployItem {
     /// [`RuntimeArgs`].
     ModuleBytes {
         /// Raw WASM module bytes with assumed "call" export as an entrypoint.
-        #[serde(with = "HexForm")]
-        #[schemars(with = "String", description = "Hex-encoded raw Wasm bytes.")]
+        // #[serde(with = "HexForm")]
+        // #[schemars(with = "String", description = "Hex-encoded raw Wasm bytes.")]
         module_bytes: Bytes,
         /// Runtime arguments.
         args: RuntimeArgs,
@@ -129,8 +130,8 @@ pub enum ExecutableDeployItem {
     /// [`RuntimeArgs`].
     StoredContractByHash {
         /// Contract hash.
-        #[serde(with = "contract_hash_as_digest")]
-        #[schemars(with = "String", description = "Hex-encoded hash.")]
+        // #[serde(with = "contract_hash_as_digest")]
+        // #[schemars(with = "String", description = "Hex-encoded hash.")]
         hash: ContractHash,
         /// Name of an entry point.
         entry_point: String,
@@ -151,8 +152,8 @@ pub enum ExecutableDeployItem {
     /// instance of [`RuntimeArgs`].
     StoredVersionedContractByHash {
         /// Contract package hash
-        #[serde(with = "contract_package_hash_as_digest")]
-        #[schemars(with = "String", description = "Hex-encoded hash.")]
+        // #[serde(with = "contract_package_hash_as_digest")]
+        // #[schemars(with = "String", description = "Hex-encoded hash.")]
         hash: ContractPackageHash,
         /// An optional version of the contract to call. It will default to the highest enabled
         /// version if no value is specified.

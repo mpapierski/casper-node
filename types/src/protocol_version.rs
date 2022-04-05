@@ -1,5 +1,5 @@
 use alloc::{format, string::String, vec::Vec};
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSerialize, BorshSchema};
 use core::{convert::TryFrom, fmt, str::FromStr};
 
 #[cfg(feature = "datasize")]
@@ -24,6 +24,7 @@ use crate::{
     Eq,
     PartialOrd,
     Ord,
+    BorshSchema,
     BorshSerialize,
     BorshDeserialize,
 )]

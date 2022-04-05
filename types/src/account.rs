@@ -7,7 +7,7 @@ pub mod associated_keys;
 mod error;
 mod weight;
 
-use borsh::{BorshDeserialize, BorshSerialize};
+use borsh::{BorshDeserialize, BorshSchema, BorshSerialize};
 use serde::Serialize;
 
 use alloc::{collections::BTreeSet, vec::Vec};
@@ -34,7 +34,7 @@ use crate::{
 };
 
 /// Represents an Account in the global state.
-#[derive(PartialEq, Eq, Clone, Debug, Serialize, BorshSerialize, BorshDeserialize)]
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, BorshSchema, BorshSerialize, BorshDeserialize)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct Account {
     account_hash: AccountHash,
