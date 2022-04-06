@@ -8,7 +8,7 @@ use fs_extra::dir;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use casper_engine_test_support::LmdbWasmTestBuilder;
+use casper_engine_test_support::{LmdbWasmTestBuilder, DEFAULT_RUN_GENESIS_REQUEST};
 use casper_execution_engine::core::engine_state::{
     run_genesis_request::RunGenesisRequest, EngineConfig,
 };
@@ -117,3 +117,32 @@ pub fn generate_fixture(
     f.write_all(serialized_state.as_bytes())?;
     Ok(())
 }
+
+// #[cfg(test)]
+// mod tests {
+//     use casper_engine_test_support::{
+//         ExecuteRequestBuilder, LmdbWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+//         DEFAULT_RUN_GENESIS_REQUEST,
+//     };
+//     use casper_types::RuntimeArgs;
+
+//     fn setup_fn(builder: &mut LmdbWasmTestBuilder) {
+//         let store_request = ExecuteRequestBuilder::standard(
+//             *DEFAULT_ACCOUNT_ADDR,
+//             "put_key_stored.wasm",
+//             RuntimeArgs::default(),
+//         )
+//         .build();
+//         builder.exec(store_request).expect_success().commit();
+//     }
+
+//     #[test]
+//     fn gen_put_key_fixture() {
+//         super::generate_fixture(
+//             "contract_upgrade",
+//             DEFAULT_RUN_GENESIS_REQUEST.clone(),
+//             setup_fn,
+//         )
+//         .unwrap();
+//     }
+// }

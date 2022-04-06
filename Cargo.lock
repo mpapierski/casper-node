@@ -3285,6 +3285,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "put-key-stored"
+version = "0.1.0"
+dependencies = [
+ "casper-contract",
+ "casper-types",
+]
+
+[[package]]
 name = "pwasm-utils"
 version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
