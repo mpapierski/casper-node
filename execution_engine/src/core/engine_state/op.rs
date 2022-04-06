@@ -5,6 +5,10 @@ use std::{
     ops::{Add, AddAssign},
 };
 
+use casper_types::Key;
+
+use crate::shared::additive_map::{Apply, ApplyAssign};
+
 /// Representation of a single operation during execution.
 #[derive(PartialEq, Eq, Debug, Clone, Copy)]
 pub enum Op {
@@ -18,10 +22,10 @@ pub enum Op {
     NoOp,
 }
 
-impl Add for Op {
+impl<K> Apply<K> for Op {
     type Output = Op;
 
-    fn add(self, other: Op) -> Op {
+    fn apply_add(self, _key: K, other: Op) -> Op {
         match (self, other) {
             (a, Op::NoOp) => a,
             (Op::NoOp, b) => b,
@@ -32,9 +36,9 @@ impl Add for Op {
     }
 }
 
-impl AddAssign for Op {
-    fn add_assign(&mut self, other: Self) {
-        *self = *self + other;
+impl ApplyAssign<Key> for Op {
+    fn apply_assign(&mut self, key: Key, other: Self) {
+        *self = self.apply_add(key, other);
     }
 }
 

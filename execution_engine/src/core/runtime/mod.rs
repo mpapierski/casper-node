@@ -24,9 +24,9 @@ use casper_types::{
     account::{Account, AccountHash, ActionType, Weight},
     bytesrepr::{self, Bytes, FromBytes, ToBytes},
     contracts::{
-        self, ContractV1, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
-        DisabledVersions, EntryPoint, EntryPointAccess, EntryPoints, Group, Groups, NamedKeys,
-        DEFAULT_ENTRY_POINT_NAME,
+        self, ContractPackage, ContractPackageStatus, ContractV1, ContractVersion,
+        ContractVersions, DisabledVersions, EntryPoint, EntryPointAccess, EntryPoints, Group,
+        Groups, NamedKeys, DEFAULT_ENTRY_POINT_NAME,
     },
     system::{
         self,
@@ -34,7 +34,7 @@ use casper_types::{
         handle_payment, mint, standard_payment, CallStackElement, SystemContractType, AUCTION,
         HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
-    AccessRights, ApiError, CLTyped, CLValue, ContextAccessRights, ContractHash,
+    AccessRights, ApiError, CLTyped, CLValue, ContextAccessRights, Contract, ContractHash,
     ContractPackageHash, ContractVersionKey, ContractWasm, DeployHash, EntryPointType, EraId, Gas,
     GrantedAccess, Key, NamedArg, Parameter, Phase, PublicKey, RuntimeArgs, StoredValue, Transfer,
     TransferResult, TransferredTo, URef, DICTIONARY_ITEM_KEY_MAX_LENGTH, U512,
@@ -1067,7 +1067,10 @@ where
     ) -> Result<CLValue, Error> {
         let key = contract_hash.into();
         let contract = match self.context.read_gs(&key)? {
-            Some(StoredValue::Contract(contract)) => contract,
+            Some(StoredValue::Contract(contract)) => {
+                Contract::from(contract).upgrade(contract_hash)
+            }
+            Some(StoredValue::ContractV2(contract)) => contract,
             Some(_) => {
                 return Err(Error::InvalidContract(contract_hash));
             }
@@ -1136,7 +1139,10 @@ where
         // Get contract data
         let contract_key = contract_hash.into();
         let contract = match self.context.read_gs(&contract_key)? {
-            Some(StoredValue::Contract(contract)) => contract,
+            Some(StoredValue::Contract(contract_v1)) => {
+                Contract::from(contract_v1).upgrade(contract_hash)
+            }
+            Some(StoredValue::ContractV2(contract)) => contract,
             Some(_) => {
                 return Err(Error::InvalidContract(contract_hash));
             }
@@ -1198,7 +1204,7 @@ where
         &mut self,
         contract_package: ContractPackage,
         contract_hash: ContractHash,
-        contract: ContractV1,
+        contract: Contract,
         entry_point: EntryPoint,
         args: RuntimeArgs,
     ) -> Result<CLValue, Error> {
@@ -1254,7 +1260,7 @@ where
             ),
             EntryPointType::Contract => (
                 contract.named_keys().clone(),
-                contract.extract_access_rights(contract_hash),
+                contract.extract_access_rights(),
             ),
         };
 
@@ -1334,7 +1340,7 @@ where
         }
 
         let module: Module = {
-            let wasm_key = contract.contract_wasm_key();
+            let wasm_key = Key::from(contract.contract_wasm_hash());
 
             let contract_wasm: ContractWasm = match self.context.read_gs(&wasm_key)? {
                 Some(StoredValue::ContractWasm(contract_wasm)) => contract_wasm,
@@ -1682,14 +1688,15 @@ where
 
         // TODO: EE-1032 - Implement different ways of carrying on existing named keys
         if let Some(previous_contract_hash) = contract_package.current_contract_hash() {
-            let previous_contract: ContractV1 =
-                self.context.read_gs_typed(&previous_contract_hash.into())?;
+            let previous_contract: Contract =
+                self.context.read_contract(&previous_contract_hash)?;
 
             let mut previous_named_keys = previous_contract.take_named_keys();
             named_keys.append(&mut previous_named_keys);
         }
 
-        let contract = ContractV1::new(
+        let contract = Contract::new(
+            ContractHash::from(contract_hash),
             contract_package_hash,
             contract_wasm_hash.into(),
             named_keys,
@@ -2559,7 +2566,7 @@ where
         let versions = package.versions();
         for contract_hash in versions.values() {
             let entry_points = {
-                let contract: ContractV1 = self.context.read_gs_typed(&Key::from(*contract_hash))?;
+                let contract = self.context.read_contract(contract_hash)?;
                 contract.entry_points().clone().take_entry_points()
             };
             for entry_point in entry_points {

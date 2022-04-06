@@ -7,11 +7,11 @@ use casper_types::{
     account::{Account, AccountHash, ActionThresholds, AssociatedKeys, Weight},
     contracts::{ContractPackageStatus, ContractVersions, DisabledVersions, Groups, NamedKeys},
     system::auction::{Bid, EraInfo, SeigniorageAllocation, UnbondingPurse, WithdrawPurse},
-    AccessRights, CLType, CLTyped, CLValue, ContractV1, ContractHash, ContractPackage,
-    ContractPackageHash, ContractVersionKey, ContractWasm, ContractWasmHash, DeployHash,
-    DeployInfo, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, EraId, Group, Key,
-    NamedKey, Parameter, ProtocolVersion, PublicKey, SecretKey, StoredValue, Transfer,
-    TransferAddr, Transform, URef, U128, U256, U512,
+    AccessRights, CLType, CLTyped, CLValue, ContractHash, ContractPackage, ContractPackageHash,
+    ContractV1, ContractVersionKey, ContractWasm, ContractWasmHash, DeployHash, DeployInfo,
+    EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, EraId, Group, Key, NamedKey,
+    Parameter, ProtocolVersion, PublicKey, SecretKey, StoredValue, Transfer, TransferAddr,
+    Transform, URef, U128, U256, U512,
 };
 use casper_validation::{
     abi::{ABIFixture, ABITestCase},

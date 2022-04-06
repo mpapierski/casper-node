@@ -2,6 +2,7 @@ mod chainspec_registry;
 mod check_transfer_success;
 mod contract_api;
 mod contract_context;
+mod contract_upgrade;
 mod counter;
 mod deploy;
 mod explorer;

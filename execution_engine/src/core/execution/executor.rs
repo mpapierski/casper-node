@@ -283,7 +283,7 @@ impl Executor {
         };
 
         let mut named_keys = contract.named_keys().clone();
-        let access_rights = contract.extract_access_rights(contract_hash);
+        let access_rights = contract.extract_access_rights();
         let base_key = Key::from(contract_hash);
 
         let runtime_context = self.create_runtime_context(

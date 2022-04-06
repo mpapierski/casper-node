@@ -59,9 +59,9 @@ use casper_types::{
         mint::TOTAL_SUPPLY_KEY,
         AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
-    CLTyped, CLValue, ContractV1, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
-    DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, PublicKey, RuntimeArgs, StoredValue, Transfer,
-    TransferAddr, URef, U512,
+    CLTyped, CLValue, Contract, ContractHash, ContractPackage, ContractPackageHash, ContractV1,
+    ContractWasm, DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, PublicKey, RuntimeArgs,
+    StoredValue, Transfer, TransferAddr, URef, U512,
 };
 
 use crate::{
@@ -793,15 +793,13 @@ where
     }
 
     /// Returns the "handle payment" contract, panics if it can't be found.
-    pub fn get_handle_payment_contract(&self) -> ContractV1 {
-        let handle_payment_contract: Key = self
+    pub fn get_handle_payment_contract(&self) -> Contract {
+        let handle_payment_contract = self
             .get_system_contract_hash(HANDLE_PAYMENT)
             .cloned()
-            .expect("should have handle payment contract uref")
-            .into();
-        self.query(None, handle_payment_contract, &[])
-            .and_then(|v| v.try_into().map_err(|error| format!("{:?}", error)))
-            .expect("should find handle payment URef")
+            .expect("should have handle payment contract uref");
+        self.get_contract(handle_payment_contract)
+            .expect("should have contract")
     }
 
     /// Returns the balance of a purse, panics if the balance can't be parsed into a `U512`.
@@ -856,15 +854,17 @@ where
     }
 
     /// Queries for a contract by `ContractHash`.
-    pub fn get_contract(&self, contract_hash: ContractHash) -> Option<ContractV1> {
+    pub fn get_contract(&self, contract_hash: ContractHash) -> Option<Contract> {
         let contract_value: StoredValue = self
             .query(None, contract_hash.into(), &[])
             .expect("should have contract value");
 
-        if let StoredValue::Contract(contract) = contract_value {
-            Some(contract)
-        } else {
-            None
+        match contract_value {
+            StoredValue::Contract(contract_v1) => {
+                Some(Contract::from(contract_v1).upgrade(contract_hash))
+            }
+            StoredValue::ContractV2(contract) => Some(contract),
+            _ => None,
         }
     }
 

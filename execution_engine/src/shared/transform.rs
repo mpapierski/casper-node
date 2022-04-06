@@ -13,8 +13,11 @@ use num::traits::{AsPrimitive, WrappingAdd};
 use casper_types::{
     bytesrepr::{self, FromBytes, ToBytes},
     contracts::NamedKeys,
-    CLType, CLTyped, CLValue, CLValueError, StoredValue, StoredValueTypeMismatch, U128, U256, U512,
+    CLType, CLTyped, CLValue, CLValueError, Contract, ContractHash, Key, StoredValue,
+    StoredValueTypeMismatch, U128, U256, U512,
 };
+
+use super::additive_map::{Apply, ApplyAssign};
 
 /// Error type for applying and combining transforms. A `TypeMismatch`
 /// occurs when a transform cannot be applied because the types are
@@ -164,10 +167,64 @@ where
 }
 
 impl Transform {
+    pub fn apply_add(self, key: Key, other: Transform) -> Transform {
+        match (self, other) {
+            (a, Transform::Identity) => a,
+            (Transform::Identity, b) => b,
+            (a @ Transform::Failure(_), _) => a,
+            (_, b @ Transform::Failure(_)) => b,
+            (_, b @ Transform::Write(_)) => b,
+            (Transform::Write(v), b) => {
+                // second transform changes value being written
+                match b.apply(key, v) {
+                    Err(error) => Transform::Failure(error),
+                    Ok(new_value) => Transform::Write(new_value),
+                }
+            }
+            (Transform::AddInt32(i), b) => match b {
+                Transform::AddInt32(j) => Transform::AddInt32(i.wrapping_add(j)),
+                Transform::AddUInt64(j) => Transform::AddUInt64(j.wrapping_add(i as u64)),
+                Transform::AddUInt128(j) => Transform::AddUInt128(j.wrapping_add(&(i.as_()))),
+                Transform::AddUInt256(j) => Transform::AddUInt256(j.wrapping_add(&(i.as_()))),
+                Transform::AddUInt512(j) => Transform::AddUInt512(j.wrapping_add(&i.as_())),
+                other => Transform::Failure(
+                    StoredValueTypeMismatch::new("AddInt32".to_owned(), format!("{:?}", other))
+                        .into(),
+                ),
+            },
+            (Transform::AddUInt64(i), b) => match b {
+                Transform::AddInt32(j) => Transform::AddInt32(j.wrapping_add(i as i32)),
+                Transform::AddUInt64(j) => Transform::AddUInt64(i.wrapping_add(j)),
+                Transform::AddUInt128(j) => Transform::AddUInt128(j.wrapping_add(&i.into())),
+                Transform::AddUInt256(j) => Transform::AddUInt256(j.wrapping_add(&i.into())),
+                Transform::AddUInt512(j) => Transform::AddUInt512(j.wrapping_add(&i.into())),
+                other => Transform::Failure(
+                    StoredValueTypeMismatch::new("AddUInt64".to_owned(), format!("{:?}", other))
+                        .into(),
+                ),
+            },
+            (Transform::AddUInt128(i), b) => wrapped_transform_addition(i, b, "U128"),
+            (Transform::AddUInt256(i), b) => wrapped_transform_addition(i, b, "U256"),
+            (Transform::AddUInt512(i), b) => wrapped_transform_addition(i, b, "U512"),
+            (Transform::AddKeys(mut ks1), b) => match b {
+                Transform::AddKeys(mut ks2) => {
+                    ks1.append(&mut ks2);
+                    Transform::AddKeys(ks1)
+                }
+                other => Transform::Failure(
+                    StoredValueTypeMismatch::new("AddKeys".to_owned(), format!("{:?}", other))
+                        .into(),
+                ),
+            },
+        }
+    }
+    pub fn apply_assign(&mut self, key: Key, other: Self) {
+        *self = self.clone().apply_add(key, other);
+    }
     /// Applies the transformation on a specified stored value instance.
     ///
     /// This method produces a new [`StoredValue`] instance based on the [`Transform`] variant.
-    pub fn apply(self, stored_value: StoredValue) -> Result<StoredValue, Error> {
+    pub fn apply(self, key: Key, stored_value: StoredValue) -> Result<StoredValue, Error> {
         match self {
             Transform::Identity => Ok(stored_value),
             Transform::Write(new_value) => Ok(new_value),
@@ -178,8 +235,24 @@ impl Transform {
             Transform::AddUInt512(to_add) => wrapping_addition(stored_value, to_add),
             Transform::AddKeys(mut keys) => match stored_value {
                 StoredValue::Contract(mut contract) => {
-                    contract.named_keys_append(&mut keys);
-                    Ok(StoredValue::Contract(contract))
+                    match key {
+                        Key::Hash(contract_hash) => {
+                            // Key::Hash(contract_hash_bytes) => {
+                            let mut contract =
+                                Contract::from(contract).upgrade(ContractHash::from(contract_hash));
+                            //     Ok(StoredValue::ContractV2(new_contract))
+                            // }
+                            // _ => {
+                            contract.named_keys_append(&mut keys);
+                            Ok(StoredValue::ContractV2(contract))
+                        }
+                        _ => {
+                            contract.named_keys_append(&mut keys);
+                            Ok(StoredValue::Contract(contract))
+                        }
+                    }
+
+                    // }
                 }
                 StoredValue::Account(mut account) => {
                     account.named_keys_append(&mut keys);
@@ -268,10 +341,10 @@ where
     }
 }
 
-impl Add for Transform {
+impl Apply<Key> for Transform {
     type Output = Transform;
 
-    fn add(self, other: Transform) -> Transform {
+    fn apply_add(self, key: Key, other: Transform) -> Transform {
         match (self, other) {
             (a, Transform::Identity) => a,
             (Transform::Identity, b) => b,
@@ -280,7 +353,7 @@ impl Add for Transform {
             (_, b @ Transform::Write(_)) => b,
             (Transform::Write(v), b) => {
                 // second transform changes value being written
-                match b.apply(v) {
+                match b.apply(key, v) {
                     Err(error) => Transform::Failure(error),
                     Ok(new_value) => Transform::Write(new_value),
                 }
@@ -324,9 +397,9 @@ impl Add for Transform {
     }
 }
 
-impl AddAssign for Transform {
-    fn add_assign(&mut self, other: Self) {
-        *self = self.clone() + other;
+impl ApplyAssign<Key> for Transform {
+    fn apply_assign(&mut self, key: Key, other: Self) {
+        *self = self.clone().apply_add(key, other);
     }
 }
 
@@ -356,7 +429,9 @@ impl From<&Transform> for casper_types::Transform {
                 casper_types::Transform::WriteContractWasm
             }
             Transform::Write(StoredValue::Contract(_)) => casper_types::Transform::WriteContract,
-            Transform::Write(StoredValue::ContractV2(_)) => casper_types::Transform::WriteContract,
+            Transform::Write(StoredValue::ContractV2(_)) => {
+                casper_types::Transform::WriteContractV2
+            }
             Transform::Write(StoredValue::ContractPackage(_)) => {
                 casper_types::Transform::WriteContractPackage
             }
@@ -483,6 +558,8 @@ mod tests {
     const ONE_U512: U512 = U512([1, 0, 0, 0, 0, 0, 0, 0]);
     const MAX_U512: U512 = U512([MAX_U64; 8]);
 
+    const KEY: Key = Key::Hash([0; 32]);
+
     #[test]
     fn i32_overflow() {
         let max = std::i32::MAX;
@@ -491,8 +568,8 @@ mod tests {
         let max_value = StoredValue::CLValue(CLValue::from_t(max).unwrap());
         let min_value = StoredValue::CLValue(CLValue::from_t(min).unwrap());
 
-        let apply_overflow = Transform::AddInt32(1).apply(max_value.clone());
-        let apply_underflow = Transform::AddInt32(-1).apply(min_value.clone());
+        let apply_overflow = Transform::AddInt32(1).apply(KEY, max_value.clone());
+        let apply_underflow = Transform::AddInt32(-1).apply(KEY, min_value.clone());
 
         let transform_overflow = Transform::AddInt32(max) + Transform::AddInt32(1);
         let transform_underflow = Transform::AddInt32(min) + Transform::AddInt32(-1);
@@ -522,12 +599,12 @@ mod tests {
 
         let one_transform: Transform = one.into();
 
-        let apply_overflow = Transform::AddInt32(1).apply(max_value.clone());
+        let apply_overflow = Transform::AddInt32(1).apply(KEY, max_value.clone());
 
-        let apply_overflow_uint = one_transform.clone().apply(max_value.clone());
-        let apply_underflow = Transform::AddInt32(-1).apply(min_value);
+        let apply_overflow_uint = one_transform.clone().apply(KEY, max_value.clone());
+        let apply_underflow = Transform::AddInt32(-1).apply(KEY, min_value);
 
-        let transform_overflow = max_transform.clone() + Transform::AddInt32(1);
+        let transform_overflow = max_transform.clone().apply_add(KEY, Transform::AddInt32(1));
         let transform_overflow_uint = max_transform + one_transform;
         let transform_underflow = min_transform + Transform::AddInt32(-1);
 

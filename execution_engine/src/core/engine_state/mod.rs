@@ -727,8 +727,7 @@ where
             }
         };
 
-        let mut handle_payment_access_rights =
-            handle_payment_contract.extract_access_rights(*handle_payment_contract_hash);
+        let mut handle_payment_access_rights = handle_payment_contract.extract_access_rights();
 
         let gas_limit = Gas::new(U512::from(std::u64::MAX));
 
@@ -1635,8 +1634,7 @@ where
                 Err(error) => return Ok(ExecutionResult::precondition_failure(error.into())),
             };
 
-            let mut handle_payment_access_rights =
-                handle_payment_contract.extract_access_rights(*handle_payment_contract_hash);
+            let mut handle_payment_access_rights = handle_payment_contract.extract_access_rights();
             handle_payment_access_rights.extend(&[
                 payment_purse_key
                     .into_uref()

@@ -202,18 +202,20 @@ where
                 );
                 return Err(CommitError::KeyNotFound(key).into());
             }
-            (ReadResult::Found(current_value), transform) => match transform.apply(current_value) {
-                Ok(updated_value) => updated_value,
-                Err(err) => {
-                    error!(
-                        ?state_root,
-                        ?key,
-                        ?err,
-                        "Key found, but could not apply transform"
-                    );
-                    return Err(CommitError::TransformError(err).into());
+            (ReadResult::Found(current_value), transform) => {
+                match transform.apply(key, current_value) {
+                    Ok(updated_value) => updated_value,
+                    Err(err) => {
+                        error!(
+                            ?state_root,
+                            ?key,
+                            ?err,
+                            "Key found, but could not apply transform"
+                        );
+                        return Err(CommitError::TransformError(err).into());
+                    }
                 }
-            },
+            }
             (ReadResult::RootNotFound, transform) => {
                 error!(
                     ?state_root,

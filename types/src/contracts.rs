@@ -1067,6 +1067,20 @@ impl Contract {
             Contract::V2(_v2) => true,
         }
     }
+    pub fn remove_named_key(&mut self, name: &str) -> Option<Key> {
+        match self {
+            Contract::V1(v1) => v1.remove_named_key(name),
+            Contract::V2(v2) => v2.named_keys.remove(name),
+        }
+    }
+
+    pub fn take_named_keys(self) -> NamedKeys {
+        match self {
+            Contract::V1(v1) => v1.take_named_keys(),
+            Contract::V2(v2) => v2.named_keys,
+        }
+    }
+
     /// Performs upgrade
     pub fn upgrade(self, contract_hash: ContractHash) -> Self {
         match self {
@@ -1088,6 +1102,13 @@ impl Contract {
                 Self::V2(v2)
             }
             Contract::V2(v2) => Self::V2(v2),
+        }
+    }
+
+    pub fn contract_hash(&self) -> Option<ContractHash> {
+        match self {
+            Contract::V1(_v1) => None,
+            Contract::V2(v2) => Some(v2.contract_hash),
         }
     }
 
@@ -1125,6 +1146,19 @@ impl Contract {
             Contract::V2(v2) => v2.protocol_version,
         }
     }
+
+    /// Returns the type signature for the given `method`.
+    pub fn entry_point(&self, method: &str) -> Option<&EntryPoint> {
+        match self {
+            Contract::V1(v1) => v1.entry_points.get(method),
+            Contract::V2(v2) => v2.entry_points.get(method),
+        }
+    }
+
+    pub fn is_compatible_protocol_version(&self, protocol_version: ProtocolVersion) -> bool {
+        self.protocol_version().value().major == protocol_version.value().major
+    }
+
     pub fn extract_access_rights(&self) -> ContextAccessRights {
         let v2 = match self {
             Contract::V1(_) => unreachable!("contract should be upgraded first"),
@@ -1147,8 +1181,8 @@ impl ToBytes for Contract {
             Contract::V2(v2) => {
                 let mut result = bytesrepr::allocate_buffer(self)?;
 
-                0u8.write_bytes(&mut result)?; // version id
-
+                1u8.write_bytes(&mut result)?; // version id
+                v2.contract_hash.write_bytes(&mut result)?;
                 v2.contract_package_hash.write_bytes(&mut result)?;
                 v2.contract_wasm_hash.write_bytes(&mut result)?;
                 v2.named_keys.write_bytes(&mut result)?;
@@ -1163,7 +1197,8 @@ impl ToBytes for Contract {
         match self {
             Contract::V1(v1) => unreachable!("v1 should not be serialized"),
             Contract::V2(v2) => {
-                1 + ToBytes::serialized_length(&v2.entry_points)
+                1 + ToBytes::serialized_length(&v2.contract_hash)
+                    + ToBytes::serialized_length(&v2.entry_points)
                     + ToBytes::serialized_length(&v2.contract_package_hash)
                     + ToBytes::serialized_length(&v2.contract_wasm_hash)
                     + ToBytes::serialized_length(&v2.protocol_version)
@@ -1176,7 +1211,7 @@ impl ToBytes for Contract {
         match self {
             Contract::V1(v1) => assert!(false, "v1 should not be serialized"),
             Contract::V2(v2) => {
-                0u8.write_bytes(writer)?; // version id
+                1u8.write_bytes(writer)?; // version id
                 v2.contract_hash.write_bytes(writer)?; // v2: new field
                 v2.contract_package_hash.write_bytes(writer)?;
                 v2.contract_wasm_hash.write_bytes(writer)?;
@@ -1186,6 +1221,36 @@ impl ToBytes for Contract {
             }
         }
         Ok(())
+    }
+}
+
+impl FromBytes for Contract {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (version, bytes) = u8::from_bytes(bytes)?;
+        match version {
+            0 => {
+                let (contract_v1, bytes) = ContractV1::from_bytes(bytes)?;
+                Ok((Contract::V1(contract_v1), bytes))
+            }
+            1 => {
+                let (contract_hash, bytes) = FromBytes::from_bytes(bytes)?;
+                let (contract_package_hash, bytes) = FromBytes::from_bytes(bytes)?;
+                let (contract_wasm_hash, bytes) = FromBytes::from_bytes(bytes)?;
+                let (named_keys, bytes) = NamedKeys::from_bytes(bytes)?;
+                let (entry_points, bytes) = EntryPoints::from_bytes(bytes)?;
+                let (protocol_version, bytes) = ProtocolVersion::from_bytes(bytes)?;
+                let v2 = ContractV2 {
+                    contract_hash,
+                    contract_package_hash,
+                    contract_wasm_hash,
+                    named_keys,
+                    entry_points,
+                    protocol_version,
+                };
+                Ok((Contract::V2(v2), bytes))
+            }
+            _ => return Err(bytesrepr::Error::Formatting),
+        }
     }
 }
 
@@ -1994,13 +2059,19 @@ mod tests {
 mod prop_tests {
     use proptest::prelude::*;
 
-    use crate::{bytesrepr, gens};
+    use super::*;
+    use crate::{bytesrepr, gens, ContractHash};
 
     proptest! {
         // #![proptest_config(ProptestConfig {
         //     cases: 1024,
         //     .. ProptestConfig::default()
         // })]
+
+        #[test]
+        fn test_value_contract_v2(contract in gens::contract_arb()) {
+            bytesrepr::test_serialization_roundtrip(&Contract::V1(contract).upgrade(ContractHash::default()));
+        }
 
         #[test]
         fn test_value_contract(contract in gens::contract_arb()) {

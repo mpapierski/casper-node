@@ -27,7 +27,7 @@ use casper_types::{
         mint::{self, ARG_ROUND_SEIGNIORAGE_RATE, ROUND_SEIGNIORAGE_RATE_KEY, TOTAL_SUPPLY_KEY},
         standard_payment, AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
-    AccessRights, CLValue, ContractV1, ContractHash, ContractPackage, ContractPackageHash,
+    AccessRights, CLValue, ContractHash, ContractPackage, ContractPackageHash, ContractV1,
     ContractWasm, ContractWasmHash, EntryPoints, EraId, Key, Motes, Phase, ProtocolVersion,
     PublicKey, SecretKey, StoredValue, URef, U512,
 };

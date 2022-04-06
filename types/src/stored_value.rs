@@ -68,6 +68,12 @@ pub enum StoredValue {
     ContractV2(Contract),
 }
 
+impl From<Contract> for StoredValue {
+    fn from(v: Contract) -> Self {
+        Self::ContractV2(v)
+    }
+}
+
 impl StoredValue {
     /// Returns a wrapped [`CLValue`] if this is a `CLValue` variant.
     pub fn as_cl_value(&self) -> Option<&CLValue> {
@@ -447,6 +453,8 @@ impl FromBytes for StoredValue {
                     (StoredValue::Unbonding(unbonding_purses), remainder)
                 })
             }
+            tag if tag == Tag::ContractV2 as u8 => Contract::from_bytes(remainder)
+                .map(|(contract, remainder)| (StoredValue::ContractV2(contract), remainder)),
             _ => Err(bytesrepr::Error::Formatting),
         }
     }

@@ -213,7 +213,7 @@ impl CommitProvider for ScratchGlobalState {
                         &key,
                     )? {
                         ReadResult::Found(current_value) => {
-                            match transform.apply(current_value.clone()) {
+                            match transform.apply(key, current_value.clone()) {
                                 Ok(updated_value) => updated_value,
                                 Err(err) => {
                                     error!(?key, ?err, "Key found, but could not apply transform");
@@ -237,13 +237,15 @@ impl CommitProvider for ScratchGlobalState {
                     txn.commit()?;
                     updated_value
                 }
-                (Some(current_value), transform) => match transform.apply(current_value.clone()) {
-                    Ok(updated_value) => updated_value,
-                    Err(err) => {
-                        error!(?key, ?err, "Key found, but could not apply transform");
-                        return Err(CommitError::TransformError(err).into());
+                (Some(current_value), transform) => {
+                    match transform.apply(key, current_value.clone()) {
+                        Ok(updated_value) => updated_value,
+                        Err(err) => {
+                            error!(?key, ?err, "Key found, but could not apply transform");
+                            return Err(CommitError::TransformError(err).into());
+                        }
                     }
-                },
+                }
             };
 
             self.cache.write().unwrap().insert(key, value);

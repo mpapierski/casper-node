@@ -11,10 +11,12 @@ use std::{
     ops::{AddAssign, Index},
 };
 
+use casper_types::{Key, StoredValue};
+
 /// An associative container that looks and works like a normal `HashMap` except that, instead of
 /// overwriting existing items, it adds the new value to the existing value.
 #[derive(Clone)]
-pub struct AdditiveMap<K, V, S = RandomState>(HashMap<K, V, S>);
+pub struct AdditiveMap<K, V, S = RandomState>(pub HashMap<K, V, S>);
 
 impl<K: Eq + Hash, V> AdditiveMap<K, V, RandomState> {
     /// Creates an empty `AdditiveMap`.
@@ -23,13 +25,21 @@ impl<K: Eq + Hash, V> AdditiveMap<K, V, RandomState> {
     }
 }
 
-impl<K: Eq + Hash, V: AddAssign + Default, S: BuildHasher> AdditiveMap<K, V, S> {
-    /// Modifies the existing value stored under `key`, or the default value for `V` if none, by
-    /// adding `value_to_add`.
+impl<K: Copy + Eq + Hash, V: ApplyAssign<K> + Default, S: BuildHasher> AdditiveMap<K, V, S> {
     pub fn insert_add(&mut self, key: K, value_to_add: V) {
         let current_value = self.0.entry(key).or_default();
-        *current_value += value_to_add;
+        current_value.apply_assign(key, value_to_add);
     }
+}
+
+pub trait Apply<K, Rhs = Self> {
+    type Output;
+
+    fn apply_add(self, key: K, other: Rhs) -> Self::Output;
+}
+
+pub trait ApplyAssign<K, Rhs = Self> {
+    fn apply_assign(&mut self, key: K, rhs: Rhs);
 }
 
 impl<K, V, S> AdditiveMap<K, V, S> {
@@ -174,15 +184,15 @@ mod tests {
     fn insert_add() {
         let key = "key";
         let mut int_map = AdditiveMap::new();
-        int_map.insert_add(key, 1);
+        int_map.insert_apply_assign(key, 1);
         assert_eq!(1, int_map[key]);
-        int_map.insert_add(key, 2);
+        int_map.insert_apply_assign(key, 2);
         assert_eq!(3, int_map[key]);
 
         let mut transform_map = AdditiveMap::new();
-        transform_map.insert_add(key, Transform::AddUInt64(1));
+        transform_map.insert_apply_assign(key, Transform::AddUInt64(1));
         assert_eq!(Transform::AddUInt64(1), transform_map[key]);
-        transform_map.insert_add(key, Transform::AddInt32(2));
+        transform_map.insert_apply_assign(key, Transform::AddInt32(2));
         assert_eq!(Transform::AddInt32(3), transform_map[key]);
     }
 }

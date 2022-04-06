@@ -487,6 +487,7 @@ impl ExecutionResultBuilder {
 
         match self.finalize_execution_result {
             Some(ExecutionResult::Failure { .. }) => {
+                eprintln!("{:?}", self.finalize_execution_result);
                 // payment_code_spec_5_a: Finalization Error should only ever be raised here
                 return Ok(ExecutionResult::precondition_failure(
                     error::Error::Finalization,

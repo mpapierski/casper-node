@@ -17,10 +17,11 @@ use casper_types::{
     bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::auction::EraInfo,
-    AccessRights, BlockTime, CLType, CLValue, ContextAccessRights, ContractHash, ContractPackage,
-    ContractPackageHash, ContractV1, DeployHash, DeployInfo, EntryPointAccess, EntryPointType, Gas,
-    GrantedAccess, Key, KeyTag, Phase, ProtocolVersion, PublicKey, RuntimeArgs, StoredValue,
-    Transfer, TransferAddr, URef, URefAddr, DICTIONARY_ITEM_KEY_MAX_LENGTH, KEY_HASH_LENGTH, U512,
+    AccessRights, BlockTime, CLType, CLValue, ContextAccessRights, Contract, ContractHash,
+    ContractPackage, ContractPackageHash, ContractV1, DeployHash, DeployInfo, EntryPointAccess,
+    EntryPointType, Gas, GrantedAccess, Key, KeyTag, Phase, ProtocolVersion, PublicKey,
+    RuntimeArgs, StoredValue, Transfer, TransferAddr, URef, URefAddr,
+    DICTIONARY_ITEM_KEY_MAX_LENGTH, KEY_HASH_LENGTH, U512,
 };
 
 use crate::{
@@ -234,7 +235,7 @@ where
     fn remove_key_from_contract(
         &mut self,
         key: Key,
-        mut contract: ContractV1,
+        mut contract: Contract,
         name: &str,
     ) -> Result<(), Error> {
         if contract.remove_named_key(name).is_none() {
@@ -262,24 +263,14 @@ where
                 Ok(())
             }
             contract_uref @ Key::URef(_) => {
-                let contract: ContractV1 = {
-                    let value: StoredValue = self
-                        .tracking_copy
-                        .borrow_mut()
-                        .read(self.correlation_id, &contract_uref)
-                        .map_err(Into::into)?
-                        .ok_or(Error::KeyNotFound(contract_uref))?;
-
-                    value.try_into().map_err(Error::TypeMismatch)?
-                };
-
-                self.named_keys.remove(name);
-                self.remove_key_from_contract(contract_uref, contract, name)
+                // We dropped stored contracts under urefs
+                Err(Error::RemoveKeyFailure(RemoveKeyFailure::PermissionDenied))
             }
-            contract_hash @ Key::Hash(_) => {
-                let contract: ContractV1 = self.read_gs_typed(&contract_hash)?;
+            Key::Hash(contract_hash_bytes) => {
+                let contract_hash = ContractHash::from(contract_hash_bytes);
+                let contract: Contract = self.read_contract(&contract_hash)?;
                 self.named_keys.remove(name);
-                self.remove_key_from_contract(contract_hash, contract, name)
+                self.remove_key_from_contract(Key::from(contract_hash), contract, name)
             }
             transfer_addr @ Key::Transfer(_) => {
                 let _transfer: Transfer = self.read_gs_typed(&transfer_addr)?;
@@ -519,6 +510,7 @@ where
         };
 
         value.try_into().map_err(|error| {
+            eprintln!("nope");
             Error::FunctionNotFound(format!(
                 "Type mismatch for value under {:?}: {:?}",
                 key, error
@@ -544,6 +536,23 @@ where
                 .map_err(Into::into)
         } else {
             panic!("Do not use this function for reading from non-account keys")
+        }
+    }
+
+    /// Read a contract from the global state.
+    pub fn read_contract(&mut self, contract_hash: &ContractHash) -> Result<Contract, Error> {
+        let key = Key::from(*contract_hash);
+        match self.read_gs(&key)? {
+            Some(StoredValue::Contract(contract_v1)) => {
+                Ok(Contract::from(contract_v1).upgrade(*contract_hash))
+            }
+            Some(StoredValue::ContractV2(contract)) => Ok(contract),
+            None => return Err(Error::KeyNotFound(key)),
+            Some(stored_value) => Err(Error::FunctionNotFound(format!(
+                "Type mismatch for value under {:?}: {}",
+                contract_hash,
+                stored_value.type_name()
+            ))),
         }
     }
 

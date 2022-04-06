@@ -94,6 +94,7 @@ enum TransformTag {
     AddUInt512 = 15,
     AddKeys = 16,
     Failure = 17,
+    WriteContractV2 = 18,
 }
 
 impl TryFrom<u8> for TransformTag {
@@ -556,6 +557,8 @@ pub enum Transform {
     AddKeys(Vec<NamedKey>),
     /// A failed transformation, containing an error message.
     Failure(String),
+    /// Writes a smart contract to global state.
+    WriteContractV2,
 }
 
 impl Transform {
@@ -585,6 +588,7 @@ impl Transform {
             Transform::AddUInt512(_) => TransformTag::AddUInt512,
             Transform::AddKeys(_) => TransformTag::AddKeys,
             Transform::Failure(_) => TransformTag::Failure,
+            Transform::WriteContractV2 => TransformTag::WriteContractV2,
         }
     }
 }
@@ -640,6 +644,7 @@ impl ToBytes for Transform {
             Transform::Failure(value) => {
                 buffer.extend(value.to_bytes()?);
             }
+            Transform::WriteContractV2 => {}
         }
         Ok(buffer)
     }
@@ -661,6 +666,7 @@ impl ToBytes for Transform {
             Transform::Identity
             | Transform::WriteContractWasm
             | Transform::WriteContract
+            | Transform::WriteContractV2
             | Transform::WriteContractPackage => 0,
             Transform::WriteBid(value) => value.serialized_length(),
             Transform::WriteWithdraw(value) => value.serialized_length(),
@@ -734,6 +740,7 @@ impl FromBytes for Transform {
                     <Vec<UnbondingPurse> as FromBytes>::from_bytes(remainder)?;
                 Ok((Transform::WriteWithdraw(unbonding_purses), remainder))
             }
+            TransformTag::WriteContractV2 => Ok((Transform::WriteContractV2, remainder)),
         }
     }
 }

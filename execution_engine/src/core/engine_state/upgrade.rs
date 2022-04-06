@@ -8,7 +8,7 @@ use casper_hashing::Digest;
 use casper_types::{
     bytesrepr::{self},
     system::SystemContractType,
-    ContractV1, ContractHash, EraId, Key, ProtocolVersion, StoredValue,
+    ContractHash, ContractV1, EraId, Key, ProtocolVersion, StoredValue,
 };
 
 use crate::{

@@ -87,7 +87,11 @@ fn query_dictionary_item(
 
                 let named_keys = match &stored_value {
                     StoredValue::Account(account) => account.named_keys(),
-                    StoredValue::Contract(contract) => contract.named_keys(),
+                    StoredValue::Contract(contract_v1) => {
+                        // This is read only query, so it is safe to avoid upgrade v1 contract.
+                        contract_v1.named_keys()
+                    }
+                    StoredValue::ContractV2(contract) => contract.named_keys(),
                     _ => {
                         return Err(
                             "Provided base key is nether an account or a contract".to_string()
