@@ -27,7 +27,7 @@ use casper_types::{
         mint::{self, ARG_ROUND_SEIGNIORAGE_RATE, ROUND_SEIGNIORAGE_RATE_KEY, TOTAL_SUPPLY_KEY},
         standard_payment, AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
-    AccessRights, CLValue, Contract, ContractHash, ContractPackage, ContractPackageHash,
+    AccessRights, CLValue, ContractV1, ContractHash, ContractPackage, ContractPackageHash,
     ContractWasm, ContractWasmHash, EntryPoints, EraId, Key, Motes, Phase, ProtocolVersion,
     PublicKey, SecretKey, StoredValue, URef, U512,
 };
@@ -1246,7 +1246,7 @@ where
             ContractPackageHash::new(self.address_generator.borrow_mut().new_hash_address());
 
         let contract_wasm = ContractWasm::new(vec![]);
-        let contract = Contract::new(
+        let contract = ContractV1::new(
             contract_package_hash,
             contract_wasm_hash,
             named_keys,

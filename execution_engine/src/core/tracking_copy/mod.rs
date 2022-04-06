@@ -530,6 +530,15 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
                 StoredValue::Unbonding(_) => {
                     return Ok(query.into_not_found_result("UnbondingPurses value found."));
                 }
+                StoredValue::ContractV2(contract) => {
+                    let name = query.next_name();
+                    if let Some(key) = contract.named_keys().get(name) {
+                        query.navigate(*key);
+                    } else {
+                        let msg_prefix = format!("Name {} not found in Contract", name);
+                        return Ok(query.into_not_found_result(&msg_prefix));
+                    }
+                }
             }
         }
     }

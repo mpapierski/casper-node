@@ -37,6 +37,7 @@ pub struct Groups {
 #[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize, DataSize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Contract {
+    contract_hash: Option<ContractHash>,
     contract_package_hash: ContractPackageHash,
     contract_wasm_hash: ContractWasmHash,
     #[data_size(skip)]
@@ -53,6 +54,8 @@ impl From<&DomainContract> for Contract {
         let entry_points = contract.entry_points().clone().take_entry_points();
         let named_keys = vectorize(contract.named_keys());
         Contract {
+            // todo v2
+            contract_hash: None,
             contract_package_hash: contract.contract_package_hash(),
             contract_wasm_hash: contract.contract_wasm_hash(),
             named_keys,

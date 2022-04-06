@@ -8,7 +8,7 @@ use casper_types::{
     account::{Account, AccountHash, AssociatedKeys, Weight, ACCOUNT_HASH_LENGTH},
     contracts::NamedKeys,
     gens::*,
-    AccessRights, CLValue, Contract, EntryPoints, HashAddr, Key, KeyTag, ProtocolVersion,
+    AccessRights, CLValue, ContractV1, EntryPoints, HashAddr, Key, KeyTag, ProtocolVersion,
     StoredValue, URef, U256, U512,
 };
 
@@ -339,7 +339,7 @@ proptest! {
         let mut named_keys = NamedKeys::new();
         named_keys.insert(name.clone(), k);
         let contract =
-            StoredValue::Contract(Contract::new(
+            StoredValue::Contract(ContractV1::new(
             [2; 32].into(),
             [3; 32].into(),
             named_keys,
@@ -427,7 +427,7 @@ proptest! {
         let mut contract_named_keys = NamedKeys::new();
         contract_named_keys.insert(state_name.clone(), k);
         let contract =
-            StoredValue::Contract(Contract::new(
+            StoredValue::Contract(ContractV1::new(
             [2; 32].into(),
             [3; 32].into(),
             contract_named_keys,
@@ -531,7 +531,7 @@ fn query_for_circular_references_should_fail() {
     let mut named_keys = NamedKeys::new();
     named_keys.insert(key_name.clone(), cl_value_key);
     named_keys.insert(contract_name.clone(), contract_key);
-    let contract = StoredValue::Contract(Contract::new(
+    let contract = StoredValue::Contract(ContractV1::new(
         [2; 32].into(),
         [3; 32].into(),
         named_keys,
@@ -597,7 +597,7 @@ fn validate_query_proof_should_work() {
         tmp.insert(account_name.clone(), account_key);
         tmp
     };
-    let contract_value = StoredValue::Contract(Contract::new(
+    let contract_value = StoredValue::Contract(ContractV1::new(
         [2; 32].into(),
         [3; 32].into(),
         named_keys,
@@ -1052,7 +1052,7 @@ fn query_with_large_depth_with_fixed_path_should_fail() {
             named_keys.insert(contract_name.clone(), next_contract_key);
             named_keys
         };
-        let contract = StoredValue::Contract(Contract::new(
+        let contract = StoredValue::Contract(ContractV1::new(
             val_to_hashaddr(PACKAGE_OFFSET + value).into(),
             val_to_hashaddr(WASM_OFFSET + value).into(),
             named_keys,
@@ -1113,7 +1113,7 @@ fn query_with_large_depth_with_urefs_should_fail() {
         named_keys.insert(root_key_name.clone(), uref_keys[0]);
         named_keys
     };
-    let contract = StoredValue::Contract(Contract::new(
+    let contract = StoredValue::Contract(ContractV1::new(
         val_to_hashaddr(PACKAGE_OFFSET).into(),
         val_to_hashaddr(WASM_OFFSET).into(),
         named_keys,

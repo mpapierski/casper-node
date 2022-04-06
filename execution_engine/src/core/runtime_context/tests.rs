@@ -16,7 +16,7 @@ use casper_types::{
     bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::{AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT},
-    AccessRights, BlockTime, CLValue, ContextAccessRights, Contract, ContractHash, DeployHash,
+    AccessRights, BlockTime, CLValue, ContextAccessRights, ContractHash, ContractV1, DeployHash,
     EntryPointType, EntryPoints, Gas, Key, Phase, ProtocolVersion, PublicKey, RuntimeArgs,
     SecretKey, StoredValue, URef, KEY_HASH_LENGTH, U256, U512,
 };
@@ -347,11 +347,12 @@ fn contract_key_addable_valid() {
 
     let mut rng = rand::thread_rng();
     let contract_key = random_contract_key(&mut rng);
-    let contract = StoredValue::Contract(Contract::default());
+    let contract = StoredValue::Contract(ContractV1::default());
     let mut access_rights = contract
-        .as_contract()
+        .clone()
+        .into_contract(ContractHash::default())
         .unwrap()
-        .extract_access_rights(ContractHash::default());
+        .extract_access_rights();
 
     let tracking_copy = Rc::new(RefCell::new(new_tracking_copy(
         account_key,
@@ -407,7 +408,7 @@ fn contract_key_addable_valid() {
         .metered_add_gs(contract_key, named_uref_tuple)
         .expect("Adding should work.");
 
-    let updated_contract = StoredValue::Contract(Contract::new(
+    let updated_contract = StoredValue::Contract(ContractV1::new(
         [0u8; 32].into(),
         [0u8; 32].into(),
         iter::once((uref_name, uref_as_key)).collect(),
@@ -436,11 +437,12 @@ fn contract_key_addable_invalid() {
     let contract_key = random_contract_key(&mut rng);
 
     let other_contract_key = random_contract_key(&mut rng);
-    let contract = StoredValue::Contract(Contract::default());
+    let contract = StoredValue::Contract(ContractV1::default());
     let mut access_rights = contract
-        .as_contract()
+        .clone()
+        .into_contract(ContractHash::default())
         .unwrap()
-        .extract_access_rights(ContractHash::default());
+        .extract_access_rights();
     let tracking_copy = Rc::new(RefCell::new(new_tracking_copy(
         account_key,
         account.clone(),

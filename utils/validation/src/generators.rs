@@ -7,7 +7,7 @@ use casper_types::{
     account::{Account, AccountHash, ActionThresholds, AssociatedKeys, Weight},
     contracts::{ContractPackageStatus, ContractVersions, DisabledVersions, Groups, NamedKeys},
     system::auction::{Bid, EraInfo, SeigniorageAllocation, UnbondingPurse, WithdrawPurse},
-    AccessRights, CLType, CLTyped, CLValue, Contract, ContractHash, ContractPackage,
+    AccessRights, CLType, CLTyped, CLValue, ContractV1, ContractHash, ContractPackage,
     ContractPackageHash, ContractVersionKey, ContractWasm, ContractWasmHash, DeployHash,
     DeployInfo, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, EraId, Group, Key,
     NamedKey, Parameter, ProtocolVersion, PublicKey, SecretKey, StoredValue, Transfer,
@@ -327,7 +327,7 @@ pub fn make_abi_test_fixtures() -> Result<TestFixtures, Error> {
             entry_points
         };
 
-        let contract = Contract::new(
+        let contract = ContractV1::new(
             ContractPackageHash::new([100; 32]),
             ContractWasmHash::new([101; 32]),
             contract_named_keys,

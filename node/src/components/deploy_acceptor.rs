@@ -19,8 +19,9 @@ use casper_execution_engine::core::engine_state::{
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
+    contracts::Contract,
     system::auction::ARG_AMOUNT,
-    Contract, ContractHash, ContractPackage, ContractPackageHash, ContractVersion,
+    ContractHash, ContractPackage, ContractPackageHash, ContractV1, ContractVersion,
     ContractVersionKey, Key, ProtocolVersion, U512,
 };
 

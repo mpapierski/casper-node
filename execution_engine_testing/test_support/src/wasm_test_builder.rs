@@ -59,7 +59,7 @@ use casper_types::{
         mint::TOTAL_SUPPLY_KEY,
         AUCTION, HANDLE_PAYMENT, MINT, STANDARD_PAYMENT,
     },
-    CLTyped, CLValue, Contract, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
+    CLTyped, CLValue, ContractV1, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
     DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, PublicKey, RuntimeArgs, StoredValue, Transfer,
     TransferAddr, URef, U512,
 };
@@ -793,7 +793,7 @@ where
     }
 
     /// Returns the "handle payment" contract, panics if it can't be found.
-    pub fn get_handle_payment_contract(&self) -> Contract {
+    pub fn get_handle_payment_contract(&self) -> ContractV1 {
         let handle_payment_contract: Key = self
             .get_system_contract_hash(HANDLE_PAYMENT)
             .cloned()
@@ -856,7 +856,7 @@ where
     }
 
     /// Queries for a contract by `ContractHash`.
-    pub fn get_contract(&self, contract_hash: ContractHash) -> Option<Contract> {
+    pub fn get_contract(&self, contract_hash: ContractHash) -> Option<ContractV1> {
         let contract_value: StoredValue = self
             .query(None, contract_hash.into(), &[])
             .expect("should have contract value");

@@ -92,8 +92,9 @@ use casper_execution_engine::{
 };
 use casper_hashing::Digest;
 use casper_types::{
-    account::Account, bytesrepr::Bytes, system::auction::EraValidators, Contract, ContractPackage,
-    EraId, ExecutionEffect, ExecutionResult, Key, ProtocolVersion, PublicKey, Transfer, URef, U512,
+    account::Account, bytesrepr::Bytes, contracts::Contract, system::auction::EraValidators,
+    ContractPackage, ContractV1, EraId, ExecutionEffect, ExecutionResult, Key, ProtocolVersion,
+    PublicKey, Transfer, URef, U512,
 };
 
 use crate::{
@@ -1664,7 +1665,7 @@ impl<REv> EffectBuilder<REv> {
     {
         let query_request = QueryRequest::new(prestate_hash, query_key, path);
         match self.query_global_state(query_request).await {
-            Ok(QueryResult::Success { value, .. }) => value.as_contract().cloned(),
+            Ok(QueryResult::Success { value, .. }) => value.into_contract_read_only(),
             Ok(_) | Err(_) => None,
         }
     }

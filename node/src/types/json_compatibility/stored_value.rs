@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use casper_types::{
     bytesrepr::{self, ToBytes},
     system::auction::{Bid, EraInfo, UnbondingPurse, WithdrawPurse},
-    CLValue, DeployInfo, StoredValue as ExecutionEngineStoredValue, Transfer,
+    CLValue, Contract as DomainContract, DeployInfo, StoredValue as ExecutionEngineStoredValue,
+    Transfer,
 };
 
 use super::{Account, Contract, ContractPackage};
@@ -60,7 +61,7 @@ impl TryFrom<ExecutionEngineStoredValue> for StoredValue {
                 StoredValue::ContractWasm(base16::encode_lower(&contract_wasm.to_bytes()?))
             }
             ExecutionEngineStoredValue::Contract(contract) => {
-                StoredValue::Contract((&contract).into())
+                StoredValue::Contract((&DomainContract::V1(contract)).into())
             }
             ExecutionEngineStoredValue::ContractPackage(contract_package) => {
                 StoredValue::ContractPackage((&contract_package).into())
@@ -76,6 +77,9 @@ impl TryFrom<ExecutionEngineStoredValue> for StoredValue {
             }
             ExecutionEngineStoredValue::Unbonding(unbonding_purses) => {
                 StoredValue::Unbonding(unbonding_purses)
+            }
+            ExecutionEngineStoredValue::ContractV2(contract) => {
+                StoredValue::Contract((&contract).into())
             }
         };
 

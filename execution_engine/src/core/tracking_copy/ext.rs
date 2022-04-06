@@ -2,7 +2,7 @@ use std::convert::TryInto;
 
 use casper_types::{
     account::{Account, AccountHash},
-    CLValue, Contract, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
+    CLValue, ContractV1, ContractHash, ContractPackage, ContractPackageHash, ContractWasm,
     ContractWasmHash, Key, Motes, StoredValue, StoredValueTypeMismatch, URef,
 };
 
@@ -70,7 +70,7 @@ pub trait TrackingCopyExt<R> {
         &mut self,
         correlation_id: CorrelationId,
         contract_hash: ContractHash,
-    ) -> Result<Contract, Self::Error>;
+    ) -> Result<ContractV1, Self::Error>;
 
     /// Gets a contract package by Key
     fn get_contract_package(
@@ -212,7 +212,7 @@ where
         &mut self,
         correlation_id: CorrelationId,
         contract_hash: ContractHash,
-    ) -> Result<Contract, Self::Error> {
+    ) -> Result<ContractV1, Self::Error> {
         let key = contract_hash.into();
         match self.read(correlation_id, &key).map_err(Into::into)? {
             Some(StoredValue::Contract(contract)) => Ok(contract),

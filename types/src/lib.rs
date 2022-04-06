@@ -65,9 +65,9 @@ pub use cl_value::{CLTypeMismatch, CLValue, CLValueError};
 pub use contract_wasm::{ContractWasm, ContractWasmHash};
 #[doc(inline)]
 pub use contracts::{
-    Contract, ContractHash, ContractPackage, ContractPackageHash, ContractVersion,
-    ContractVersionKey, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, Group,
-    Parameter,
+    Contract, ContractHash, ContractPackage, ContractPackageHash, ContractV1, ContractV2,
+    ContractVersion, ContractVersionKey, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints,
+    Group, Parameter,
 };
 pub use crypto::*;
 pub use deploy_info::DeployInfo;

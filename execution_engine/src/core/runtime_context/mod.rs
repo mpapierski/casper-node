@@ -17,9 +17,9 @@ use casper_types::{
     bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::auction::EraInfo,
-    AccessRights, BlockTime, CLType, CLValue, ContextAccessRights, Contract, ContractHash,
-    ContractPackage, ContractPackageHash, DeployHash, DeployInfo, EntryPointAccess, EntryPointType,
-    Gas, GrantedAccess, Key, KeyTag, Phase, ProtocolVersion, PublicKey, RuntimeArgs, StoredValue,
+    AccessRights, BlockTime, CLType, CLValue, ContextAccessRights, ContractHash, ContractPackage,
+    ContractPackageHash, ContractV1, DeployHash, DeployInfo, EntryPointAccess, EntryPointType, Gas,
+    GrantedAccess, Key, KeyTag, Phase, ProtocolVersion, PublicKey, RuntimeArgs, StoredValue,
     Transfer, TransferAddr, URef, URefAddr, DICTIONARY_ITEM_KEY_MAX_LENGTH, KEY_HASH_LENGTH, U512,
 };
 
@@ -234,7 +234,7 @@ where
     fn remove_key_from_contract(
         &mut self,
         key: Key,
-        mut contract: Contract,
+        mut contract: ContractV1,
         name: &str,
     ) -> Result<(), Error> {
         if contract.remove_named_key(name).is_none() {
@@ -262,7 +262,7 @@ where
                 Ok(())
             }
             contract_uref @ Key::URef(_) => {
-                let contract: Contract = {
+                let contract: ContractV1 = {
                     let value: StoredValue = self
                         .tracking_copy
                         .borrow_mut()
@@ -277,7 +277,7 @@ where
                 self.remove_key_from_contract(contract_uref, contract, name)
             }
             contract_hash @ Key::Hash(_) => {
-                let contract: Contract = self.read_gs_typed(&contract_hash)?;
+                let contract: ContractV1 = self.read_gs_typed(&contract_hash)?;
                 self.named_keys.remove(name);
                 self.remove_key_from_contract(contract_hash, contract, name)
             }
@@ -688,6 +688,7 @@ where
                 .named_keys()
                 .values()
                 .try_for_each(|key| self.validate_key(key)),
+
             // TODO: anything to validate here?
             StoredValue::ContractPackage(_) => Ok(()),
             StoredValue::Transfer(_) => Ok(()),
@@ -696,6 +697,10 @@ where
             StoredValue::Bid(_) => Ok(()),
             StoredValue::Withdraw(_) => Ok(()),
             StoredValue::Unbonding(_) => Ok(()),
+            StoredValue::ContractV2(contract) => contract
+                .named_keys()
+                .values()
+                .try_for_each(|key| self.validate_key(key)),
         }
     }
 

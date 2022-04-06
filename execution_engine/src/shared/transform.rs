@@ -230,6 +230,10 @@ impl Transform {
                     let found = "Unbonding".to_string();
                     Err(StoredValueTypeMismatch::new(expected, found).into())
                 }
+                StoredValue::ContractV2(mut contract) => {
+                    contract.named_keys_append(&mut keys);
+                    Ok(StoredValue::ContractV2(contract))
+                }
             },
             Transform::Failure(error) => Err(error),
         }
@@ -352,6 +356,7 @@ impl From<&Transform> for casper_types::Transform {
                 casper_types::Transform::WriteContractWasm
             }
             Transform::Write(StoredValue::Contract(_)) => casper_types::Transform::WriteContract,
+            Transform::Write(StoredValue::ContractV2(_)) => casper_types::Transform::WriteContract,
             Transform::Write(StoredValue::ContractPackage(_)) => {
                 casper_types::Transform::WriteContractPackage
             }

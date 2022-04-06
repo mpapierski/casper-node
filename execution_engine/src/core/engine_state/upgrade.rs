@@ -8,7 +8,7 @@ use casper_hashing::Digest;
 use casper_types::{
     bytesrepr::{self},
     system::SystemContractType,
-    Contract, ContractHash, EraId, Key, ProtocolVersion, StoredValue,
+    ContractV1, ContractHash, EraId, Key, ProtocolVersion, StoredValue,
 };
 
 use crate::{
@@ -306,7 +306,7 @@ where
             })?;
         contract.set_protocol_version(self.new_protocol_version);
 
-        let new_contract = Contract::new(
+        let new_contract = ContractV1::new(
             contract.contract_package_hash(),
             contract.contract_wasm_hash(),
             contract.named_keys().clone(),

@@ -23,7 +23,7 @@ use crate::{
         DELEGATION_RATE_DENOMINATOR,
     },
     transfer::TransferAddr,
-    AccessRights, CLType, CLValue, Contract, ContractHash, ContractPackage, ContractVersionKey,
+    AccessRights, CLType, CLValue, ContractHash, ContractPackage, ContractV1, ContractVersionKey,
     ContractWasm, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, EraId, Group, Key,
     NamedArg, Parameter, Phase, ProtocolVersion, SemVer, StoredValue, URef, U128, U256, U512,
 };
@@ -313,7 +313,7 @@ pub fn entry_points_arb() -> impl Strategy<Value = EntryPoints> {
     collection::vec(entry_point_arb(), 1..10).prop_map(EntryPoints::from)
 }
 
-pub fn contract_arb() -> impl Strategy<Value = Contract> {
+pub fn contract_arb() -> impl Strategy<Value = ContractV1> {
     (
         protocol_version_arb(),
         entry_points_arb(),
@@ -329,7 +329,7 @@ pub fn contract_arb() -> impl Strategy<Value = Contract> {
                 contract_wasm_hash,
                 named_keys,
             )| {
-                Contract::new(
+                ContractV1::new(
                     contract_package_hash_arb.into(),
                     contract_wasm_hash.into(),
                     named_keys,
@@ -526,5 +526,6 @@ pub fn stored_value_arb() -> impl Strategy<Value = StoredValue> {
             StoredValue::Bid(_) => stored_value,
             StoredValue::Withdraw(_) => stored_value,
             StoredValue::Unbonding(_) => stored_value,
+            StoredValue::ContractV2(_) => stored_value,
         })
 }

@@ -412,7 +412,7 @@ fn should_run_delegate_and_undelegate() {
         .query(None, auction_hash.into(), &[])
         .expect("should query auction hash");
     let _auction = auction_stored_value
-        .as_contract()
+        .into_contract(auction_hash)
         .expect("should be contract");
 
     //

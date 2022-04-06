@@ -12,7 +12,8 @@ use crate::{
 use casper_hashing::Digest;
 use casper_types::{
     account::{Account, AccountHash},
-    Contract, ContractHash, ContractPackage, ContractPackageHash, ContractVersion, U512,
+    contracts::Contract,
+    ContractHash, ContractPackage, ContractPackageHash, ContractV1, ContractVersion, U512,
 };
 
 /// A utility struct to hold duplicated information across events.

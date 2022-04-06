@@ -24,7 +24,7 @@ use casper_types::{
     account::{Account, AccountHash, ActionType, Weight},
     bytesrepr::{self, Bytes, FromBytes, ToBytes},
     contracts::{
-        self, Contract, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
+        self, ContractV1, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
         DisabledVersions, EntryPoint, EntryPointAccess, EntryPoints, Group, Groups, NamedKeys,
         DEFAULT_ENTRY_POINT_NAME,
     },
@@ -1198,7 +1198,7 @@ where
         &mut self,
         contract_package: ContractPackage,
         contract_hash: ContractHash,
-        contract: Contract,
+        contract: ContractV1,
         entry_point: EntryPoint,
         args: RuntimeArgs,
     ) -> Result<CLValue, Error> {
@@ -1682,14 +1682,14 @@ where
 
         // TODO: EE-1032 - Implement different ways of carrying on existing named keys
         if let Some(previous_contract_hash) = contract_package.current_contract_hash() {
-            let previous_contract: Contract =
+            let previous_contract: ContractV1 =
                 self.context.read_gs_typed(&previous_contract_hash.into())?;
 
             let mut previous_named_keys = previous_contract.take_named_keys();
             named_keys.append(&mut previous_named_keys);
         }
 
-        let contract = Contract::new(
+        let contract = ContractV1::new(
             contract_package_hash,
             contract_wasm_hash.into(),
             named_keys,
@@ -2559,7 +2559,7 @@ where
         let versions = package.versions();
         for contract_hash in versions.values() {
             let entry_points = {
-                let contract: Contract = self.context.read_gs_typed(&Key::from(*contract_hash))?;
+                let contract: ContractV1 = self.context.read_gs_typed(&Key::from(*contract_hash))?;
                 contract.entry_points().clone().take_entry_points()
             };
             for entry_point in entry_points {

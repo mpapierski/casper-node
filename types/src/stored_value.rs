@@ -15,9 +15,9 @@ use serde_bytes::ByteBuf;
 use crate::{
     account::Account,
     bytesrepr::{self, FromBytes, ToBytes, U8_SERIALIZED_LENGTH},
-    contracts::ContractPackage,
+    contracts::{Contract, ContractPackage},
     system::auction::{Bid, EraInfo, UnbondingPurse, WithdrawPurse},
-    CLValue, Contract, ContractWasm, DeployInfo, Transfer,
+    CLValue, ContractHash, ContractV1, ContractWasm, DeployInfo, Transfer,
 };
 pub use type_mismatch::TypeMismatch;
 
@@ -35,6 +35,7 @@ enum Tag {
     Bid = 8,
     Withdraw = 9,
     Unbonding = 10,
+    ContractV2 = 11,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -48,8 +49,8 @@ pub enum StoredValue {
     Account(Account),
     /// Variant that stores [`ContractWasm`].
     ContractWasm(ContractWasm),
-    /// Variant that stores [`Contract`].
-    Contract(Contract),
+    /// Variant that stores [`ContractV1`].
+    Contract(ContractV1),
     /// Variant that stores [`ContractPackage`].
     ContractPackage(ContractPackage),
     /// Variant that stores [`Transfer`].
@@ -64,6 +65,7 @@ pub enum StoredValue {
     Withdraw(Vec<WithdrawPurse>),
     /// Variant that stores unbonding information.
     Unbonding(Vec<UnbondingPurse>),
+    ContractV2(Contract),
 }
 
 impl StoredValue {
@@ -83,12 +85,27 @@ impl StoredValue {
         }
     }
 
-    /// Returns a wrapped [`Contract`] if this is a `Contract` variant.
-    pub fn as_contract(&self) -> Option<&Contract> {
-        match self {
-            StoredValue::Contract(contract) => Some(contract),
-            _ => None,
-        }
+    pub fn into_contract_read_only(self) -> Option<Contract> {
+        let contract = match self {
+            StoredValue::Contract(v1) => Contract::from(v1),
+            StoredValue::ContractV2(v2) => v2,
+            _ => return None,
+        };
+        Some(contract)
+    }
+
+    /// Returns a wrapped [`Contract`] if this is a `Contract` variant and performs upgrade to most
+    /// recent version of the structure.
+    pub fn into_contract(self, contract_hash: ContractHash) -> Option<Contract> {
+        let contract = match self {
+            StoredValue::Contract(contract_v1) => {
+                Contract::from(contract_v1).upgrade(contract_hash)
+            }
+            StoredValue::ContractV2(contract) => contract,
+            _ => return None,
+        };
+
+        Some(contract)
     }
 
     /// Returns a wrapped [`ContractWasm`] if this is a `ContractWasm` variant.
@@ -163,6 +180,7 @@ impl StoredValue {
             StoredValue::Bid(_) => "Bid".to_string(),
             StoredValue::Withdraw(_) => "Withdraw".to_string(),
             StoredValue::Unbonding(_) => "Unbonding".to_string(),
+            StoredValue::ContractV2(_) => "ContractV2".to_string(),
         }
     }
 
@@ -179,6 +197,7 @@ impl StoredValue {
             StoredValue::Bid(_) => Tag::Bid,
             StoredValue::Withdraw(_) => Tag::Withdraw,
             StoredValue::Unbonding(_) => Tag::Unbonding,
+            StoredValue::ContractV2(_) => Tag::ContractV2,
         }
     }
 }
@@ -198,8 +217,8 @@ impl From<ContractWasm> for StoredValue {
         StoredValue::ContractWasm(value)
     }
 }
-impl From<Contract> for StoredValue {
-    fn from(value: Contract) -> StoredValue {
+impl From<ContractV1> for StoredValue {
+    fn from(value: ContractV1) -> StoredValue {
         StoredValue::Contract(value)
     }
 }
@@ -270,7 +289,7 @@ impl TryFrom<StoredValue> for ContractPackage {
     }
 }
 
-impl TryFrom<StoredValue> for Contract {
+impl TryFrom<StoredValue> for ContractV1 {
     type Error = TypeMismatch;
 
     fn try_from(stored_value: StoredValue) -> Result<Self, Self::Error> {
@@ -329,7 +348,7 @@ impl ToBytes for StoredValue {
             StoredValue::ContractWasm(contract_wasm) => {
                 (Tag::ContractWasm, contract_wasm.to_bytes()?)
             }
-            StoredValue::Contract(contract_header) => (Tag::Contract, contract_header.to_bytes()?),
+            StoredValue::Contract(contract_v1) => (Tag::Contract, contract_v1.to_bytes()?),
             StoredValue::ContractPackage(contract_package) => {
                 (Tag::ContractPackage, contract_package.to_bytes()?)
             }
@@ -341,6 +360,7 @@ impl ToBytes for StoredValue {
             StoredValue::Unbonding(unbonding_purses) => {
                 (Tag::Unbonding, unbonding_purses.to_bytes()?)
             }
+            StoredValue::ContractV2(contract) => (Tag::ContractV2, contract.to_bytes()?),
         };
         result.push(tag as u8);
         result.append(&mut serialized_data);
@@ -363,6 +383,7 @@ impl ToBytes for StoredValue {
                 StoredValue::Bid(bid) => bid.serialized_length(),
                 StoredValue::Withdraw(withdraw_purses) => withdraw_purses.serialized_length(),
                 StoredValue::Unbonding(unbonding_purses) => unbonding_purses.serialized_length(),
+                StoredValue::ContractV2(contract) => contract.serialized_length(),
             }
     }
 
@@ -382,6 +403,7 @@ impl ToBytes for StoredValue {
             StoredValue::Bid(bid) => bid.write_bytes(writer)?,
             StoredValue::Withdraw(unbonding_purses) => unbonding_purses.write_bytes(writer)?,
             StoredValue::Unbonding(unbonding_purses) => unbonding_purses.write_bytes(writer)?,
+            StoredValue::ContractV2(contract) => contract.write_bytes(writer)?,
         };
         Ok(())
     }
@@ -405,7 +427,7 @@ impl FromBytes for StoredValue {
                     (StoredValue::ContractPackage(contract_package), remainder)
                 })
             }
-            tag if tag == Tag::Contract as u8 => Contract::from_bytes(remainder)
+            tag if tag == Tag::Contract as u8 => ContractV1::from_bytes(remainder)
                 .map(|(contract, remainder)| (StoredValue::Contract(contract), remainder)),
             tag if tag == Tag::Transfer as u8 => Transfer::from_bytes(remainder)
                 .map(|(transfer, remainder)| (StoredValue::Transfer(transfer), remainder)),
