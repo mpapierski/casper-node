@@ -1,15 +1,19 @@
 use std::{
-    convert::TryFrom,
+    convert::{TryFrom, TryInto},
     fs, io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use casper_execution_engine::{
-    core::engine_state::{run_genesis_request::RunGenesisRequest, ExecConfig, GenesisAccount},
+    core::engine_state::{
+        genesis::ExecConfigBuilder, run_genesis_request::RunGenesisRequest, ExecConfig,
+        GenesisAccount,
+    },
     shared::{system_config::SystemConfig, wasm_config::WasmConfig},
 };
 use casper_types::ProtocolVersion;
@@ -44,6 +48,14 @@ pub enum Error {
     FailedToCreateGenesisRequest,
 }
 
+fn human_readable_duration<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Duration, D::Error> {
+    let description: &'de str = Deserialize::deserialize(deserializer)?;
+    let duration = humantime::parse_duration(description).map_err(serde::de::Error::custom)?;
+    Ok(duration)
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct CoreConfig {
     /// The number of validator slots in the auction.
@@ -53,9 +65,11 @@ pub struct CoreConfig {
     /// auction_delay + 1
     pub(crate) auction_delay: u64,
     /// The period after genesis during which a genesis validator's bid is locked.
-    pub(crate) locked_funds_period: String,
+    #[serde(deserialize_with = "human_readable_duration")]
+    pub(crate) locked_funds_period: Duration,
     /// The period in which genesis validator's bid is released over time
-    pub(crate) vesting_schedule_period: String,
+    #[serde(deserialize_with = "human_readable_duration")]
+    pub(crate) vesting_schedule_period: Duration,
     /// The delay in number of eras for paying out the the unbonding amount.
     pub(crate) unbonding_delay: u64,
     /// Round seigniorage rate represented as a fractional number.
@@ -107,21 +121,9 @@ impl ChainspecConfig {
         })?;
         let chainspec_config: ChainspecConfig =
             toml::from_slice(&bytes).map_err(Error::FailedToParseChainspec)?;
-        let locked_funds_period_millis =
-            humantime::parse_duration(&chainspec_config.core_config.locked_funds_period)
-                .map_err(|_| Error::FailedToCreateGenesisRequest)?
-                .as_millis() as u64;
-        let exec_config = ExecConfig::new(
-            genesis_accounts,
-            chainspec_config.wasm_config,
-            chainspec_config.system_costs_config,
-            chainspec_config.core_config.validator_slots,
-            chainspec_config.core_config.auction_delay,
-            locked_funds_period_millis,
-            chainspec_config.core_config.round_seigniorage_rate,
-            chainspec_config.core_config.unbonding_delay,
-            DEFAULT_GENESIS_TIMESTAMP_MILLIS,
-        );
+        let exec_config = exec_builder_from_chainspec_config(chainspec_config)
+            .with_accounts(genesis_accounts)
+            .build();
         Ok(RunGenesisRequest::new(
             *DEFAULT_GENESIS_CONFIG_HASH,
             protocol_version,
@@ -147,22 +149,29 @@ impl TryFrom<ChainspecConfig> for ExecConfig {
     type Error = Error;
 
     fn try_from(chainspec_config: ChainspecConfig) -> Result<Self, Self::Error> {
-        let locked_funds_period_millis =
-            humantime::parse_duration(&chainspec_config.core_config.locked_funds_period)
-                .map_err(|_| Error::FailedToCreateExecConfig)?
-                .as_millis() as u64;
-        Ok(ExecConfig::new(
-            DEFAULT_ACCOUNTS.clone(),
-            chainspec_config.wasm_config,
-            chainspec_config.system_costs_config,
-            chainspec_config.core_config.validator_slots,
-            chainspec_config.core_config.auction_delay,
-            locked_funds_period_millis,
-            chainspec_config.core_config.round_seigniorage_rate,
-            chainspec_config.core_config.unbonding_delay,
-            DEFAULT_GENESIS_TIMESTAMP_MILLIS,
-        ))
+        let exec_config = exec_builder_from_chainspec_config(chainspec_config)
+            .with_accounts(DEFAULT_ACCOUNTS.clone())
+            .build();
+        Ok(exec_config)
     }
+}
+
+fn exec_builder_from_chainspec_config(chainspec_config: ChainspecConfig) -> ExecConfigBuilder {
+    let locked_funds_period_millis = chainspec_config
+        .core_config
+        .locked_funds_period
+        .as_millis()
+        .try_into()
+        .expect("locked_funds_period millis should fit into u64");
+    ExecConfigBuilder::default()
+        .with_wasm_config(chainspec_config.wasm_config)
+        .with_system_config(chainspec_config.system_costs_config)
+        .with_validator_slots(chainspec_config.core_config.validator_slots)
+        .with_auction_delay(chainspec_config.core_config.auction_delay)
+        .with_locked_funds_period_millis(locked_funds_period_millis)
+        .with_round_seigniorage_rate(chainspec_config.core_config.round_seigniorage_rate)
+        .with_unbonding_delay(chainspec_config.core_config.unbonding_delay)
+        .with_genesis_timestamp_millis(DEFAULT_GENESIS_TIMESTAMP_MILLIS)
 }
 
 #[cfg(test)]

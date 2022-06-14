@@ -356,6 +356,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec8a7b6a70fde80372154c65702f00a0f56f3e1c36abbc6c440484be248856db"
 
 [[package]]
+name = "call-contract"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
+]
+
+[[package]]
 name = "casper-contract"
 version = "1.4.4"
 dependencies = [
@@ -826,6 +834,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "contract-funds"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
+]
+
+[[package]]
+name = "contract-funds-call"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
+]
+
+[[package]]
 name = "convert_case"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1279,6 +1303,14 @@ checksum = "f2fb860ca6fafa5552fb6d0e816a69c8e49f0908bf524e30a90d97c85892d506"
 dependencies = [
  "block-buffer 0.10.2",
  "crypto-common",
+]
+
+[[package]]
+name = "disable-contract"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
 ]
 
 [[package]]
@@ -2782,6 +2814,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mint-transfer-proxy"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
+]
+
+[[package]]
 name = "mio"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2890,6 +2930,14 @@ name = "new-named-uref"
 version = "0.1.0"
 dependencies = [
  "casper-contract 1.4.4",
+]
+
+[[package]]
+name = "non-standard-payment"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
 ]
 
 [[package]]
@@ -5070,6 +5118,14 @@ name = "untrusted"
 version = "0.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
+
+[[package]]
+name = "update-associated-key"
+version = "0.1.0"
+dependencies = [
+ "casper-contract 1.4.4",
+ "casper-types 1.5.0",
+]
 
 [[package]]
 name = "url"
