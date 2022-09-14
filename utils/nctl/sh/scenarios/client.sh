@@ -1372,32 +1372,6 @@ function compare_md5sum() {
     fi
 }
 
-# waits for deploy hash to make it into block
-function await_deploy_inclusion() {
-    local DEPLOY_HASH=${1}
-    local TIMEOUT=${2:-'300'}
-    local GET_DEPLOY_OUTPUT
-
-    while true; do
-        log "... awaiting $DEPLOY_HASH inclusion: Timeout = $TIMEOUT"
-        if [ "$TIMEOUT" = "0" ]; then
-            log "ERROR: Timed out waiting for deploy: $DEPLOY_HASH"
-            exit 1
-        else
-            GET_DEPLOY_OUTPUT=$($(get_path_to_client) get-deploy \
-                --node-address "$(get_node_address_rpc)" \
-                "$DEPLOY_HASH" | jq -r '.result.execution_results[].block_hash')
-            if [ -z "$GET_DEPLOY_OUTPUT" ]; then
-                sleep 1
-                TIMEOUT=$((TIMEOUT-1))
-            else 
-                log "... $DEPLOY_HASH included!"
-                break
-            fi
-        fi
-    done
-}
-
 # checks variable is not empty
 function check_client_responded() {
     local CLIENT_OUTPUT=${1}

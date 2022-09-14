@@ -85,6 +85,7 @@ function run_nightly_upgrade_test() {
 
 source "$NCTL/sh/staging/set_override_tomls.sh"
 start_run_teardown "client.sh"
+start_run_teardown "private_chain.sh"
 start_run_teardown "itst01.sh"
 start_run_teardown "itst02.sh"
 start_run_teardown "itst06.sh"

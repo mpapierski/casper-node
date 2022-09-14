@@ -1,0 +1,11 @@
+[core]
+allow_auction_bids = false
+allow_unrestricted_transfers = false
+compute_rewards = false
+refund_handling = { type = "refund", refund_ratio = [1, 1] }
+fee_handling = { type = "accumulate" }
+administrators = ["PBK_FAUCET"]
+
+locked_funds_period = '0days'
+validator_slots = 5
+vesting_schedule_period = '0days'

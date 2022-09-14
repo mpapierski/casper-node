@@ -235,6 +235,7 @@ function setup_asset_chainspec()
     local IS_GENESIS=${5}
     local PATH_TO_CHAINSPEC
     local SCRIPT
+    local ACCOUNT_KEY
 
     # Set file.
     PATH_TO_CHAINSPEC="$(get_path_to_net)/chainspec/chainspec.toml"
@@ -262,6 +263,11 @@ function setup_asset_chainspec()
     fi
 
     python3 -c "${SCRIPT[*]}"
+
+    if grep -q 'PBK_FAUCET' "$PATH_TO_CHAINSPEC"; then
+        ACCOUNT_KEY="$(get_account_key 'faucet')"
+        sed -i "s/PBK_FAUCET/""$ACCOUNT_KEY""/" "$PATH_TO_CHAINSPEC"
+    fi
 }
 
 #######################################
