@@ -37,7 +37,15 @@ function main() {
     #    ... Expected to have the deploy fail.
     check_transfer_failed '1' '2' '2500000000'
 
-    # 5. Check that rewards are turned off.
+    # 5. Check that an admin can disable a user from sending wasm.
+    #    ... Expected to have the deploy fail.
+    check_admin_can_disable_user
+
+    # 6. Check that an admin can enable a user to send wasm.
+    #    ... Expected to deploy successfully.
+    check_admin_can_reenable_user
+
+    # 7. Check that rewards are turned off.
     #    ... Validator weights are expected to remain
     #    ... the same.
     check_no_rewards
@@ -125,28 +133,131 @@ function query_current_balance() {
     echo $OUTPUT | jq -r '.result.balance'
 }
 
-# Checks that the admin account can deploy wasm successfully.
-# Also verifys the payment and fees are give to the admin account.
-function check_admin_wasm_deploy() {
+# Sends a wasm deploy
+function send_wasm_deploy() {
+    local SIGNER_SECRET_KEY_PATH=${1}
     local CONTRACT_PATH
-    local SIGNER_SECRET_KEY_PATH
+    local OUTPUT
+
+    CONTRACT_PATH="$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release/nctl-dictionary.wasm"
+    $(get_path_to_client) put-deploy \
+        --node-address "$(get_node_address_rpc)" \
+        --chain-name "$(get_chain_name)" \
+        --payment-amount '100000000000' \
+        --session-path "$CONTRACT_PATH" \
+        --secret-key "$SIGNER_SECRET_KEY_PATH"
+}
+
+# Checks that an admin can enable a user to send wasm
+# and verifies the user's deploy is successful
+function check_admin_can_reenable_user() {
+    local CONTRACT_PATH
+    local ADMIN_SECRET_KEY_PATH
+    local SESSION_ACCOUNT_HEX
+    local SESSION_ACCOUNT_SECRET_KEY
     local OUTPUT
     local DEPLOY_HASH
-    local EXPECTED_BALANCE
-    local ACTUAL_BALANCE
+    local REENABLED_USER_DEPLOY
+    local REENABLED_USER_DEPLOY_HASH
 
-    log_step "Checking admin wasm deploy"
+    log_step "Re-enable user 2"
 
-    EXPECTED_BALANCE='1000000000000000000000000000000000'
-    CONTRACT_PATH="$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release/nctl-dictionary.wasm"
-    SIGNER_SECRET_KEY_PATH="$(get_path_to_faucet)/secret_key.pem"
+    CONTRACT_PATH="$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release/set_action_thresholds.wasm"
+    ADMIN_SECRET_KEY_PATH="$(get_path_to_faucet)/secret_key.pem"
+    SESSION_ACCOUNT_HEX=$(cat $(get_path_to_user '2')/public_key_hex)
+    SESSION_ACCOUNT_SECRET_KEY="$(get_path_to_user '2')/secret_key.pem"
 
     OUTPUT=$($(get_path_to_client) put-deploy \
         --node-address "$(get_node_address_rpc)" \
         --chain-name "$(get_chain_name)" \
         --payment-amount '100000000000' \
         --session-path "$CONTRACT_PATH" \
-        --secret-key "$SIGNER_SECRET_KEY_PATH")
+        --secret-key "$ADMIN_SECRET_KEY_PATH" \
+        --session-account "$SESSION_ACCOUNT_HEX" \
+        --session-arg "key_management_threshold:u8='0'" \
+        --session-arg "deploy_threshold:u8='1'")
+
+    DEPLOY_HASH=$(echo "$OUTPUT" | jq -r '.result.deploy_hash')
+    await_deploy_inclusion "$DEPLOY_HASH"
+
+    log "... re-enable deploy included"
+    log "... attempting deploy as re-enabled user"
+
+    # piped to true because this fails naturally
+    REENABLED_USER_DEPLOY=$(send_wasm_deploy "$SESSION_ACCOUNT_SECRET_KEY")
+    REENABLED_USER_DEPLOY_HASH=$(echo "$REENABLED_USER_DEPLOY" | jq -r '.result.deploy_hash')
+    await_deploy_inclusion "$REENABLED_USER_DEPLOY_HASH"
+
+    if $(nctl-view-chain-deploy deploy="$REENABLED_USER_DEPLOY_HASH" | grep -q 'Success'); then
+        log "... re-enabled user deployed successfully!"
+    else
+        log "ERROR: re-enabled user deploy failed!"
+        exit 1
+    fi
+}
+
+# Checks that an admin can disable a user from sending wasm
+# and verifies the user's deploy will error
+function check_admin_can_disable_user() {
+    local CONTRACT_PATH
+    local ADMIN_SECRET_KEY_PATH
+    local SESSION_ACCOUNT_HEX
+    local SESSION_ACCOUNT_SECRET_KEY
+    local OUTPUT
+    local DEPLOY_HASH
+    local EXPECTED_FAIL_MSG
+    local FAILED_DEPLOY_MSG
+
+    log_step "Disable user 2"
+
+    CONTRACT_PATH="$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release/set_action_thresholds.wasm"
+    ADMIN_SECRET_KEY_PATH="$(get_path_to_faucet)/secret_key.pem"
+    SESSION_ACCOUNT_HEX=$(cat $(get_path_to_user '2')/public_key_hex)
+    SESSION_ACCOUNT_SECRET_KEY="$(get_path_to_user '2')/secret_key.pem"
+    EXPECTED_FAIL_MSG="insufficient deploy signature weight at prestate_hash"
+
+    OUTPUT=$($(get_path_to_client) put-deploy \
+        --node-address "$(get_node_address_rpc)" \
+        --chain-name "$(get_chain_name)" \
+        --payment-amount '100000000000' \
+        --session-path "$CONTRACT_PATH" \
+        --secret-key "$ADMIN_SECRET_KEY_PATH" \
+        --session-account "$SESSION_ACCOUNT_HEX" \
+        --session-arg "key_management_threshold:u8='255'" \
+        --session-arg "deploy_threshold:u8='255'")
+
+    DEPLOY_HASH=$(echo "$OUTPUT" | jq -r '.result.deploy_hash')
+    await_deploy_inclusion "$DEPLOY_HASH"
+
+    log "... disabled deploy included"
+    log "... attempting deploy as disabled user"
+
+    # piped to true because this fails naturally
+    FAILED_DEPLOY_MSG=$(send_wasm_deploy "$SESSION_ACCOUNT_SECRET_KEY" || true)
+
+    if grep -q "$EXPECTED_FAIL_MSG" <<< "$FAILED_DEPLOY_MSG"; then
+        log "... deploy errored with: $FAILED_DEPLOY_MSG [expected]"
+    else
+        log "ERROR: Deploy didn't error as expected!"
+        exit 1
+    fi
+}
+
+# Checks that the admin account can deploy wasm successfully.
+# Also verifys the payment and fees are give to the admin account.
+function check_admin_wasm_deploy() {
+    local SIGNER_SECRET_KEY_PATH
+    local DEPLOY_HASH
+    local EXPECTED_BALANCE
+    local ACTUAL_BALANCE
+    local OUTPUT
+
+    log_step "Checking admin wasm deploy"
+
+    EXPECTED_BALANCE='1000000000000000000000000000000000'
+    SIGNER_SECRET_KEY_PATH="$(get_path_to_faucet)/secret_key.pem"
+
+    OUTPUT=$(send_wasm_deploy "$SIGNER_SECRET_KEY_PATH")
 
     DEPLOY_HASH=$(echo "$OUTPUT" | jq -r '.result.deploy_hash')
     await_deploy_inclusion "$DEPLOY_HASH"

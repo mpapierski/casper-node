@@ -26,6 +26,7 @@ make build-contract-rs/transfer-to-account-u512
 make build-contract-rs/undelegate
 make build-contract-rs/withdraw-bid
 make build-contract-rs/nctl-dictionary
+make build-contract-rs/set-action-thresholds
 
 popd || exit
 
