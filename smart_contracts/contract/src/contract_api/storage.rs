@@ -20,6 +20,11 @@ use crate::{
 /// Reads value under `uref` in the global state.
 pub fn read<T: CLTyped + FromBytes>(uref: URef) -> Result<Option<T>, bytesrepr::Error> {
     let key: Key = uref.into();
+    read_from_key(key)
+}
+
+/// Reads value under `key` in the global state.
+pub fn read_from_key<T: CLTyped + FromBytes>(key: Key) -> Result<Option<T>, bytesrepr::Error> {
     let (key_ptr, key_size, _bytes) = contract_api::to_ptr(key);
 
     let value_size = {
@@ -421,4 +426,51 @@ pub fn dictionary_put<V: CLTyped + ToBytes>(
     };
 
     result.unwrap_or_revert()
+}
+
+/// Reads value under `dictionary_key` in the global state.
+pub fn dictionary_read<T: CLTyped + FromBytes>(dictionary_key: Key) -> Result<Option<T>, ApiError> {
+    if !dictionary_key.is_dictionary_key() {
+        return Err(ApiError::UnexpectedKeyVariant);
+    }
+
+    let (key_ptr, key_size, _bytes) = contract_api::to_ptr(dictionary_key);
+
+    let value_size = {
+        let mut value_size = MaybeUninit::uninit();
+        let ret =
+            unsafe { ext_ffi::casper_dictionary_read(key_ptr, key_size, value_size.as_mut_ptr()) };
+        match api_error::result_from(ret) {
+            Ok(_) => unsafe { value_size.assume_init() },
+            Err(ApiError::ValueNotFound) => return Ok(None),
+            Err(e) => runtime::revert(e),
+        }
+    };
+
+    let value_bytes = runtime::read_host_buffer(value_size).unwrap_or_revert();
+    Ok(Some(bytesrepr::deserialize(value_bytes)?))
+}
+
+fn get_named_uref(name: &str) -> URef {
+    match runtime::get_key(name).unwrap_or_revert_with(ApiError::GetKey) {
+        Key::URef(uref) => uref,
+        _ => revert(ApiError::UnexpectedKeyVariant),
+    }
+}
+
+/// Gets a value out of a named dictionary.
+pub fn named_dictionary_get<V: CLTyped + FromBytes>(
+    dictionary_name: &str,
+    dictionary_item_key: &str,
+) -> Result<Option<V>, bytesrepr::Error> {
+    dictionary_get(get_named_uref(dictionary_name), dictionary_item_key)
+}
+
+/// Writes a value in a named dictionary.
+pub fn named_dictionary_put<V: CLTyped + ToBytes>(
+    dictionary_name: &str,
+    dictionary_item_key: &str,
+    value: V,
+) {
+    dictionary_put(get_named_uref(dictionary_name), dictionary_item_key, value)
 }

@@ -12,18 +12,19 @@ use serde::Serialize;
 use static_assertions::const_assert;
 use tracing::Span;
 
-use super::{error::ConnectionError, FramedTransport, GossipedAddress, Message, NodeId};
+use super::{error::ConnectionError, FullTransport, GossipedAddress, Message, NodeId};
 use crate::{
-    components::contract_runtime::ContractRuntimeAnnouncement,
     effect::{
-        announcements::BlocklistAnnouncement,
+        announcements::{
+            BlocklistAnnouncement, ChainSynchronizerAnnouncement, ContractRuntimeAnnouncement,
+        },
         requests::{NetworkInfoRequest, NetworkRequest},
     },
     protocol::Message as ProtocolMessage,
 };
 
 const _SMALL_NETWORK_EVENT_SIZE: usize = mem::size_of::<Event<ProtocolMessage>>();
-const_assert!(_SMALL_NETWORK_EVENT_SIZE < 89);
+const_assert!(_SMALL_NETWORK_EVENT_SIZE < 90);
 
 /// A small network event.
 #[derive(Debug, From, Serialize)]
@@ -34,6 +35,7 @@ pub(crate) enum Event<P> {
         #[serde(skip)]
         span: Span,
     },
+
     /// Received network message.
     IncomingMessage {
         peer_id: Box<NodeId>,
@@ -41,6 +43,7 @@ pub(crate) enum Event<P> {
         #[serde(skip)]
         span: Span,
     },
+
     /// Incoming connection closed.
     IncomingClosed {
         #[serde(skip_serializing)]
@@ -57,6 +60,7 @@ pub(crate) enum Event<P> {
         #[serde(skip_serializing)]
         span: Span,
     },
+
     /// An established connection was terminated.
     OutgoingDropped {
         peer_id: Box<NodeId>,
@@ -67,18 +71,19 @@ pub(crate) enum Event<P> {
     #[from]
     NetworkRequest {
         #[serde(skip_serializing)]
-        req: Box<NetworkRequest<NodeId, P>>,
+        req: Box<NetworkRequest<P>>,
     },
 
     /// Incoming network info request.
     #[from]
     NetworkInfoRequest {
         #[serde(skip_serializing)]
-        req: Box<NetworkInfoRequest<NodeId>>,
+        req: Box<NetworkInfoRequest>,
     },
 
     /// The node should gossip its own public listening address.
     GossipOurAddress,
+
     /// We received a peer's public listening address via gossip.
     PeerAddressReceived(GossipedAddress),
 
@@ -87,21 +92,25 @@ pub(crate) enum Event<P> {
 
     /// Blocklist announcement.
     #[from]
-    BlocklistAnnouncement(BlocklistAnnouncement<NodeId>),
+    BlocklistAnnouncement(BlocklistAnnouncement),
 
     /// Contract runtime announcement.
     #[from]
     ContractRuntimeAnnouncement(ContractRuntimeAnnouncement),
+
+    /// Chain synchronizer announcement.
+    #[from]
+    ChainSynchronizerAnnouncement(ChainSynchronizerAnnouncement),
 }
 
-impl From<NetworkRequest<NodeId, ProtocolMessage>> for Event<ProtocolMessage> {
-    fn from(req: NetworkRequest<NodeId, ProtocolMessage>) -> Self {
+impl From<NetworkRequest<ProtocolMessage>> for Event<ProtocolMessage> {
+    fn from(req: NetworkRequest<ProtocolMessage>) -> Self {
         Self::NetworkRequest { req: Box::new(req) }
     }
 }
 
-impl From<NetworkInfoRequest<NodeId>> for Event<ProtocolMessage> {
-    fn from(req: NetworkInfoRequest<NodeId>) -> Self {
+impl From<NetworkInfoRequest> for Event<ProtocolMessage> {
+    fn from(req: NetworkInfoRequest) -> Self {
         Self::NetworkInfoRequest { req: Box::new(req) }
     }
 }
@@ -141,6 +150,9 @@ impl<P: Display> Display for Event<P> {
             Event::SweepOutgoing => {
                 write!(f, "sweep outgoing connections")
             }
+            Event::ChainSynchronizerAnnouncement(ann) => {
+                write!(f, "handling chain synchronizer announcement: {}", ann)
+            }
         }
     }
 }
@@ -178,7 +190,7 @@ pub(crate) enum IncomingConnection<P> {
         peer_consensus_public_key: Option<PublicKey>,
         /// Stream of incoming messages. for incoming connections.
         #[serde(skip_serializing)]
-        stream: SplitStream<FramedTransport<P>>,
+        stream: SplitStream<FullTransport<P>>,
     },
 }
 
@@ -204,7 +216,7 @@ impl<P> Display for IncomingConnection<P> {
                 write!(
                     f,
                     "connection established from {}/{}; public: {}",
-                    peer_addr, peer_id, public_addr,
+                    peer_addr, peer_id, public_addr
                 )?;
 
                 if let Some(public_key) = peer_consensus_public_key {
@@ -248,7 +260,9 @@ pub(crate) enum OutgoingConnection<P> {
         peer_consensus_public_key: Option<PublicKey>,
         /// Sink for outgoing messages.
         #[serde(skip_serializing)]
-        sink: SplitSink<FramedTransport<P>, Arc<Message<P>>>,
+        sink: SplitSink<FullTransport<P>, Arc<Message<P>>>,
+        /// Holds the information whether the remote node is syncing.
+        is_syncing: bool,
     },
 }
 
@@ -269,8 +283,13 @@ impl<P> Display for OutgoingConnection<P> {
                 peer_id,
                 peer_consensus_public_key,
                 sink: _,
+                is_syncing,
             } => {
-                write!(f, "connection established to {}/{}", peer_addr, peer_id)?;
+                write!(
+                    f,
+                    "connection established to {}/{}, is_syncing: {}",
+                    peer_addr, peer_id, is_syncing
+                )?;
 
                 if let Some(public_key) = peer_consensus_public_key {
                     write!(f, " [{}]", public_key)

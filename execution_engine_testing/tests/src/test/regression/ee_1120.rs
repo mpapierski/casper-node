@@ -4,12 +4,13 @@ use num_traits::Zero;
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS, SYSTEM_ADDR,
-    },
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_INITIAL_BALANCE, MINIMUM_ACCOUNT_CREATION_BALANCE, SYSTEM_ADDR,
 };
-use casper_execution_engine::core::engine_state::genesis::{GenesisAccount, GenesisValidator};
+use casper_execution_engine::core::engine_state::{
+    engine_config::DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+    genesis::{GenesisAccount, GenesisValidator},
+};
 use casper_types::{
     account::AccountHash,
     runtime_args,
@@ -24,9 +25,9 @@ const CONTRACT_TRANSFER_TO_ACCOUNT: &str = "transfer_to_account_u512.wasm";
 const CONTRACT_DELEGATE: &str = "delegate.wasm";
 const CONTRACT_UNDELEGATE: &str = "undelegate.wasm";
 
-const DELEGATE_AMOUNT_1: u64 = 95_000;
-const DELEGATE_AMOUNT_2: u64 = 42_000;
-const DELEGATE_AMOUNT_3: u64 = 13_000;
+const DELEGATE_AMOUNT_1: u64 = 95_000 + DEFAULT_MINIMUM_DELEGATION_AMOUNT;
+const DELEGATE_AMOUNT_2: u64 = 42_000 + DEFAULT_MINIMUM_DELEGATION_AMOUNT;
+const DELEGATE_AMOUNT_3: u64 = 13_000 + DEFAULT_MINIMUM_DELEGATION_AMOUNT;
 const UNDELEGATE_AMOUNT_1: u64 = 17_000;
 const UNDELEGATE_AMOUNT_2: u64 = 24_500;
 const UNDELEGATE_AMOUNT_3: u64 = 7_500;
@@ -169,7 +170,7 @@ fn should_run_ee_1120_slash_delegators() {
         BTreeSet::from_iter(vec![VALIDATOR_2.clone(), VALIDATOR_1.clone()])
     );
 
-    let initial_unbond_purses: UnbondingPurses = builder.get_withdraws();
+    let initial_unbond_purses: UnbondingPurses = builder.get_unbonds();
     assert_eq!(initial_unbond_purses.len(), 0);
 
     // DELEGATOR_1 partially unbonds from VALIDATOR_1
@@ -214,7 +215,7 @@ fn should_run_ee_1120_slash_delegators() {
 
     // Check unbonding purses before slashing
 
-    let unbond_purses_before: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses_before: UnbondingPurses = builder.get_unbonds();
     assert_eq!(unbond_purses_before.len(), 2);
 
     let validator_1_unbond_list_before = unbond_purses_before
@@ -309,7 +310,7 @@ fn should_run_ee_1120_slash_delegators() {
         .delegators()
         .contains_key(&DELEGATOR_1));
 
-    let unbond_purses_after: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses_after: UnbondingPurses = builder.get_unbonds();
     assert_ne!(unbond_purses_before, unbond_purses_after);
 
     let validator_1_unbond_list_after = unbond_purses_after
@@ -353,7 +354,7 @@ fn should_run_ee_1120_slash_delegators() {
     assert!(validator_1_bid.inactive());
     assert!(validator_1_bid.staked_amount().is_zero());
 
-    let unbond_purses_after: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses_after: UnbondingPurses = builder.get_unbonds();
     assert!(unbond_purses_after
         .get(&VALIDATOR_1_ADDR)
         .unwrap()

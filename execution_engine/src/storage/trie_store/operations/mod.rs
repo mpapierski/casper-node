@@ -6,9 +6,10 @@ use std::{
     collections::{HashSet, VecDeque},
     convert::TryInto,
     mem,
+    time::Instant,
 };
 
-use tracing::warn;
+use tracing::{error, trace, warn};
 
 use casper_hashing::Digest;
 use casper_types::bytesrepr::{self, FromBytes, ToBytes};
@@ -25,6 +26,7 @@ use crate::{
     },
 };
 
+#[allow(clippy::enum_variant_names)]
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadResult<V> {
     Found(V),
@@ -94,11 +96,12 @@ where
                             current = next;
                         }
                         None => {
-                            panic!(
+                            warn!(
                                 "No trie value at key: {:?} (reading from key: {:?})",
                                 pointer.hash(),
                                 key
                             );
+                            return Ok(ReadResult::NotFound);
                         }
                     },
                     None => {
@@ -115,11 +118,12 @@ where
                             current = next;
                         }
                         None => {
-                            panic!(
+                            warn!(
                                 "No trie value at key: {:?} (reading from key: {:?})",
                                 pointer.hash(),
                                 key
                             );
+                            return Ok(ReadResult::NotFound);
                         }
                     }
                 } else {
@@ -190,11 +194,12 @@ where
                 let next = match store.get(txn, pointer.hash())? {
                     Some(next) => next,
                     None => {
-                        panic!(
-                            "No trie value at key: {:?} (reading from key: {:?})",
+                        warn!(
+                            "No trie value at key: {:?} (reading from path: {:?})",
                             pointer.hash(),
-                            key
+                            path
                         );
+                        return Ok(ReadResult::NotFound);
                     }
                 };
                 depth += 1;
@@ -214,11 +219,12 @@ where
                 let next = match store.get(txn, pointer.hash())? {
                     Some(next) => next,
                     None => {
-                        panic!(
-                            "No trie value at key: {:?} (reading from key: {:?})",
+                        warn!(
+                            "No trie value at key: {:?} (reading from path: {:?})",
                             pointer.hash(),
-                            key
+                            path
                         );
+                        return Ok(ReadResult::NotFound);
                     }
                 };
                 depth += affix.len();
@@ -229,15 +235,15 @@ where
     }
 }
 
-/// Given a root hash, find any try keys that are descendant from it that are:
-/// 1. referenced but not present in the database
-/// 2. referenced and present but whose values' hashes do not equal their keys (ie, corrupted)
+/// Given a root hash, find any trie keys that are descendant from it that are referenced but not
+/// present in the database.
 // TODO: We only need to check one trie key at a time
 pub fn missing_trie_keys<K, V, T, S, E>(
     _correlation_id: CorrelationId,
     txn: &T,
     store: &S,
     mut trie_keys_to_visit: Vec<Digest>,
+    known_complete: &HashSet<Digest>,
 ) -> Result<Vec<Digest>, E>
 where
     K: ToBytes + FromBytes + Eq + std::fmt::Debug,
@@ -253,31 +259,44 @@ where
         if !visited.insert(trie_key) {
             continue;
         }
-        let maybe_retrieved_trie: Option<Trie<K, V>> = store.get(txn, &trie_key)?;
-        if let Some(trie_value) = &maybe_retrieved_trie {
-            let hash_of_trie_value = {
-                let node_bytes = trie_value.to_bytes()?;
-                Digest::hash(&node_bytes)
-            };
-            if trie_key != hash_of_trie_value {
-                warn!(
-                    "Trie key {:?} has corrupted value {:?} (hash of value is {:?}); \
-                     adding to list of missing nodes",
-                    trie_key, trie_value, hash_of_trie_value
-                );
+
+        if known_complete.contains(&trie_key) {
+            // Skip because we know there are no missing descendants.
+            continue;
+        }
+
+        let retrieved_trie_bytes = match store.get_raw(txn, &trie_key)? {
+            Some(bytes) => bytes,
+            None => {
+                // No entry under this trie key.
                 missing_descendants.push(trie_key);
                 continue;
             }
+        };
+
+        // Optimization: Don't deserialize leaves as they have no descendants.
+        if let Some(&Trie::<K, V>::LEAF_TAG) = retrieved_trie_bytes.first() {
+            continue;
         }
-        match maybe_retrieved_trie {
-            // If we can't find the trie_key; it is missing and we'll return it
-            None => {
+
+        // Parse the trie, handling errors gracefully.
+        let retrieved_trie = match bytesrepr::deserialize_from_slice(retrieved_trie_bytes) {
+            Ok(retrieved_trie) => retrieved_trie,
+            // Couldn't parse; treat as missing and continue.
+            Err(err) => {
+                error!(?err, "unable to parse trie");
                 missing_descendants.push(trie_key);
+                continue;
             }
-            // If we could retrieve the node and it is a leaf, the search can move on
-            Some(Trie::Leaf { .. }) => (),
+        };
+
+        match retrieved_trie {
+            // Should be unreachable due to checking the first byte as a shortcut above.
+            Trie::<K, V>::Leaf { .. } => {
+                error!("did not expect to see a trie leaf in `missing_trie_keys` after shortcut");
+            }
             // If we hit a pointer block, queue up all of the nodes it points to
-            Some(Trie::Node { pointer_block }) => {
+            Trie::Node { pointer_block } => {
                 for (_, pointer) in pointer_block.as_indexed_pointers() {
                     match pointer {
                         Pointer::LeafPointer(descendant_leaf_trie_key) => {
@@ -290,19 +309,19 @@ where
                 }
             }
             // If we hit an extension block, add its pointer to the queue
-            Some(Trie::Extension { pointer, .. }) => trie_keys_to_visit.push(pointer.into_hash()),
+            Trie::Extension { pointer, .. } => trie_keys_to_visit.push(pointer.into_hash()),
         }
     }
     Ok(missing_descendants)
 }
 
-#[cfg(test)]
-pub fn check_integrity<K, V, T, S, E>(
-    _correlation_id: CorrelationId,
+/// Returns a collection of all descendant trie keys.
+pub fn descendant_trie_keys<K, V, T, S, E>(
     txn: &T,
     store: &S,
-    trie_keys_to_visit: Vec<Digest>,
-) -> Result<(), E>
+    mut trie_keys_to_visit: Vec<Digest>,
+    known_complete: &HashSet<Digest>,
+) -> Result<HashSet<Digest>, E>
 where
     K: ToBytes + FromBytes + Eq + std::fmt::Debug,
     V: ToBytes + FromBytes + std::fmt::Debug,
@@ -311,72 +330,67 @@ where
     S::Error: From<T::Error>,
     E: From<S::Error> + From<bytesrepr::Error>,
 {
-    for state_root in &trie_keys_to_visit {
-        match store.get(txn, state_root)? {
-            Some(Trie::Node { .. }) => {}
-            _ => panic!("Should have a pointer block node as state root"),
-        }
-    }
-    let mut trie_keys_to_visit: Vec<(Vec<u8>, Digest)> = trie_keys_to_visit
-        .into_iter()
-        .map(|blake2b_hash| (Vec::new(), blake2b_hash))
-        .collect();
+    let start = Instant::now();
     let mut visited = HashSet::new();
-    while let Some((mut path, trie_key)) = trie_keys_to_visit.pop() {
+
+    while let Some(trie_key) = trie_keys_to_visit.pop() {
         if !visited.insert(trie_key) {
             continue;
         }
-        let maybe_retrieved_trie: Option<Trie<K, V>> = store.get(txn, &trie_key)?;
-        if let Some(trie_value) = &maybe_retrieved_trie {
-            let hash_of_trie_value = {
-                let node_bytes = trie_value.to_bytes()?;
-                Digest::hash(&node_bytes)
-            };
-            if trie_key != hash_of_trie_value {
-                panic!(
-                    "Trie key {:?} has corrupted value {:?} (hash of value is {:?})",
-                    trie_key, trie_value, hash_of_trie_value
-                );
-            }
+
+        if known_complete.contains(&trie_key) {
+            // Skip because we know there are no missing descendants.
+            continue;
         }
-        match maybe_retrieved_trie {
-            // If we can't find the trie_key; it is missing and we'll return it
+
+        let retrieved_trie_bytes = match store.get_raw(txn, &trie_key)? {
+            Some(bytes) => bytes,
             None => {
-                panic!("Missing trie key: {:?}", trie_key)
+                // No entry under this trie key.
+                continue;
             }
-            // If we could retrieve the node and it is a leaf, the search can move on
-            Some(Trie::Leaf { key, .. }) => {
-                let key_bytes = key.to_bytes()?;
-                if !key_bytes.starts_with(&path) {
-                    panic!(
-                        "Trie key {:?} belongs to a leaf with a corrupted affix. Key bytes: {:?}, Path: {:?}.",
-                        trie_key, key_bytes, path
-                    );
-                }
+        };
+
+        // Optimization: Don't deserialize leaves as they have no descendants.
+        if let Some(&Trie::<K, V>::LEAF_TAG) = retrieved_trie_bytes.first() {
+            continue;
+        }
+
+        // Parse the trie, handling errors gracefully.
+        let retrieved_trie = match bytesrepr::deserialize_from_slice(retrieved_trie_bytes) {
+            Ok(retrieved_trie) => retrieved_trie,
+            // Couldn't parse; treat as missing and continue.
+            Err(err) => {
+                error!(?err, "unable to parse trie");
+                continue;
+            }
+        };
+
+        match retrieved_trie {
+            // Should be unreachable due to checking the first byte as a shortcut above.
+            Trie::<K, V>::Leaf { .. } => {
+                error!("did not expect to see a trie leaf in `missing_trie_keys` after shortcut");
             }
             // If we hit a pointer block, queue up all of the nodes it points to
-            Some(Trie::Node { pointer_block }) => {
-                for (byte, pointer) in pointer_block.as_indexed_pointers() {
-                    let mut new_path = path.clone();
-                    new_path.push(byte);
+            Trie::Node { pointer_block } => {
+                for (_, pointer) in pointer_block.as_indexed_pointers() {
                     match pointer {
                         Pointer::LeafPointer(descendant_leaf_trie_key) => {
-                            trie_keys_to_visit.push((new_path, descendant_leaf_trie_key))
+                            trie_keys_to_visit.push(descendant_leaf_trie_key)
                         }
                         Pointer::NodePointer(descendant_node_trie_key) => {
-                            trie_keys_to_visit.push((new_path, descendant_node_trie_key))
+                            trie_keys_to_visit.push(descendant_node_trie_key)
                         }
                     }
                 }
             }
             // If we hit an extension block, add its pointer to the queue
-            Some(Trie::Extension { pointer, affix }) => {
-                path.extend_from_slice(affix.as_slice());
-                trie_keys_to_visit.push((path, pointer.into_hash()))
-            }
+            Trie::Extension { pointer, .. } => trie_keys_to_visit.push(pointer.into_hash()),
         }
     }
-    Ok(())
+    let elapsed = start.elapsed().as_millis();
+    trace!(%elapsed, "descendant_trie_keys took ms");
+    Ok(visited)
 }
 
 struct TrieScan<K, V> {
@@ -400,7 +414,7 @@ fn scan<K, V, T, S, E>(
     store: &S,
     key_bytes: &[u8],
     root: &Trie<K, V>,
-) -> Result<TrieScan<K, V>, E>
+) -> Result<Option<TrieScan<K, V>>, E>
 where
     K: ToBytes + FromBytes + Clone,
     V: ToBytes + FromBytes + Clone,
@@ -418,7 +432,7 @@ where
     loop {
         match current {
             leaf @ Trie::Leaf { .. } => {
-                return Ok(TrieScan::new(leaf, acc));
+                return Ok(Some(TrieScan::new(leaf, acc)));
             }
             Trie::Node { pointer_block } => {
                 let index = {
@@ -433,7 +447,7 @@ where
                 let pointer = match maybe_pointer {
                     Some(pointer) => pointer,
                     None => {
-                        return Ok(TrieScan::new(Trie::Node { pointer_block }, acc));
+                        return Ok(Some(TrieScan::new(Trie::Node { pointer_block }, acc)));
                     }
                 };
                 match store.get(txn, pointer.hash())? {
@@ -443,18 +457,19 @@ where
                         acc.push((index, Trie::Node { pointer_block }))
                     }
                     None => {
-                        panic!(
+                        warn!(
                             "No trie value at key: {:?} (reading from path: {:?})",
                             pointer.hash(),
                             path
                         );
+                        return Ok(None);
                     }
                 }
             }
             Trie::Extension { affix, pointer } => {
                 let sub_path = &path[depth..depth + affix.len()];
                 if sub_path != affix.as_slice() {
-                    return Ok(TrieScan::new(Trie::Extension { affix, pointer }, acc));
+                    return Ok(Some(TrieScan::new(Trie::Extension { affix, pointer }, acc)));
                 }
                 match store.get(txn, pointer.hash())? {
                     Some(next) => {
@@ -467,11 +482,12 @@ where
                         acc.push((index, Trie::Extension { affix, pointer }))
                     }
                     None => {
-                        panic!(
+                        warn!(
                             "No trie value at key: {:?} (reading from path: {:?})",
                             pointer.hash(),
                             path
                         );
+                        return Ok(None);
                     }
                 }
             }
@@ -509,7 +525,10 @@ where
 
     let key_bytes = key_to_delete.to_bytes()?;
     let TrieScan { tip, mut parents } =
-        scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)?;
+        match scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)? {
+            Some(trie_scan) => trie_scan,
+            None => return Ok(DeleteResult::DoesNotExist),
+        };
 
     // Check that tip is a leaf
     match tip {
@@ -531,7 +550,7 @@ where
                     pointer_block[idx as usize] = None;
                     Trie::Node { pointer_block }
                 };
-                let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                let trie_key = trie_node.trie_hash()?;
                 new_elements.push((trie_key, trie_node))
             }
             // The parent is the node which pointed to the leaf we deleted, and that leaf had one or
@@ -548,7 +567,7 @@ where
                         let trie_node = Trie::Node {
                             pointer_block: Box::new(PointerBlock::new()),
                         };
-                        let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                        let trie_key = trie_node.trie_hash()?;
                         new_elements.push((trie_key, trie_node));
                         break;
                     }
@@ -562,7 +581,7 @@ where
                     (_, None) => {
                         pointer_block[idx as usize] = None;
                         let trie_node = Trie::Node { pointer_block };
-                        let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                        let trie_key = trie_node.trie_hash()?;
                         new_elements.push((trie_key, trie_node));
                         break;
                     }
@@ -571,7 +590,7 @@ where
                     (Pointer::LeafPointer(..), Some((idx, Trie::Node { mut pointer_block }))) => {
                         pointer_block[idx as usize] = Some(sibling_pointer);
                         let trie_node = Trie::Node { pointer_block };
-                        let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                        let trie_key = trie_node.trie_hash()?;
                         new_elements.push((trie_key, trie_node))
                     }
                     // The sibling is a leaf and the grandparent is an extension.
@@ -587,7 +606,7 @@ where
                             Some((idx, Trie::Node { mut pointer_block })) => {
                                 pointer_block[idx as usize] = Some(sibling_pointer);
                                 let trie_node = Trie::Node { pointer_block };
-                                let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                                let trie_key = trie_node.trie_hash()?;
                                 new_elements.push((trie_key, trie_node))
                             }
                         }
@@ -617,7 +636,7 @@ where
                                     affix: vec![sibling_idx].into(),
                                     pointer: sibling_pointer,
                                 };
-                                let trie_key = Digest::hash(&new_extension.to_bytes()?);
+                                let trie_key = new_extension.trie_hash()?;
                                 new_elements.push((trie_key, new_extension))
                             }
                             // The single sibling is a extension.  We output an extension to replace
@@ -634,7 +653,7 @@ where
                                     affix: new_affix.into(),
                                     pointer,
                                 };
-                                let trie_key = Digest::hash(&new_extension.to_bytes()?);
+                                let trie_key = new_extension.trie_hash()?;
                                 new_elements.push((trie_key, new_extension))
                             }
                         }
@@ -649,7 +668,7 @@ where
                     pointer_block[idx as usize] = Some(Pointer::NodePointer(*trie_key));
                     Trie::Node { pointer_block }
                 };
-                let trie_key = Digest::hash(&trie_node.to_bytes()?);
+                let trie_key = trie_node.trie_hash()?;
                 new_elements.push((trie_key, trie_node))
             }
             // The parent is an extension, and we are outputting an extension.  Prepend the parent
@@ -673,7 +692,7 @@ where
                         affix: child_affix.to_owned(),
                         pointer: pointer.to_owned(),
                     };
-                    Digest::hash(&new_extension.to_bytes()?)
+                    new_extension.trie_hash()?
                 }
             }
             // The parent is an extension and the new element is a pointer block.  The next element
@@ -681,7 +700,7 @@ where
             (Some((trie_key, Trie::Node { .. })), Trie::Extension { affix, .. }) => {
                 let pointer = Pointer::NodePointer(*trie_key);
                 let trie_extension = Trie::Extension { affix, pointer };
-                let trie_key = Digest::hash(&trie_extension.to_bytes()?);
+                let trie_key = trie_extension.trie_hash()?;
                 new_elements.push((trie_key, trie_extension))
             }
         }
@@ -707,10 +726,7 @@ where
     V: ToBytes + Clone,
 {
     let mut ret: Vec<(Digest, Trie<K, V>)> = Vec::new();
-    let mut tip_hash = {
-        let node_bytes = tip.to_bytes()?;
-        Digest::hash(&node_bytes)
-    };
+    let mut tip_hash = tip.trie_hash()?;
     ret.push((tip_hash, tip.to_owned()));
 
     for (index, parent) in parents.into_iter().rev() {
@@ -728,10 +744,7 @@ where
                     pointer_block[index.into()] = Some(pointer);
                     Trie::Node { pointer_block }
                 };
-                tip_hash = {
-                    let node_bytes = tip.to_bytes()?;
-                    Digest::hash(&node_bytes)
-                };
+                tip_hash = tip.trie_hash()?;
                 ret.push((tip_hash, tip.to_owned()))
             }
             Trie::Extension { affix, pointer } => {
@@ -739,10 +752,7 @@ where
                     let pointer = pointer.update(tip_hash);
                     Trie::Extension { affix, pointer }
                 };
-                tip_hash = {
-                    let extension_bytes = tip.to_bytes()?;
-                    Digest::hash(&extension_bytes)
-                };
+                tip_hash = tip.trie_hash()?;
                 ret.push((tip_hash, tip.to_owned()))
             }
         }
@@ -854,8 +864,7 @@ where
     // If the affix is non-empty, create an extension node and add it
     // to parents.
     if !affix.is_empty() {
-        let new_node_bytes = new_node.to_bytes()?;
-        let new_node_hash = Digest::hash(&new_node_bytes);
+        let new_node_hash = new_node.trie_hash()?;
         let new_extension = Trie::extension(affix.to_vec(), Pointer::NodePointer(new_node_hash));
         parents.push((child_index, new_extension));
     }
@@ -908,8 +917,7 @@ where
             None
         } else {
             let child_extension = Trie::extension(child_extension_affix.to_vec(), pointer);
-            let child_extension_bytes = child_extension.to_bytes()?;
-            let child_extension_hash = Digest::hash(&child_extension_bytes);
+            let child_extension_hash = child_extension.trie_hash()?;
             Some((child_extension_hash, child_extension))
         };
     // Assemble a new node.
@@ -922,8 +930,7 @@ where
     };
     // Create a parent extension if necessary
     if !parent_extension_affix.is_empty() {
-        let new_node_bytes = new_node.to_bytes()?;
-        let new_node_hash = Digest::hash(&new_node_bytes);
+        let new_node_hash = new_node.trie_hash()?;
         let parent_extension = Trie::extension(
             parent_extension_affix.to_vec(),
             Pointer::NodePointer(new_node_hash),
@@ -969,7 +976,13 @@ where
             };
             let path: Vec<u8> = key.to_bytes()?;
             let TrieScan { tip, parents } =
-                scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)?;
+                match scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)? {
+                    Some(trie_scan) => trie_scan,
+                    // If we are scanning the trie and it's not complete under the given root, then
+                    // in the context of a write we must consider this root to "not exist".
+                    // This can happen when a trie is being sync'd or is incomplete.
+                    None => return Ok(WriteResult::RootNotFound),
+                };
             let new_elements: Vec<(Digest, Trie<K, V>)> = match tip {
                 // If the "tip" is the same as the new leaf, then the leaf
                 // is already in the Trie.
@@ -1034,11 +1047,12 @@ where
     }
 }
 
+/// Puts a trie pointer block, extension node or leaf into the trie.
 pub fn put_trie<K, V, T, S, E>(
     _correlation_id: CorrelationId,
     txn: &mut T,
     store: &S,
-    trie: &Trie<K, V>,
+    trie_bytes: &[u8],
 ) -> Result<Digest, E>
 where
     K: ToBytes + FromBytes + Clone + Eq + std::fmt::Debug,
@@ -1048,11 +1062,8 @@ where
     S::Error: From<T::Error>,
     E: From<S::Error> + From<bytesrepr::Error>,
 {
-    let trie_hash = {
-        let node_bytes = trie.to_bytes()?;
-        Digest::hash(&node_bytes)
-    };
-    store.put(txn, &trie_hash, trie)?;
+    let trie_hash = Digest::hash_bytes_into_chunks_if_necessary(trie_bytes);
+    store.put_raw(txn, &trie_hash, trie_bytes)?;
     Ok(trie_hash)
 }
 

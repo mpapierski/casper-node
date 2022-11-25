@@ -6,12 +6,11 @@ use toml::de::Error as TomlDecodeError;
 use tracing::info;
 
 use casper_hashing::Digest;
-use casper_types::{ProtocolVersion, PublicKey, SecretKey, Signature};
+use casper_types::{crypto, ProtocolVersion, PublicKey, SecretKey, Signature};
 
 use crate::{
-    crypto,
     reactor::participating::Config,
-    types::{chainspec, Chainspec},
+    types::{chainspec, Chainspec, ChainspecRawBytes},
     utils::{LoadError, Loadable, WithDir},
 };
 
@@ -77,7 +76,7 @@ pub(crate) enum Error {
 
     /// Error loading the secret key.
     #[error("error loading secret key: {0}")]
-    LoadSecretKey(LoadError<crypto::Error>),
+    LoadSecretKey(LoadError<crypto::ErrorExt>),
 
     /// Error loading the chainspec.
     #[error("error loading chainspec: {0}")]
@@ -200,8 +199,9 @@ pub(crate) fn migrate_data(
     new_config: WithDir<Config>,
 ) -> Result<(), Error> {
     let (new_root, new_config) = new_config.into_parts();
-    let new_protocol_version = Chainspec::from_path(&new_root)
+    let new_protocol_version = <(Chainspec, ChainspecRawBytes)>::from_path(&new_root)
         .map_err(Error::LoadChainspec)?
+        .0
         .protocol_config
         .version;
     let secret_key: Arc<SecretKey> = new_config
@@ -225,7 +225,6 @@ mod tests {
     use rand::Rng;
 
     use super::*;
-    use crate::crypto::AsymmetricKeyExt;
 
     #[test]
     fn should_write_then_read_info() {

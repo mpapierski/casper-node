@@ -63,6 +63,7 @@ function _set_nodes()
 
     local IDX
     local PATH_TO_FILE
+    local SPECULATIVE_EXEC_ADDR
 
     for IDX in $(seq 1 "$(get_count_of_nodes)")
     do
@@ -72,11 +73,12 @@ function _set_nodes()
         cp "$PATH_TO_CONFIG_TOML" "$PATH_TO_CFG"
         cp "$(get_path_to_net)"/chainspec/* "$PATH_TO_CFG"
 
+        SPECULATIVE_EXEC_ADDR=$(grep 'speculative_execution_address' $PATH_TO_FILE || true)
+
         local SCRIPT=(
             "import toml;"
             "cfg=toml.load('$PATH_TO_FILE');"
             "cfg['consensus']['secret_key_path']='../../keys/secret_key.pem';"
-            "cfg['consensus']['highway']['unit_hashes_folder']='../../storage-consensus';"
             "cfg['logging']['format']='$NCTL_NODE_LOG_FORMAT';"
             "cfg['network']['bind_address']='$(get_network_bind_address "$IDX")';"
             "cfg['network']['known_addresses']=[$(get_network_known_addresses "$IDX")];"
@@ -86,6 +88,17 @@ function _set_nodes()
             "cfg['event_stream_server']['address']='0.0.0.0:$(get_node_port_sse "$IDX")';"
             "toml.dump(cfg, open('$PATH_TO_FILE', 'w'));"
         )
+
+        if [ ! -z "$SPECULATIVE_EXEC_ADDR" ]; then
+            SCRIPT+=(
+                "cfg['rpc_server']['speculative_execution_address']='0.0.0.0:$(get_node_port_speculative_exec "$IDX")';"
+            )
+        fi
+
+        SCRIPT+=(
+            "toml.dump(cfg, open('$PATH_TO_FILE', 'w'));"
+        )
+
         python3 -c "${SCRIPT[*]}"
     done
 }
@@ -126,14 +139,14 @@ function _main()
     if [ "$NCTL_COMPILE_TARGET" = "debug" ]; then
         setup_asset_binaries "1_0_0" \
                              "$(get_count_of_nodes)" \
-                             "$NCTL_CASPER_HOME/target/debug/casper-client" \
+                             "$NCTL_CASPER_CLIENT_HOME/target/debug/casper-client" \
                              "$NCTL_CASPER_HOME/target/debug/casper-node" \
                              "$NCTL_CASPER_NODE_LAUNCHER_HOME/target/debug/casper-node-launcher" \
                              "$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release"
     else
         setup_asset_binaries "1_0_0" \
                              "$(get_count_of_nodes)" \
-                             "$NCTL_CASPER_HOME/target/release/casper-client" \
+                             "$NCTL_CASPER_CLIENT_HOME/target/release/casper-client" \
                              "$NCTL_CASPER_HOME/target/release/casper-node" \
                              "$NCTL_CASPER_NODE_LAUNCHER_HOME/target/release/casper-node-launcher" \
                              "$NCTL_CASPER_HOME/target/wasm32-unknown-unknown/release"

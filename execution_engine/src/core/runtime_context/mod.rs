@@ -1,7 +1,7 @@
 //! The context of execution of WASM code.
 use std::{
     cell::RefCell,
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::BTreeSet,
     convert::{TryFrom, TryInto},
     fmt::Debug,
     rc::Rc,
@@ -17,10 +17,10 @@ use casper_types::{
     bytesrepr::ToBytes,
     contracts::NamedKeys,
     system::auction::EraInfo,
-    AccessRights, BlockTime, CLType, CLValue, Contract, ContractHash, ContractPackage,
-    ContractPackageHash, DeployHash, DeployInfo, EntryPointAccess, EntryPointType, Gas, Key,
-    KeyTag, Phase, ProtocolVersion, PublicKey, RuntimeArgs, StoredValue, Transfer, TransferAddr,
-    URef, DICTIONARY_ITEM_KEY_MAX_LENGTH, KEY_HASH_LENGTH,
+    AccessRights, BlockTime, CLType, CLValue, ContextAccessRights, Contract, ContractHash,
+    ContractPackage, ContractPackageHash, DeployHash, DeployInfo, EntryPointAccess, EntryPointType,
+    Gas, GrantedAccess, Key, KeyTag, Phase, ProtocolVersion, PublicKey, RuntimeArgs, StoredValue,
+    Transfer, TransferAddr, URef, URefAddr, DICTIONARY_ITEM_KEY_MAX_LENGTH, KEY_HASH_LENGTH, U512,
 };
 
 use crate::{
@@ -29,9 +29,8 @@ use crate::{
         execution::{AddressGenerator, Error},
         runtime_context::dictionary::DictionaryValue,
         tracking_copy::{AddResult, TrackingCopy, TrackingCopyExt},
-        Address,
     },
-    shared::{newtypes::CorrelationId, wasm_engine::WasmEngine},
+    shared::{execution_journal::ExecutionJournal, newtypes::CorrelationId},
     storage::global_state::StateReader,
 };
 
@@ -39,22 +38,8 @@ pub(crate) mod dictionary;
 #[cfg(test)]
 mod tests;
 
-/// Checks whether given uref has enough access rights.
-pub(crate) fn uref_has_access_rights(
-    uref: &URef,
-    access_rights: &HashMap<Address, HashSet<AccessRights>>,
-) -> bool {
-    if let Some(known_rights) = access_rights.get(&uref.addr()) {
-        let new_rights = uref.access_rights();
-        // check if we have sufficient access rights
-        known_rights
-            .iter()
-            .any(|right| *right & new_rights == new_rights)
-    } else {
-        // URef is not known
-        false
-    }
-}
+/// Number of bytes returned from the `random_bytes` function.
+pub const RANDOM_BYTES_COUNT: usize = 32;
 
 /// Validates an entry point access with a special validator callback.
 ///
@@ -66,7 +51,7 @@ pub(crate) fn uref_has_access_rights(
 ///
 /// Otherwise, if `access` object is a `Public` variant, then the entry point is considered callable
 /// and an unit value is returned.
-pub fn validate_entry_point_access_with(
+pub fn validate_group_membership(
     contract_package: &ContractPackage,
     access: &EntryPointAccess,
     validator: impl Fn(&URef) -> bool,
@@ -99,7 +84,7 @@ pub struct RuntimeContext<'a, R> {
     // Enables look up of specific uref based on human-readable name
     named_keys: &'a mut NamedKeys,
     // Used to check uref is known before use (prevents forging urefs)
-    access_rights: HashMap<Address, HashSet<AccessRights>>,
+    access_rights: ContextAccessRights,
     // Original account for read only tasks taken before execution
     account: &'a Account,
     args: RuntimeArgs,
@@ -111,15 +96,14 @@ pub struct RuntimeContext<'a, R> {
     deploy_hash: DeployHash,
     gas_limit: Gas,
     gas_counter: Gas,
-    hash_address_generator: Rc<RefCell<AddressGenerator>>,
-    uref_address_generator: Rc<RefCell<AddressGenerator>>,
-    transfer_address_generator: Rc<RefCell<AddressGenerator>>,
+    address_generator: Rc<RefCell<AddressGenerator>>,
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
     phase: Phase,
     engine_config: EngineConfig,
     entry_point_type: EntryPointType,
     transfers: Vec<TransferAddr>,
+    remaining_spending_limit: U512,
 }
 
 impl<'a, R> RuntimeContext<'a, R>
@@ -127,13 +111,15 @@ where
     R: StateReader<Key, StoredValue>,
     R::Error: Into<Error>,
 {
-    /// Creates new runtime context.
+    /// Creates new runtime context where we don't already have one.
+    ///
+    /// Where we already have a runtime context, consider using `new_from_self()`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
         entry_point_type: EntryPointType,
         named_keys: &'a mut NamedKeys,
-        access_rights: HashMap<Address, HashSet<AccessRights>>,
+        access_rights: ContextAccessRights,
         runtime_args: RuntimeArgs,
         authorization_keys: BTreeSet<AccountHash>,
         account: &'a Account,
@@ -142,14 +128,13 @@ where
         deploy_hash: DeployHash,
         gas_limit: Gas,
         gas_counter: Gas,
-        hash_address_generator: Rc<RefCell<AddressGenerator>>,
-        uref_address_generator: Rc<RefCell<AddressGenerator>>,
-        transfer_address_generator: Rc<RefCell<AddressGenerator>>,
+        address_generator: Rc<RefCell<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
         phase: Phase,
         engine_config: EngineConfig,
         transfers: Vec<TransferAddr>,
+        remaining_spending_limit: U512,
     ) -> Self {
         RuntimeContext {
             tracking_copy,
@@ -164,14 +149,62 @@ where
             base_key,
             gas_limit,
             gas_counter,
-            hash_address_generator,
-            uref_address_generator,
-            transfer_address_generator,
+            address_generator,
             protocol_version,
             correlation_id,
             phase,
             engine_config,
             transfers,
+            remaining_spending_limit,
+        }
+    }
+
+    /// Creates new runtime context cloning values from self.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_from_self(
+        &self,
+        base_key: Key,
+        entry_point_type: EntryPointType,
+        named_keys: &'a mut NamedKeys,
+        access_rights: ContextAccessRights,
+        runtime_args: RuntimeArgs,
+    ) -> Self {
+        // debug_assert!(base_key != self.base_key);
+        let tracking_copy = self.state();
+        let authorization_keys = self.authorization_keys.clone();
+        let account = self.account;
+        let blocktime = self.blocktime;
+        let deploy_hash = self.deploy_hash;
+        let gas_limit = self.gas_limit;
+        let gas_counter = self.gas_counter;
+        let address_generator = self.address_generator.clone();
+        let protocol_version = self.protocol_version;
+        let correlation_id = self.correlation_id;
+        let phase = self.phase;
+        let engine_config = self.engine_config;
+        let transfers = self.transfers.clone();
+        let remaining_spending_limit = self.remaining_spending_limit();
+
+        RuntimeContext {
+            tracking_copy,
+            entry_point_type,
+            named_keys,
+            access_rights,
+            args: runtime_args,
+            account,
+            authorization_keys,
+            blocktime,
+            deploy_hash,
+            base_key,
+            gas_limit,
+            gas_counter,
+            address_generator,
+            protocol_version,
+            correlation_id,
+            phase,
+            engine_config,
+            transfers,
+            remaining_spending_limit,
         }
     }
 
@@ -192,7 +225,7 @@ where
 
     /// Returns a mutable reference to named keys.
     pub fn named_keys_mut(&mut self) -> &mut NamedKeys {
-        &mut self.named_keys
+        self.named_keys
     }
 
     /// Checks if named keys contains a key referenced by name.
@@ -281,12 +314,28 @@ where
                 self.named_keys.remove(name);
                 Ok(())
             }
+            Key::Unbond(_) => {
+                self.named_keys.remove(name);
+                Ok(())
+            }
             Key::Dictionary(_) => {
                 self.named_keys.remove(name);
                 Ok(())
             }
             Key::SystemContractRegistry => {
                 error!("should not remove the system contract registry key");
+                Err(Error::RemoveKeyFailure(RemoveKeyFailure::PermissionDenied))
+            }
+            Key::ChainspecRegistry => {
+                error!("should not remove the chainspec registry key");
+                Err(Error::RemoveKeyFailure(RemoveKeyFailure::PermissionDenied))
+            }
+            Key::BlockEffectsRootHash { .. } => {
+                error!("should not remove the execution results root hash key");
+                Err(Error::RemoveKeyFailure(RemoveKeyFailure::PermissionDenied))
+            }
+            Key::DeployApprovalsRootHash { .. } => {
+                error!("should not remove the deploy approvals root hash key");
                 Err(Error::RemoveKeyFailure(RemoveKeyFailure::PermissionDenied))
             }
         }
@@ -308,12 +357,12 @@ where
     }
 
     /// Extends access rights with a new map.
-    pub fn access_rights_extend(&mut self, access_rights: HashMap<Address, HashSet<AccessRights>>) {
-        self.access_rights.extend(access_rights);
+    pub fn access_rights_extend(&mut self, urefs: &[URef]) {
+        self.access_rights.extend(urefs);
     }
 
     /// Returns a mapping of access rights for each [`URef`]s address.
-    pub fn access_rights(&self) -> &HashMap<Address, HashSet<AccessRights>> {
+    pub fn access_rights(&self) -> &ContextAccessRights {
         &self.access_rights
     }
 
@@ -327,19 +376,13 @@ where
         &self.args
     }
 
+    pub(crate) fn set_args(&mut self, args: RuntimeArgs) {
+        self.args = args
+    }
+
     /// Returns new shared instance of an address generator.
-    pub fn uref_address_generator(&self) -> Rc<RefCell<AddressGenerator>> {
-        Rc::clone(&self.uref_address_generator)
-    }
-
-    /// Returns new shared instance of a hash generator.
-    pub fn hash_address_generator(&self) -> Rc<RefCell<AddressGenerator>> {
-        Rc::clone(&self.hash_address_generator)
-    }
-
-    /// Returns new shared instance of a transfer address generator.
-    pub fn transfer_address_generator(&self) -> Rc<RefCell<AddressGenerator>> {
-        Rc::clone(&self.transfer_address_generator)
+    pub fn address_generator(&self) -> Rc<RefCell<AddressGenerator>> {
+        Rc::clone(&self.address_generator)
     }
 
     /// Returns new shared instance of a tracking copy.
@@ -387,13 +430,18 @@ where
 
     /// Generates new deterministic hash for uses as an address.
     pub fn new_hash_address(&mut self) -> Result<[u8; KEY_HASH_LENGTH], Error> {
-        Ok(self.hash_address_generator.borrow_mut().new_hash_address())
+        Ok(self.address_generator.borrow_mut().new_hash_address())
+    }
+
+    /// Returns 32 pseudo random bytes.
+    pub fn random_bytes(&mut self) -> Result<[u8; RANDOM_BYTES_COUNT], Error> {
+        Ok(self.address_generator.borrow_mut().create_address())
     }
 
     /// Creates new [`URef`] instance.
     pub fn new_uref(&mut self, value: StoredValue) -> Result<URef, Error> {
         let uref = self
-            .uref_address_generator
+            .address_generator
             .borrow_mut()
             .new_uref(AccessRights::READ_ADD_WRITE);
         self.insert_uref(uref);
@@ -408,21 +456,18 @@ where
 
     /// Creates a new transfer address using a transfer address generator.
     pub fn new_transfer_addr(&mut self) -> Result<TransferAddr, Error> {
-        let transfer_addr = self
-            .transfer_address_generator
-            .borrow_mut()
-            .create_address();
+        let transfer_addr = self.address_generator.borrow_mut().create_address();
         Ok(TransferAddr::new(transfer_addr))
     }
 
     /// Puts `key` to the map of named keys of current context.
-    pub fn put_key(&mut self, name: &str, key: Key) -> Result<(), Error> {
+    pub fn put_key(&mut self, name: String, key: Key) -> Result<(), Error> {
         // No need to perform actual validation on the base key because an account or contract (i.e.
         // the element stored under `base_key`) is allowed to add new named keys to itself.
         let named_key_value = StoredValue::CLValue(CLValue::from_t((name.clone(), key))?);
         self.validate_value(&named_key_value)?;
         self.metered_add_gs_unsafe(self.base_key(), named_key_value)?;
-        self.insert_key(name.to_string(), key);
+        self.insert_named_key(name, key);
         Ok(())
     }
 
@@ -456,10 +501,18 @@ where
         self.validate_readable(key)?;
         self.validate_key(key)?;
 
-        self.tracking_copy
+        let maybe_stored_value = self
+            .tracking_copy
             .borrow_mut()
             .read(self.correlation_id, key)
-            .map_err(Into::into)
+            .map_err(Into::into)?;
+
+        let stored_value = match maybe_stored_value {
+            Some(stored_value) => dictionary::handle_stored_value(*key, stored_value)?,
+            None => return Ok(None),
+        };
+
+        Ok(Some(stored_value))
     }
 
     /// Reads a value from a global state directly.
@@ -533,6 +586,7 @@ where
     /// Write a transfer instance to the global state.
     pub fn write_transfer(&mut self, key: Key, value: Transfer) {
         if let Key::Transfer(_) = key {
+            // Writing a `Transfer` will not exceed write size limit.
             self.tracking_copy
                 .borrow_mut()
                 .write(key, StoredValue::Transfer(value));
@@ -544,6 +598,7 @@ where
     /// Write an era info instance to the global state.
     pub fn write_era_info(&mut self, key: Key, value: EraInfo) {
         if let Key::EraInfo(_) = key {
+            // Writing an `EraInfo` for 100 validators will not exceed write size limit.
             self.tracking_copy
                 .borrow_mut()
                 .write(key, StoredValue::EraInfo(value));
@@ -554,8 +609,9 @@ where
 
     /// Adds a named key.
     ///
-    /// If given `Key` refers to an [`URef`] then
-    pub fn insert_key(&mut self, name: String, key: Key) {
+    /// If given `Key` refers to an [`URef`] then it extends the runtime context's access rights
+    /// with the URef's access rights.
+    fn insert_named_key(&mut self, name: String, key: Key) {
         if let Key::URef(uref) = key {
             self.insert_uref(uref);
         }
@@ -565,18 +621,28 @@ where
     /// Adds a new [`URef`] into the context.
     ///
     /// Once an [`URef`] is inserted, it's considered a valid [`URef`] in this runtime context.
-    pub fn insert_uref(&mut self, uref: URef) {
-        let rights = uref.access_rights();
-        let entry = self
-            .access_rights
-            .entry(uref.addr())
-            .or_insert_with(|| std::iter::empty().collect());
-        entry.insert(rights);
+    fn insert_uref(&mut self, uref: URef) {
+        self.access_rights.extend(&[uref])
+    }
+
+    /// Grants access to a [`URef`]; unless access was pre-existing.
+    pub fn grant_access(&mut self, uref: URef) -> GrantedAccess {
+        self.access_rights.grant_access(uref)
+    }
+
+    /// Removes an access right from the current runtime context.
+    pub fn remove_access(&mut self, uref_addr: URefAddr, access_rights: AccessRights) {
+        self.access_rights.remove_access(uref_addr, access_rights)
     }
 
     /// Returns current effects of a tracking copy.
     pub fn effect(&self) -> ExecutionEffect {
-        self.tracking_copy.borrow_mut().effect()
+        self.tracking_copy.borrow().effect()
+    }
+
+    /// Returns an `ExecutionJournal`.
+    pub fn execution_journal(&self) -> ExecutionJournal {
+        self.tracking_copy.borrow().execution_journal()
     }
 
     /// Returns list of transfers.
@@ -651,6 +717,7 @@ where
             StoredValue::EraInfo(_) => Ok(()),
             StoredValue::Bid(_) => Ok(()),
             StoredValue::Withdraw(_) => Ok(()),
+            StoredValue::Unbonding(_) => Ok(()),
         }
     }
 
@@ -671,19 +738,7 @@ where
     /// Returns unit if [`URef`]s address exists in the context, and has correct access rights bit
     /// set.
     pub(crate) fn validate_uref(&self, uref: &URef) -> Result<(), Error> {
-        if self.account.main_purse().addr() == uref.addr() {
-            // If passed uref matches account's purse then we have to also validate their
-            // access rights.
-            let rights = self.account.main_purse().access_rights();
-            let uref_rights = uref.access_rights();
-            // Access rights of the passed uref, and the account's purse should match
-            if rights & uref_rights == uref_rights {
-                return Ok(());
-            }
-        }
-
-        // Check if the `key` is known
-        if uref_has_access_rights(uref, &self.access_rights) {
+        if self.access_rights.has_access_rights_to_uref(uref) {
             Ok(())
         } else {
             Err(Error::ForgedReference(*uref))
@@ -735,12 +790,12 @@ where
             Key::Balance(_) => false,
             Key::Bid(_) => true,
             Key::Withdraw(_) => true,
-            Key::Dictionary(_) => {
-                // Dictionary is a special case that will not be readable by default, but the access
-                // bits are verified from within API call.
-                false
-            }
-            Key::SystemContractRegistry => false,
+            Key::Unbond(_) => true,
+            Key::Dictionary(_) => true,
+            Key::SystemContractRegistry => true,
+            Key::ChainspecRegistry => true,
+            Key::BlockEffectsRootHash { .. } => true,
+            Key::DeployApprovalsRootHash { .. } => true,
         }
     }
 
@@ -755,12 +810,16 @@ where
             Key::Balance(_) => false,
             Key::Bid(_) => false,
             Key::Withdraw(_) => false,
+            Key::Unbond(_) => false,
             Key::Dictionary(_) => {
                 // Dictionary is a special case that will not be readable by default, but the access
                 // bits are verified from within API call.
                 false
             }
             Key::SystemContractRegistry => false,
+            Key::ChainspecRegistry => false,
+            Key::BlockEffectsRootHash { .. } => false,
+            Key::DeployApprovalsRootHash { .. } => false,
         }
     }
 
@@ -775,12 +834,16 @@ where
             Key::Balance(_) => false,
             Key::Bid(_) => false,
             Key::Withdraw(_) => false,
+            Key::Unbond(_) => false,
             Key::Dictionary(_) => {
                 // Dictionary is a special case that will not be readable by default, but the access
                 // bits are verified from within API call.
                 false
             }
             Key::SystemContractRegistry => false,
+            Key::ChainspecRegistry => false,
+            Key::BlockEffectsRootHash { .. } => false,
+            Key::DeployApprovalsRootHash { .. } => false,
         }
     }
 
@@ -803,6 +866,8 @@ where
                 Err(Error::GasLimit)
             }
             Some(val) => {
+                // let u128_val: u128 = val.value().as_u128();
+                // eprintln!("prev={} amount={} val={}", prev, amount, u128_val);
                 self.set_gas_counter(val);
                 Ok(())
             }
@@ -810,25 +875,23 @@ where
     }
 
     /// Checks if we are calling a system contract.
-    pub(crate) fn is_system_contract(&self) -> Result<bool, Error> {
-        if let Some(hash) = self.base_key().into_hash() {
-            let contract_hash = ContractHash::new(hash);
-            return Ok(self
-                .system_contract_registry()?
-                .values()
-                .any(|&system_hash| system_hash == contract_hash));
-        }
-        Ok(false)
+    pub(crate) fn is_system_contract(&self, contract_hash: &ContractHash) -> Result<bool, Error> {
+        Ok(self
+            .system_contract_registry()?
+            .has_contract_hash(contract_hash))
     }
 
     /// Charges gas for specified amount of bytes used.
     fn charge_gas_storage(&mut self, bytes_count: usize) -> Result<(), Error> {
-        if self.is_system_contract()? {
-            // Don't charge storage used while executing a system contract.
-            return Ok(());
+        if let Some(base_key) = self.base_key().into_hash() {
+            let contract_hash = ContractHash::new(base_key);
+            if self.is_system_contract(&contract_hash)? {
+                // Don't charge storage used while executing a system contract.
+                return Ok(());
+            }
         }
 
-        let storage_costs = self.engine_config().wasm_config().storage_costs();
+        let storage_costs = self.engine_config.wasm_config().storage_costs();
 
         let gas_cost = storage_costs.calculate_gas_cost(bytes_count);
 
@@ -882,8 +945,7 @@ where
         self.validate_writeable(&key)?;
         self.validate_key(&key)?;
         self.validate_value(&stored_value)?;
-        self.metered_write_gs_unsafe(key, stored_value)?;
-        Ok(())
+        self.metered_write_gs_unsafe(key, stored_value)
     }
 
     /// Adds data to a global state key and charges for bytes stored.
@@ -1089,11 +1151,6 @@ where
         Ok(())
     }
 
-    /// Returns borrowed instance of engine config.
-    pub fn engine_config(&self) -> &EngineConfig {
-        &self.engine_config
-    }
-
     /// Creates validated instance of `StoredValue` from `account`.
     fn account_to_validated_value(&self, account: Account) -> Result<StoredValue, Error> {
         let value = StoredValue::Account(account);
@@ -1107,11 +1164,13 @@ where
     }
 
     /// Gets main purse id
-    pub fn get_main_purse(&self) -> Result<URef, Error> {
+    pub fn get_main_purse(&mut self) -> Result<URef, Error> {
         if !self.is_valid_context() {
             return Err(Error::InvalidContext);
         }
-        Ok(self.account().main_purse())
+
+        let main_purse = self.account().main_purse();
+        Ok(main_purse)
     }
 
     /// Gets entry point type.
@@ -1146,7 +1205,14 @@ where
         }
 
         let dictionary_key = Key::dictionary(uref, dictionary_item_key_bytes);
+        self.dictionary_read(dictionary_key)
+    }
 
+    /// Gets a dictionary value from a dictionary `Key`.
+    pub(crate) fn dictionary_read(
+        &mut self,
+        dictionary_key: Key,
+    ) -> Result<Option<CLValue>, Error> {
         let maybe_stored_value = self
             .tracking_copy
             .borrow_mut()
@@ -1154,11 +1220,8 @@ where
             .map_err(Into::into)?;
 
         if let Some(stored_value) = maybe_stored_value {
-            let cl_value_indirect: CLValue =
-                stored_value.try_into().map_err(Error::TypeMismatch)?;
-            let dictionary_value: DictionaryValue =
-                cl_value_indirect.into_t().map_err(Error::from)?;
-            let cl_value = dictionary_value.into_cl_value();
+            let stored_value = dictionary::handle_stored_value(dictionary_key, stored_value)?;
+            let cl_value = CLValue::try_from(stored_value).map_err(Error::TypeMismatch)?;
             Ok(Some(cl_value))
         } else {
             Ok(None)
@@ -1216,5 +1279,32 @@ where
                 error!("Missing system contract registry");
                 Error::MissingSystemContractRegistry
             })
+    }
+
+    pub(super) fn remaining_spending_limit(&self) -> U512 {
+        self.remaining_spending_limit
+    }
+
+    /// Subtract spent amount from the main purse spending limit.
+    pub(crate) fn subtract_amount_spent(&mut self, amount: U512) -> Option<U512> {
+        if let Some(res) = self.remaining_spending_limit.checked_sub(amount) {
+            self.remaining_spending_limit = res;
+            Some(self.remaining_spending_limit)
+        } else {
+            error!(
+                limit = %self.remaining_spending_limit,
+                spent = %amount,
+                "exceeded main purse spending limit"
+            );
+            self.remaining_spending_limit = U512::zero();
+            None
+        }
+    }
+
+    /// Sets a new spending limit.
+    /// Should be called after inner context returns - if tokens were spent there, it must count
+    /// towards global limit for the whole deploy execution.
+    pub(crate) fn set_remaining_spending_limit(&mut self, amount: U512) {
+        self.remaining_spending_limit = amount;
     }
 }

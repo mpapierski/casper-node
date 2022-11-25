@@ -9,13 +9,12 @@ source "$NCTL"/sh/utils/main.sh
 #   Withdrawal amount.
 #   Flag indicating whether to emit log messages.
 #######################################
-function main() 
+function main()
 {
     local BIDDER_ID=${1}
     local AMOUNT=${2}
     local QUIET=${3:-"FALSE"}
     local CHAIN_NAME
-    local GAS_PRICE
     local GAS_PAYMENT
     local NODE_ADDRESS
     local PATH_TO_CLIENT
@@ -25,15 +24,14 @@ function main()
     local BIDDER_MAIN_PURSE_UREF
 
     CHAIN_NAME=$(get_chain_name)
-    GAS_PRICE=${GAS_PRICE:-$NCTL_DEFAULT_GAS_PRICE}
     GAS_PAYMENT=${GAS_PAYMENT:-$NCTL_DEFAULT_GAS_PAYMENT}
     NODE_ADDRESS=$(get_node_address_rpc)
     PATH_TO_CLIENT=$(get_path_to_client)
     PATH_TO_CONTRACT=$(get_path_to_contract "auction/withdraw_bid.wasm")
 
     BIDDER_SECRET_KEY=$(get_path_to_secret_key "$NCTL_ACCOUNT_TYPE_NODE" "$BIDDER_ID")
-    BIDDER_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_NODE" "$BIDDER_ID")
-    BIDDER_MAIN_PURSE_UREF=$(get_main_purse_uref "$BIDDER_ACCOUNT_KEY")
+    BIDDER_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_NODE" "$BIDDER_ID" | tr '[:upper:]' '[:lower:]')
+    BIDDER_MAIN_PURSE_UREF=$(get_main_purse_uref "$BIDDER_ACCOUNT_KEY" | tr '[:upper:]' '[:lower:]')
 
     if [ "$QUIET" != "TRUE" ]; then
         log "dispatching deploy -> withdraw_bid.wasm"
@@ -50,7 +48,6 @@ function main()
     DEPLOY_HASH=$(
         $PATH_TO_CLIENT put-deploy \
             --chain-name "$CHAIN_NAME" \
-            --gas-price "$GAS_PRICE" \
             --node-address "$NODE_ADDRESS" \
             --payment-amount "$GAS_PAYMENT" \
             --ttl "1day" \

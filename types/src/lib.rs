@@ -1,10 +1,16 @@
 //! Types used to allow creation of Wasm contracts and tests for use on the Casper Platform.
 
 #![cfg_attr(
-    not(any(feature = "json-schema", feature = "datasize", feature = "gens", test)),
+    not(any(
+        feature = "json-schema",
+        feature = "datasize",
+        feature = "std",
+        feature = "testing",
+        test,
+    )),
     no_std
 )]
-#![doc(html_root_url = "https://docs.rs/casper-types/1.0.0")]
+#![doc(html_root_url = "https://docs.rs/casper-types/1.5.0")]
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Favicon_RGB_50px.png",
     html_logo_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Symbol_RGB.png",
@@ -20,6 +26,7 @@ pub mod account;
 pub mod api_error;
 mod block_time;
 pub mod bytesrepr;
+pub mod checksummed_hex;
 mod cl_type;
 mod cl_value;
 mod contract_wasm;
@@ -28,8 +35,10 @@ pub mod crypto;
 mod deploy_info;
 mod era_id;
 mod execution_result;
+#[cfg(any(feature = "std", test))]
+pub mod file_utils;
 mod gas;
-#[cfg(any(feature = "gens", test))]
+#[cfg(any(feature = "testing", test))]
 pub mod gens;
 mod json_pretty_printer;
 mod key;
@@ -42,12 +51,17 @@ mod semver;
 mod stored_value;
 pub mod system;
 mod tagged;
+#[cfg(any(feature = "testing", test))]
+pub mod testing;
+mod timestamp;
 mod transfer;
 mod transfer_result;
 mod uint;
 mod uref;
 
-pub use access_rights::{AccessRights, ACCESS_RIGHTS_SERIALIZED_LENGTH};
+pub use access_rights::{
+    AccessRights, ContextAccessRights, GrantedAccess, ACCESS_RIGHTS_SERIALIZED_LENGTH,
+};
 #[doc(inline)]
 pub use api_error::ApiError;
 pub use block_time::{BlockTime, BLOCKTIME_SERIALIZED_LENGTH};
@@ -81,12 +95,15 @@ pub use runtime_args::{NamedArg, RuntimeArgs};
 pub use semver::{ParseSemVerError, SemVer, SEM_VER_SERIALIZED_LENGTH};
 pub use stored_value::{StoredValue, TypeMismatch as StoredValueTypeMismatch};
 pub use tagged::Tagged;
+pub use timestamp::{TimeDiff, Timestamp};
 pub use transfer::{
     DeployHash, FromStrError as TransferFromStrError, Transfer, TransferAddr, DEPLOY_HASH_LENGTH,
     TRANSFER_ADDR_LENGTH,
 };
 pub use transfer_result::{TransferResult, TransferredTo};
-pub use uref::{FromStrError as URefFromStrError, URef, UREF_ADDR_LENGTH, UREF_SERIALIZED_LENGTH};
+pub use uref::{
+    FromStrError as URefFromStrError, URef, URefAddr, UREF_ADDR_LENGTH, UREF_SERIALIZED_LENGTH,
+};
 
 pub use crate::{
     era_id::EraId,

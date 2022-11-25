@@ -247,11 +247,11 @@ fn main() {
     let node_macros = Package::cargo("node_macros", &*regex_data::node_macros::DEPENDENT_FILES);
     node_macros.update();
 
+    let json_rpc = Package::cargo("json_rpc", &*regex_data::json_rpc::DEPENDENT_FILES);
+    json_rpc.update();
+
     let node = Package::cargo("node", &*regex_data::node::DEPENDENT_FILES);
     node.update();
-
-    let client = Package::cargo("client", &*regex_data::client::DEPENDENT_FILES);
-    client.update();
 
     let smart_contracts_contract = Package::cargo(
         "smart_contracts/contract",
@@ -270,12 +270,6 @@ fn main() {
         &*regex_data::execution_engine_testing_test_support::DEPENDENT_FILES,
     );
     execution_engine_testing_test_support.update();
-
-    let execution_engine_testing_cargo_casper = Package::cargo(
-        "execution_engine_testing/cargo_casper",
-        &*regex_data::execution_engine_testing_cargo_casper::DEPENDENT_FILES,
-    );
-    execution_engine_testing_cargo_casper.update();
 
     let chainspec = Chainspec::new();
     chainspec.update();

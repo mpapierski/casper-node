@@ -1,13 +1,9 @@
-use std::convert::TryFrom;
-
+use casper_execution_engine::core::{engine_state, execution};
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_PAYMENT,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+    ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_PAYMENT, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_types::{
     account::AccountHash,
@@ -16,7 +12,7 @@ use casper_types::{
         auction::ARG_AMOUNT,
         mint::{self, ARG_TARGET},
     },
-    ApiError, CLValue, RuntimeArgs, U512,
+    ApiError, RuntimeArgs, U512,
 };
 
 const CONTRACT_TRANSFER_PURSE_TO_ACCOUNT: &str = "transfer_purse_to_account.wasm";
@@ -28,7 +24,7 @@ static ACCOUNT_1_INITIAL_FUND: Lazy<U512> = Lazy::new(|| *DEFAULT_PAYMENT + 42);
 #[test]
 fn should_run_purse_to_account_transfer() {
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let account_1_account_hash = ACCOUNT_1_ADDR;
     assert!(
@@ -71,28 +67,17 @@ fn should_fail_when_sending_too_much_from_purse_to_account() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
-        .exec(exec_request_1)
-        .expect_success()
-        .commit()
-        .finish();
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+    builder.exec(exec_request_1).expect_failure().commit();
 
     // Get transforms output for genesis account
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should get genesis account");
 
-    // Obtain main purse's balance
-    let final_balance_key = default_account.named_keys()["final_balance"].normalize();
-    let final_balance = CLValue::try_from(
-        builder
-            .query(None, final_balance_key, &[])
-            .expect("should have final balance"),
-    )
-    .expect("should be a CLValue")
-    .into_t::<U512>()
-    .expect("should be U512");
+    let final_balance = builder.get_purse_balance(default_account.main_purse());
+
     // When trying to send too much coins the balance is left unchanged
     assert_eq!(
         final_balance,
@@ -100,22 +85,15 @@ fn should_fail_when_sending_too_much_from_purse_to_account() {
         "final balance incorrect"
     );
 
-    // Get the `transfer_result` for a given account
-    let transfer_result_key = default_account.named_keys()["transfer_result"].normalize();
-    let transfer_result = CLValue::try_from(
-        builder
-            .query(None, transfer_result_key, &[])
-            .expect("should have transfer result"),
-    )
-    .expect("should be a CLValue")
-    .into_t::<String>()
-    .expect("should be String");
+    let error = builder.get_error().expect("should have error");
 
-    // Main assertion for the result of `transfer_from_purse_to_purse`
-    let expected_error: ApiError = mint::Error::InsufficientFunds.into();
-    assert_eq!(
-        transfer_result,
-        format!("{:?}", Result::<(), _>::Err(expected_error)),
-        "Transfer Error incorrect"
+    assert!(
+        matches!(
+            error,
+            engine_state::Error::Exec(execution::Error::Revert(ApiError::Mint(mint_error)))
+            if mint_error == mint::Error::InsufficientFunds as u8,
+        ),
+        "Error received {:?}",
+        error,
     );
 }

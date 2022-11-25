@@ -2,7 +2,6 @@
 version = '1.0.0'
 hard_reset = false
 activation_point = 1
-last_emergency_restart = 99
 
 [network]
 name = 'test-chain'
@@ -14,9 +13,13 @@ minimum_era_height = 9
 validator_slots = 5
 auction_delay = 3
 locked_funds_period = '90days'
+vesting_schedule_period = '13 weeks'
 round_seigniorage_rate = [6_414, 623_437_335_209]
 unbonding_delay = 14
 max_associated_keys = 100
+max_runtime_call_stack_height = 12
+minimum_delegation_amount = 500_000_000_000
+strict_argument_checking = false
 
 [highway]
 finality_threshold_fraction = [2, 25]
@@ -87,6 +90,7 @@ has_key = { cost = 119, arguments = [0, 1] }
 is_valid_uref = { cost = 120, arguments = [0, 1] }
 load_named_keys = { cost = 121, arguments = [0, 1] }
 new_uref = { cost = 122, arguments = [0, 1, 2] }
+random_bytes = { cost = 200, arguments = [0, 0] }
 print = { cost = 123, arguments = [0, 1] }
 provision_contract_user_group_uref = { cost = 124, arguments = [0,1,2,3,4] }
 put_key = { cost = 125, arguments = [0, 1, 2, 3] }

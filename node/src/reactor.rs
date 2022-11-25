@@ -2,27 +2,30 @@
 //!
 //! Any long running instance of the node application uses an event-dispatch pattern: Events are
 //! generated and stored on an event queue, then processed one-by-one. This process happens inside
-//! the reactor*, which also exclusively holds the state of the application besides pending events:
+//! the reactor, which also exclusively holds the state of the application besides pending events:
 //!
-//! 1. The reactor pops an event off the event queue (called a [`Scheduler`](type.Scheduler.html)).
-//! 2. The event is dispatched by the reactor. Since the reactor holds mutable state, it can grant
-//!    any component that processes an event mutable, exclusive access to its state.
-//! 3. Once the (synchronous) event processing has completed, the component returns an effect.
-//! 4. The reactor spawns a task that executes these effects and eventually schedules another event.
-//! 5. meanwhile go to 1.
+//! 1. The reactor pops a reactor event off the event queue (called a
+//!    [`Scheduler`](type.Scheduler.html)).
+//! 2. The event is dispatched by the reactor via [`Reactor::dispatch_event`]. Since the reactor
+//!    holds mutable state, it can grant any component that processes an event mutable, exclusive
+//!    access to its state.
+//! 3. Once the [(synchronous)](`crate::components::Component::handle_event`) event processing has
+//!    completed, the component returns an [`effect`](crate::effect).
+//! 4. The reactor spawns a task that executes these effects and possibly schedules more events.
+//! 5. go to 1.
+//!
+//! For descriptions of events and instructions on how to create effects, see the
+//! [`effect`](super::effect) module.
 //!
 //! # Reactors
 //!
 //! There is no single reactor, but rather a reactor for each application type, since it defines
 //! which components are used and how they are wired up. The reactor defines the state by being a
-//! `struct` of components, their initialization through the
-//! [`Reactor::new()`](trait.Reactor.html#tymethod.new) and a method
-//! [`Reactor::dispatch_event()`](trait.Reactor.html#tymethod.dispatch_event) to dispatch events to
-//! components.
+//! `struct` of components, their initialization through [`Reactor::new`] and event dispatching to
+//! components via [`Reactor::dispatch_event`].
 //!
-//! With all these set up, a reactor can be executed using a [`Runner`](struct.Runner.html), either
-//! in a step-wise manner using [`crank`](struct.Runner.html#method.crank) or indefinitely using
-//! [`run`](struct.Runner.html#method.crank).
+//! With all these set up, a reactor can be executed using a [`Runner`], either in a step-wise
+//! manner using [`Runner::crank`] or indefinitely using [`Runner::run`].
 
 mod event_queue_metrics;
 pub(crate) mod initializer;
@@ -37,7 +40,7 @@ use std::{
     collections::HashMap,
     env,
     fmt::{Debug, Display},
-    fs::File,
+    io::Write,
     mem,
     num::NonZeroU64,
     str::FromStr,
@@ -45,45 +48,44 @@ use std::{
 };
 
 use datasize::DataSize;
+use erased_serde::Serialize as ErasedSerialize;
 use futures::{future::BoxFuture, FutureExt};
-use jemalloc_ctl::{epoch as jemalloc_epoch, stats::allocated as jemalloc_allocated};
 use once_cell::sync::Lazy;
 use prometheus::{self, Histogram, HistogramOpts, IntCounter, IntGauge, Registry};
 use quanta::{Clock, IntoNanoseconds};
 use serde::Serialize;
 use signal_hook::consts::signal::{SIGINT, SIGQUIT, SIGTERM};
+use stats_alloc::{Stats, INSTRUMENTED_SYSTEM};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, debug_span, error, info, instrument, trace, warn, Span};
 use tracing_futures::Instrument;
 
-#[cfg(target_os = "linux")]
-use utils::rlimit::{Limit, OpenFiles, ResourceLimit};
-
 use crate::{
-    effect::{announcements::ControlAnnouncement, Effect, EffectBuilder, Effects},
-    types::{ExitCode, Timestamp},
+    components::{deploy_acceptor, fetcher, fetcher::FetchedOrNotFound},
+    effect::{
+        announcements::{BlocklistAnnouncement, ControlAnnouncement, QueueDumpFormat},
+        incoming::NetResponse,
+        Effect, EffectBuilder, EffectExt, Effects,
+    },
+    types::{
+        Block, BlockAndDeploys, BlockHeader, BlockHeaderWithMetadata, BlockHeadersBatch,
+        BlockSignatures, BlockWithMetadata, Deploy, DeployHash, ExitCode, FinalizedApprovalsWithId,
+        Item, NodeId,
+    },
     unregister_metric,
-    utils::{self, WeightedRoundRobin},
-    NodeRng, QUEUE_DUMP_REQUESTED, TERMINATION_REQUESTED,
+    utils::{
+        self,
+        rlimit::{Limit, OpenFiles, ResourceLimit},
+        SharedFlag, Source, WeightedRoundRobin,
+    },
+    NodeRng, TERMINATION_REQUESTED,
 };
 #[cfg(test)]
-use crate::{reactor::initializer::Reactor as InitializerReactor, types::Chainspec};
+use crate::{
+    reactor::initializer::Reactor as InitializerReactor,
+    types::{Chainspec, ChainspecRawBytes},
+};
 pub(crate) use queue_kind::QueueKind;
-
-/// Optional upper threshold for total RAM allocated in mB before dumping queues to disk.
-const MEM_DUMP_THRESHOLD_MB_ENV_VAR: &str = "CL_MEM_DUMP_THRESHOLD_MB";
-static MEM_DUMP_THRESHOLD_MB: Lazy<Option<u64>> = Lazy::new(|| {
-    env::var(MEM_DUMP_THRESHOLD_MB_ENV_VAR)
-        .map(|threshold_str| {
-            u64::from_str(&threshold_str).unwrap_or_else(|error| {
-                panic!(
-                    "can't parse env var {}={} as a u64: {}",
-                    MEM_DUMP_THRESHOLD_MB_ENV_VAR, threshold_str, error
-                )
-            })
-        })
-        .ok()
-});
 
 /// Default threshold for when an event is considered slow.  Can be overridden by setting the env
 /// var `CL_EVENT_MAX_MICROSECS=<MICROSECONDS>`.
@@ -104,11 +106,9 @@ static DISPATCH_EVENT_THRESHOLD: Lazy<Duration> = Lazy::new(|| {
         .unwrap_or_else(|_| DEFAULT_DISPATCH_EVENT_THRESHOLD)
 });
 
-#[cfg(target_os = "linux")]
 /// The desired limit for open files.
 const TARGET_OPEN_FILES_LIMIT: Limit = 64_000;
 
-#[cfg(target_os = "linux")]
 /// Adjusts the maximum number of open file handles upwards towards the hard limit.
 fn adjust_open_files_limit() {
     // Ensure we have reasonable ulimits.
@@ -146,12 +146,6 @@ fn adjust_open_files_limit() {
     }
 }
 
-#[cfg(not(target_os = "linux"))]
-/// File handle limit adjustment shim.
-fn adjust_open_files_limit() {
-    info!("not on linux, not adjusting open files limit");
-}
-
 /// The value returned by a reactor on completion of the `run()` loop.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, DataSize)]
 pub(crate) enum ReactorExit {
@@ -179,21 +173,42 @@ pub(crate) type Scheduler<Ev> = WeightedRoundRobin<(Option<NonZeroU64>, Ev), Que
 /// outside of the normal event loop. It gives different parts a chance to schedule messages that
 /// stem from things like external IO.
 #[derive(DataSize, Debug)]
-pub(crate) struct EventQueueHandle<REv>(&'static Scheduler<REv>)
+pub(crate) struct EventQueueHandle<REv>
 where
-    REv: 'static;
+    REv: 'static,
+{
+    /// A reference to the scheduler of the event queue.
+    scheduler: &'static Scheduler<REv>,
+    /// Flag indicating whether or not the reactor processing this event queue is shutting down.
+    is_shutting_down: SharedFlag,
+}
 
 // Implement `Clone` and `Copy` manually, as `derive` will make it depend on `R` and `Ev` otherwise.
 impl<REv> Clone for EventQueueHandle<REv> {
     fn clone(&self) -> Self {
-        EventQueueHandle(self.0)
+        EventQueueHandle {
+            scheduler: self.scheduler,
+            is_shutting_down: self.is_shutting_down,
+        }
     }
 }
 impl<REv> Copy for EventQueueHandle<REv> {}
 
 impl<REv> EventQueueHandle<REv> {
-    pub(crate) fn new(scheduler: &'static Scheduler<REv>) -> Self {
-        EventQueueHandle(scheduler)
+    /// Creates a new event queue handle.
+    pub(crate) fn new(scheduler: &'static Scheduler<REv>, is_shutting_down: SharedFlag) -> Self {
+        EventQueueHandle {
+            scheduler,
+            is_shutting_down,
+        }
+    }
+
+    /// Creates a new event queue handle that is not connected to a shutdown flag.
+    ///
+    /// This method is used in tests, where we are never disabling shutdown warnings anyway.
+    #[cfg(test)]
+    pub(crate) fn without_shutdown(scheduler: &'static Scheduler<REv>) -> Self {
+        EventQueueHandle::new(scheduler, SharedFlag::global_shared())
     }
 
     /// Schedule an event on a specific queue.
@@ -215,12 +230,19 @@ impl<REv> EventQueueHandle<REv> {
     ) where
         REv: From<Ev>,
     {
-        self.0.push((ancestor, event.into()), queue_kind).await
+        self.scheduler
+            .push((ancestor, event.into()), queue_kind)
+            .await
     }
 
     /// Returns number of events in each of the scheduler's queues.
     pub(crate) fn event_queues_counts(&self) -> HashMap<QueueKind, usize> {
-        self.0.event_queues_counts()
+        self.scheduler.event_queues_counts()
+    }
+
+    /// Returns whether the associated reactor is currently shutting down.
+    pub(crate) fn shutdown_flag(&self) -> SharedFlag {
+        self.is_shutting_down
     }
 }
 
@@ -284,6 +306,11 @@ pub(crate) trait ReactorEvent: Send + Debug + From<ControlAnnouncement> + 'stati
     /// is indeed a control announcement variant.
     fn as_control(&self) -> Option<&ControlAnnouncement>;
 
+    /// Converts the event into a control announcement without copying.
+    ///
+    /// Note that this function must return `Some` if and only `as_control` returns `Some`.
+    fn try_into_control(self) -> Option<ControlAnnouncement>;
+
     /// Returns a cheap but human-readable description of the event.
     fn description(&self) -> &'static str {
         "anonymous event"
@@ -346,8 +373,8 @@ where
     /// An accurate, possible TSC-supporting clock.
     clock: Clock,
 
-    /// Last queue dump timestamp
-    last_queue_dump: Option<Timestamp>,
+    /// Flag indicating the reactor is being shut down.
+    is_shutting_down: SharedFlag,
 }
 
 /// Metric data for the Runner
@@ -357,7 +384,7 @@ struct RunnerMetrics {
     events: IntCounter,
     /// Histogram of how long it took to dispatch an event.
     event_dispatch_duration: Histogram,
-    /// Total allocated RAM in bytes, as reported by jemalloc.
+    /// Total allocated RAM in bytes, as reported by stats_alloc.
     allocated_ram_bytes: IntGauge,
     /// Total consumed RAM in bytes, as reported by sys-info.
     consumed_ram_bytes: IntGauge,
@@ -370,13 +397,16 @@ struct RunnerMetrics {
 impl RunnerMetrics {
     /// Create and register new runner metrics.
     fn new(registry: &Registry) -> Result<Self, prometheus::Error> {
-        let events = IntCounter::new("runner_events", "total event count")?;
+        let events = IntCounter::new(
+            "runner_events",
+            "running total count of events handled by this reactor",
+        )?;
 
         // Create an event dispatch histogram, putting extra emphasis on the area between 1-10 us.
         let event_dispatch_duration = Histogram::with_opts(
             HistogramOpts::new(
                 "event_dispatch_duration",
-                "duration of complete dispatch of a single event in nanoseconds",
+                "time in nanoseconds to dispatch an event",
             )
             .buckets(vec![
                 100.0,
@@ -462,8 +492,9 @@ where
         }
 
         let scheduler = utils::leak(Scheduler::new(QueueKind::weights()));
+        let is_shutting_down = SharedFlag::new();
 
-        let event_queue = EventQueueHandle::new(scheduler);
+        let event_queue = EventQueueHandle::new(scheduler, is_shutting_down);
         let (reactor, initial_effects) = R::new(cfg, registry, event_queue, rng)?;
 
         // Run all effects from component instantiation.
@@ -482,7 +513,7 @@ where
             event_metrics_min_delay: Duration::from_secs(30),
             event_metrics_threshold: 1000,
             clock: Clock::new(),
-            last_queue_dump: None,
+            is_shutting_down,
         })
     }
 
@@ -493,7 +524,7 @@ where
     pub(crate) async fn crank(&mut self, rng: &mut NodeRng) -> bool {
         self.metrics.events.inc();
 
-        let event_queue = EventQueueHandle::new(self.scheduler);
+        let event_queue = EventQueueHandle::new(self.scheduler, self.is_shutting_down);
         let effect_builder = EffectBuilder::new(event_queue);
 
         // Update metrics like memory usage and event queue sizes.
@@ -518,27 +549,7 @@ where
                 self.metrics.allocated_ram_bytes.set(allocated as i64);
                 self.metrics.consumed_ram_bytes.set(consumed as i64);
                 self.metrics.total_ram_bytes.set(total as i64);
-                if let Some(threshold_mb) = *MEM_DUMP_THRESHOLD_MB {
-                    let threshold_bytes = threshold_mb * 1024 * 1024;
-                    if allocated >= threshold_bytes && self.last_queue_dump.is_none() {
-                        info!(
-                            %allocated,
-                            %total,
-                            %threshold_bytes,
-                            "node has allocated enough memory to trigger queue dump"
-                        );
-                        self.dump_queues().await;
-                    }
-                }
             }
-        }
-
-        // Dump event queue if requested, stopping the world.
-        if QUEUE_DUMP_REQUESTED.load(Ordering::SeqCst) {
-            debug!("dumping event queue as requested");
-            self.dump_queues().await;
-            // Indicate we are done with the dump.
-            QUEUE_DUMP_REQUESTED.store(false, Ordering::SeqCst);
         }
 
         let ((ancestor, event), queue) = self.scheduler.pop().await;
@@ -556,12 +567,69 @@ where
         // Dispatch the event, then execute the resulting effect.
         let start = self.clock.start();
 
-        let (effects, keep_going) = if let Some(ctrl_ann) = event.as_control() {
+        let (effects, keep_going) = if event.as_control().is_some() {
             // We've received a control event, which will _not_ be handled by the reactor.
-            match ctrl_ann {
-                ControlAnnouncement::FatalError { file, line, msg } => {
+            match event.try_into_control() {
+                None => {
+                    // If `as_control().is_some()` is true, but `try_into_control` fails, the trait
+                    // is implemented incorrectly.
+                    error!(
+                        "event::as_control succeeded, but try_into_control failed. this is a bug"
+                    );
+
+                    // We ignore the event.
+                    (Default::default(), true)
+                }
+                Some(ControlAnnouncement::FatalError { file, line, msg }) => {
                     error!(%file, %line, %msg, "fatal error via control announcement");
                     (Default::default(), false)
+                }
+                Some(ControlAnnouncement::QueueDumpRequest {
+                    dump_format,
+                    finished,
+                }) => {
+                    match dump_format {
+                        QueueDumpFormat::Serde(mut ser) => {
+                            self.scheduler
+                                .dump(move |queue_dump| {
+                                    if let Err(err) =
+                                        queue_dump.erased_serialize(&mut ser.as_serializer())
+                                    {
+                                        warn!(%err, "queue dump failed to serialize");
+                                    }
+                                })
+                                .await;
+                        }
+                        QueueDumpFormat::Debug(ref file) => {
+                            match file.try_clone() {
+                                Ok(mut local_file) => {
+                                    self.scheduler
+                                        .dump(move |queue_dump| {
+                                            write!(&mut local_file, "{:?}", queue_dump)
+                                                .and_then(|_| local_file.flush())
+                                                .map_err(|err| {
+                                                    warn!(
+                                                        ?err,
+                                                        "failed to write/flush queue dump using debug format"
+                                                    )
+                                                })
+                                                .ok();
+                                        })
+                                        .await;
+                                }
+                                Err(err) => warn!(
+                                    %err,
+                                    "could not create clone of temporary file for queue debug dump"
+                                ),
+                            };
+                        }
+                    }
+
+                    // Notify requestor that we finished writing the queue dump.
+                    finished.respond(()).await;
+
+                    // Do nothing on queue dump otherwise.
+                    (Default::default(), true)
                 }
             }
         } else {
@@ -606,74 +674,24 @@ where
             }
         };
 
-        // mem_info gives us kB
+        // mem_info gives us kilobytes
         let total = mem_info.total * 1024;
-        let consumed = total - (mem_info.free * 1024);
+        let consumed = total - (mem_info.avail * 1024);
 
-        // whereas jemalloc_ctl gives us the numbers in bytes
-        match jemalloc_epoch::mib() {
-            Ok(mib) => {
-                // jemalloc_ctl requires you to advance the epoch to update its stats
-                if let Err(advance_error) = mib.advance() {
-                    warn!(%advance_error, "unable to advance jemalloc epoch");
-                }
-            }
-            Err(error) => {
-                warn!(%error, "unable to get epoch::mib from jemalloc");
-                return None;
-            }
-        }
-        let allocated = match jemalloc_allocated::mib() {
-            Ok(allocated_mib) => match allocated_mib.read() {
-                Ok(value) => value as u64,
-                Err(error) => {
-                    warn!(%error, "unable to read allocated mib using jemalloc");
-                    return None;
-                }
-            },
-            Err(error) => {
-                warn!(%error, "unable to get allocated mib using jemalloc");
-                return None;
-            }
-        };
+        let Stats {
+            allocations: _,
+            deallocations: _,
+            reallocations: _,
+            bytes_allocated,
+            bytes_deallocated,
+            bytes_reallocated: _,
+        } = INSTRUMENTED_SYSTEM.stats();
 
         Some(AllocatedMem {
-            allocated,
+            allocated: bytes_allocated.saturating_sub(bytes_deallocated) as u64,
             consumed,
             total,
         })
-    }
-
-    /// Handles dumping queue contents to files in /tmp.
-    async fn dump_queues(&mut self) {
-        let timestamp = Timestamp::now();
-        self.last_queue_dump = Some(timestamp);
-        let output_fn = format!("/tmp/queue_dump-{}.json", timestamp);
-        let mut serializer = serde_json::Serializer::pretty(match File::create(&output_fn) {
-            Ok(file) => file,
-            Err(error) => {
-                warn!(%error, "could not create output file ({}) for queue snapshot", output_fn);
-                return;
-            }
-        });
-
-        if let Err(error) = self.scheduler.snapshot(&mut serializer).await {
-            warn!(%error, "could not serialize snapshot to {}", output_fn);
-            return;
-        }
-
-        let debug_dump_filename = format!("/tmp/queue_dump_debug-{}.txt", timestamp);
-        let mut file = match File::create(&debug_dump_filename) {
-            Ok(file) => file,
-            Err(error) => {
-                warn!(%error, "could not create debug output file ({}) for queue snapshot", debug_dump_filename);
-                return;
-            }
-        };
-        if let Err(error) = self.scheduler.debug_dump(&mut file).await {
-            warn!(%error, "could not serialize debug snapshot to {}", debug_dump_filename);
-            return;
-        }
     }
 
     /// Runs the reactor until `maybe_exit()` returns `Some` or we get interrupted by a termination
@@ -683,6 +701,8 @@ where
             match TERMINATION_REQUESTED.load(Ordering::SeqCst) as i32 {
                 0 => {
                     if let Some(reactor_exit) = self.reactor.maybe_exit() {
+                        self.is_shutting_down.set();
+
                         // TODO: Workaround, until we actually use control announcements for
                         // exiting: Go over the entire remaining event queue and look for a control
                         // announcement. This approach is hacky, and should be replaced with
@@ -702,6 +722,11 @@ where
                                         warn!(%file, line=*line, %msg, "exiting due to fatal error scheduled before reactor completion");
                                         return ReactorExit::ProcessShouldExit(ExitCode::Abort);
                                     }
+                                    ControlAnnouncement::QueueDumpRequest { .. } => {
+                                        // Queue dumps are not handled when shutting down. TODO:
+                                        // Maybe return an error instead, something like "reactor is
+                                        // shutting down"?
+                                    }
                                 }
                             } else {
                                 debug!(?ancestor, %event, "found non-control announcement while draining queue")
@@ -711,12 +736,22 @@ where
                         break reactor_exit;
                     }
                     if !self.crank(rng).await {
+                        self.is_shutting_down.set();
                         break ReactorExit::ProcessShouldExit(ExitCode::Abort);
                     }
                 }
-                SIGINT => break ReactorExit::ProcessShouldExit(ExitCode::SigInt),
-                SIGQUIT => break ReactorExit::ProcessShouldExit(ExitCode::SigQuit),
-                SIGTERM => break ReactorExit::ProcessShouldExit(ExitCode::SigTerm),
+                SIGINT => {
+                    self.is_shutting_down.set();
+                    break ReactorExit::ProcessShouldExit(ExitCode::SigInt);
+                }
+                SIGQUIT => {
+                    self.is_shutting_down.set();
+                    break ReactorExit::ProcessShouldExit(ExitCode::SigQuit);
+                }
+                SIGTERM => {
+                    self.is_shutting_down.set();
+                    break ReactorExit::ProcessShouldExit(ExitCode::SigTerm);
+                }
                 _ => error!("should be unreachable - bug in signal handler"),
             }
         }
@@ -724,6 +759,7 @@ where
 
     /// Shuts down a reactor, sealing and draining the entire queue before returning it.
     pub(crate) async fn drain_into_inner(self) -> R {
+        self.is_shutting_down.set();
         self.scheduler.seal();
         for (ancestor, event) in self.scheduler.drain_queues().await {
             debug!(?ancestor, %event, "drained event");
@@ -755,7 +791,7 @@ where
     where
         F: FnOnce(EffectBuilder<R::Event>) -> Effects<R::Event>,
     {
-        let event_queue = EventQueueHandle::new(self.scheduler);
+        let event_queue = EventQueueHandle::new(self.scheduler, self.is_shutting_down);
         let effect_builder = EffectBuilder::new(event_queue);
 
         let effects = create_effects(effect_builder);
@@ -793,13 +829,20 @@ impl Runner<InitializerReactor> {
     pub(crate) async fn new_with_chainspec(
         cfg: <InitializerReactor as Reactor>::Config,
         chainspec: Arc<Chainspec>,
+        chainspec_raw_bytes: Arc<ChainspecRawBytes>,
     ) -> Result<Self, <InitializerReactor as Reactor>::Error> {
         let registry = Registry::new();
         let scheduler = utils::leak(Scheduler::new(QueueKind::weights()));
 
-        let event_queue = EventQueueHandle::new(scheduler);
-        let (reactor, initial_effects) =
-            InitializerReactor::new_with_chainspec(cfg, &registry, event_queue, chainspec)?;
+        let is_shutting_down = SharedFlag::new();
+        let event_queue = EventQueueHandle::new(scheduler, is_shutting_down);
+        let (reactor, initial_effects) = InitializerReactor::new_with_chainspec(
+            cfg,
+            &registry,
+            event_queue,
+            chainspec,
+            chainspec_raw_bytes,
+        )?;
 
         // Run all effects from component instantiation.
         let span = debug_span!("process initial effects");
@@ -824,7 +867,7 @@ impl Runner<InitializerReactor> {
             event_metrics_min_delay,
             event_metrics_threshold: 1000,
             clock: Clock::new(),
-            last_queue_dump: None,
+            is_shutting_down,
         })
     }
 }
@@ -877,4 +920,168 @@ where
         .into_iter()
         .map(move |effect| wrap_effect(wrap.clone(), effect))
         .collect()
+}
+
+fn handle_fetch_response<R, I>(
+    reactor: &mut R,
+    effect_builder: EffectBuilder<<R as Reactor>::Event>,
+    rng: &mut NodeRng,
+    sender: NodeId,
+    serialized_item: &[u8],
+) -> Effects<<R as Reactor>::Event>
+where
+    I: Item,
+    R: Reactor,
+    <R as Reactor>::Event: From<fetcher::Event<I>> + From<BlocklistAnnouncement>,
+{
+    match fetcher::Event::<I>::from_get_response_serialized_item(sender, serialized_item) {
+        Some(fetcher_event) => {
+            Reactor::dispatch_event(reactor, effect_builder, rng, fetcher_event.into())
+        }
+        None => {
+            info!(
+                "{} sent us a {:?} item we couldn't parse, banning peer",
+                sender,
+                I::TAG
+            );
+            effect_builder
+                .announce_disconnect_from_peer(sender)
+                .ignore()
+        }
+    }
+}
+
+fn handle_get_response<R>(
+    reactor: &mut R,
+    effect_builder: EffectBuilder<<R as Reactor>::Event>,
+    rng: &mut NodeRng,
+    sender: NodeId,
+    message: NetResponse,
+) -> Effects<<R as Reactor>::Event>
+where
+    R: Reactor,
+    <R as Reactor>::Event: From<deploy_acceptor::Event>
+        + From<fetcher::Event<FinalizedApprovalsWithId>>
+        + From<fetcher::Event<Block>>
+        + From<fetcher::Event<BlockWithMetadata>>
+        + From<fetcher::Event<BlockHeader>>
+        + From<fetcher::Event<BlockHeaderWithMetadata>>
+        + From<fetcher::Event<BlockAndDeploys>>
+        + From<fetcher::Event<BlockHeadersBatch>>
+        + From<fetcher::Event<BlockSignatures>>
+        + From<fetcher::Event<Deploy>>
+        + From<BlocklistAnnouncement>,
+{
+    match message {
+        NetResponse::Deploy(ref serialized_item) => {
+            // Incoming Deploys should be routed to the `DeployAcceptor` rather than directly to the
+            // `DeployFetcher`.
+            let event = match bincode::deserialize::<FetchedOrNotFound<Deploy, DeployHash>>(
+                serialized_item,
+            ) {
+                Ok(FetchedOrNotFound::Fetched(deploy)) => {
+                    <R as Reactor>::Event::from(deploy_acceptor::Event::Accept {
+                        deploy: Box::new(deploy),
+                        source: Source::Peer(sender),
+                        maybe_responder: None,
+                    })
+                }
+                Ok(FetchedOrNotFound::NotFound(deploy_hash)) => {
+                    info!(%sender, ?deploy_hash, "peer did not have deploy",);
+                    <R as Reactor>::Event::from(fetcher::Event::<Deploy>::AbsentRemotely {
+                        id: deploy_hash,
+                        peer: sender,
+                    })
+                }
+                Err(error) => {
+                    warn!(
+                        %sender,
+                        %error,
+                        "received a deploy item we couldn't parse, banning peer",
+                    );
+                    return effect_builder
+                        .announce_disconnect_from_peer(sender)
+                        .ignore();
+                }
+            };
+            <R as Reactor>::dispatch_event(reactor, effect_builder, rng, event)
+        }
+        NetResponse::FinalizedApprovals(ref serialized_item) => {
+            handle_fetch_response::<R, FinalizedApprovalsWithId>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::Block(ref serialized_item) => {
+            handle_fetch_response::<R, Block>(reactor, effect_builder, rng, sender, serialized_item)
+        }
+        NetResponse::GossipedAddress(_) => {
+            // The item trait is used for both fetchers and gossiped things, but this kind of
+            // item is never fetched, only gossiped.
+            warn!(
+                ?sender,
+                "gossiped addresses are never fetched, banning peer",
+            );
+            effect_builder
+                .announce_disconnect_from_peer(sender)
+                .ignore()
+        }
+        NetResponse::BlockAndMetadataByHeight(ref serialized_item) => {
+            handle_fetch_response::<R, BlockWithMetadata>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::BlockHeaderByHash(ref serialized_item) => {
+            handle_fetch_response::<R, BlockHeader>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::BlockHeaderAndFinalitySignaturesByHeight(ref serialized_item) => {
+            handle_fetch_response::<R, BlockHeaderWithMetadata>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::BlockAndDeploys(ref serialized_item) => {
+            handle_fetch_response::<R, BlockAndDeploys>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::BlockHeadersBatch(ref serialized_item) => {
+            handle_fetch_response::<R, BlockHeadersBatch>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+        NetResponse::FinalitySignatures(ref serialized_item) => {
+            handle_fetch_response::<R, BlockSignatures>(
+                reactor,
+                effect_builder,
+                rng,
+                sender,
+                serialized_item,
+            )
+        }
+    }
 }

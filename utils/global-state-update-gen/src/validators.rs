@@ -1,62 +1,58 @@
 use clap::ArgMatches;
 
-use casper_engine_test_support::internal::LmdbWasmTestBuilder;
-use casper_types::{CLValue, StoredValue};
+use casper_engine_test_support::LmdbWasmTestBuilder;
+use casper_types::{AsymmetricType, PublicKey, U512};
 
 use crate::{
-    auction_utils::{
-        gen_snapshot, generate_entries_removing_bids, generate_entries_removing_withdraws,
-        read_snapshot,
+    generic::{
+        config::{AccountConfig, Config},
+        update_from_config,
     },
-    utils::{hash_from_str, print_entry, validators_diff},
+    utils::hash_from_str,
 };
 
 pub(crate) fn generate_validators_update(matches: &ArgMatches<'_>) {
     let data_dir = matches.value_of("data_dir").unwrap_or(".");
-    let state_hash = matches.value_of("hash").unwrap();
-    let validators = match matches.values_of("validator") {
+    let state_hash = hash_from_str(matches.value_of("hash").unwrap());
+    let accounts = match matches.values_of("validator") {
         None => vec![],
         Some(values) => values
             .map(|validator_def| {
                 let mut fields = validator_def.split(',').map(str::to_owned);
-                let field1 = fields.next().unwrap();
-                let field2 = fields.next().unwrap();
-                (field1, field2)
+
+                let public_key_str = fields
+                    .next()
+                    .expect("validator config should contain a public key");
+                let public_key = PublicKey::from_hex(public_key_str.as_bytes())
+                    .expect("validator config should have a valid public key");
+
+                let stake_str = fields
+                    .next()
+                    .expect("validator config should contain a stake");
+                let stake =
+                    U512::from_dec_str(&stake_str).expect("stake should be a valid decimal number");
+
+                let maybe_new_balance_str = fields.next();
+                let maybe_new_balance = maybe_new_balance_str.as_ref().map(|balance_str| {
+                    U512::from_dec_str(balance_str)
+                        .expect("balance should be a valid decimal number")
+                });
+
+                AccountConfig {
+                    public_key,
+                    stake: Some(stake),
+                    balance: maybe_new_balance,
+                }
             })
             .collect(),
     };
 
-    // Open the global state that should be in the supplied directory.
-    let mut test_builder =
-        LmdbWasmTestBuilder::open_raw(data_dir, Default::default(), hash_from_str(state_hash));
+    let config = Config {
+        accounts,
+        transfers: vec![],
+        only_listed_validators: true,
+    };
 
-    // Read the old SeigniorageRecipientsSnapshot
-    let (validators_key, old_snapshot) = read_snapshot(&test_builder);
-
-    // Create a new snapshot based on the old one and the supplied validators.
-    let new_snapshot = gen_snapshot(
-        validators,
-        *old_snapshot.keys().next().unwrap(),
-        old_snapshot.len() as u64,
-    );
-
-    // Print the write to the snapshot key.
-    print_entry(
-        &validators_key,
-        &StoredValue::from(CLValue::from_t(new_snapshot.clone()).unwrap()),
-    );
-
-    let validators_diff = validators_diff(&old_snapshot, &new_snapshot);
-
-    // Print the writes fixing the bids.
-    for (key, value) in
-        generate_entries_removing_bids(&mut test_builder, &validators_diff, &new_snapshot)
-    {
-        print_entry(&key, &value);
-    }
-
-    // Print the writes removing the no longer valid withdraws.
-    for (key, value) in generate_entries_removing_withdraws(&mut test_builder, &validators_diff) {
-        print_entry(&key, &value);
-    }
+    let builder = LmdbWasmTestBuilder::open_raw(data_dir, Default::default(), state_hash);
+    update_from_config(builder, config);
 }

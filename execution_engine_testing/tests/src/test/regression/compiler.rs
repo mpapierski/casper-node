@@ -1,24 +1,21 @@
 use std::time::Instant;
 
+use casper_engine_test_support::{
+    ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    PRODUCTION_RUN_GENESIS_REQUEST,
+};
 use num_traits::Zero;
 
-use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR,
-};
 use casper_execution_engine::{
     core::{
         engine_state::{self, Error as CoreError, MAX_PAYMENT},
         execution,
     },
-    shared::{opcode_costs::DEFAULT_NOP_COST, wasm},
+    shared::opcode_costs::DEFAULT_NOP_COST,
 };
 use casper_types::{
-    bytesrepr::Bytes, contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, system::mint, Gas, Key,
-    RuntimeArgs, URef, U256, U512,
+    account::AccountHash, bytesrepr::Bytes, contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args,
+    system::mint, Gas, Key, RuntimeArgs, URef, U256, U512,
 };
 use parity_wasm::{
     builder,
@@ -39,7 +36,7 @@ fn should_run_endless_loop() {
     .build();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let start = Instant::now();
     builder.exec(exec).commit();
     let stop = start.elapsed();
@@ -72,7 +69,7 @@ fn should_try_to_exercise_cache() {
     .build();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let start1 = Instant::now();
     builder.exec(exec1).commit();
@@ -111,7 +108,8 @@ const ARG_SEED_AMOUNT: &str = "seed_amount";
 #[test]
 fn should_run_create_200_accounts() {
     const AMOUNT: u32 = 200;
-    let seed_amount = U512::one();
+    let expected_balance = U512::one();
+    let seed_amount = U512::from(AMOUNT) * expected_balance;
 
     let accounts: Vec<AccountHash> = (1u32..=AMOUNT)
         .map(|val| {
@@ -128,13 +126,13 @@ fn should_run_create_200_accounts() {
         "create_accounts.wasm",
         runtime_args! {
             ARG_ACCOUNTS => accounts.clone(),
-            ARG_SEED_AMOUNT => seed_amount,
+            ARG_AMOUNT => seed_amount,
         },
     )
     .build();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let start = Instant::now();
     builder.exec(exec).expect_success().commit();
     let stop = start.elapsed();
@@ -143,7 +141,7 @@ fn should_run_create_200_accounts() {
         let account = builder.get_account(account).unwrap();
         let main_purse = account.main_purse();
         let balance = builder.get_purse_balance(main_purse);
-        assert_eq!(balance, seed_amount);
+        assert_eq!(balance, expected_balance);
     }
 }
 
@@ -153,17 +151,18 @@ const ARG_TOTAL_PURSES: &str = "total_purses";
 #[test]
 fn should_run_create_200_purses() {
     const AMOUNT: u64 = 200;
-    let seed_amount = U512::one();
+    let purse_amount = U512::one();
+    let seed_amount = U512::from(AMOUNT) * purse_amount;
 
     let exec = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         "create_purses.wasm",
-        runtime_args! { ARG_TOTAL_PURSES => AMOUNT, ARG_SEED_AMOUNT => seed_amount },
+        runtime_args! { ARG_TOTAL_PURSES => AMOUNT, ARG_AMOUNT => seed_amount },
     )
     .build();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     builder.exec(exec).expect_success().commit();
 
     let purses: Vec<URef> = {
@@ -177,7 +176,7 @@ fn should_run_create_200_purses() {
             if name.starts_with("purse:") {
                 let uref = key.into_uref().unwrap();
                 let balance = builder.get_purse_balance(uref);
-                assert_eq!(balance, seed_amount);
+                assert_eq!(balance, purse_amount);
                 purses.push(uref);
             }
         }
@@ -215,7 +214,7 @@ fn simple_transfer() {
     .build();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     builder
         .exec(create_account_request)
         .expect_success()

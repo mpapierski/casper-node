@@ -10,7 +10,7 @@ use casper_types::{
 
 use crate::{
     rpcs::{common::MERKLE_PROOF, docs::DocExample},
-    types::{json_compatibility::StoredValue, Block, BlockHash, Item},
+    types::{json_compatibility::StoredValue, Block, BlockHash},
 };
 
 pub(super) static ERA_SUMMARY: Lazy<EraSummary> = Lazy::new(|| {
@@ -36,7 +36,7 @@ pub(super) static ERA_SUMMARY: Lazy<EraSummary> = Lazy::new(|| {
     let mut era_info = EraInfo::new();
     *era_info.seigniorage_allocations_mut() = seigniorage_allocations;
     EraSummary {
-        block_hash: Block::doc_example().id(),
+        block_hash: *Block::doc_example().hash(),
         era_id: EraId::from(42),
         stored_value: StoredValue::EraInfo(era_info),
         state_root_hash: *Block::doc_example().header().state_root_hash(),
@@ -45,7 +45,7 @@ pub(super) static ERA_SUMMARY: Lazy<EraSummary> = Lazy::new(|| {
 });
 
 /// The summary of an era
-#[derive(Clone, Serialize, Deserialize, Debug, JsonSchema)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct EraSummary {
     /// The block hash

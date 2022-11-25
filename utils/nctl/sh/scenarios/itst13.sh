@@ -22,7 +22,7 @@ function main() {
     # 1. Allow chain to progress
     do_await_era_change
     # 2. Verify all nodes are in sync
-    check_network_sync
+    check_network_sync 1  5
     # 3. Stop the node
     do_stop_node '5'
     # 4. Wait until N+1
@@ -42,7 +42,7 @@ function main() {
     # 6. Assert node is marked as inactive
     assert_inactive '5'
     # 7. Restart node 5
-    do_start_node '5' "$(get_chain_first_block_hash)"
+    do_start_node '5'
     # 8-9. Assert joined within expected era
     assert_joined_in_era_4 '5'
     # 10. Assert eviction of node
@@ -63,11 +63,10 @@ function main() {
     # 15. Assert that restarted validator is producing blocks.
     assert_node_proposed '5' '300'
     # 16. Run Health Checks
-    # ... errors=ignore: ticket sre issue 72
     # ... restarts=1: due to node being stopped and started
     # ... ejections=1: node is expected to be ejected in test
     source "$NCTL"/sh/scenarios/common/health_checks.sh \
-            errors='ignore' \
+            errors=0 \
             equivocators=0 \
             doppels=0 \
             crashes=0 \

@@ -23,7 +23,7 @@ pub extern "C" fn call() {
 
         value.to_big_endian(&mut data);
         value += U512::one();
-        runtime::print(&format!("value: {}", value));
+        // runtime::print(&format!("value: {}", value));
 
         storage::write(uref, Bytes::from(data));
     }

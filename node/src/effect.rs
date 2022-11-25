@@ -1,15 +1,45 @@
 //! Effects subsystem.
 //!
 //! Effects describe things that the creator of the effect intends to happen, producing a value upon
-//! completion. They are, in fact, futures.
+//! completion (they actually are boxed futures).
 //!
 //! A pinned, boxed future returning an event is called an effect and typed as an `Effect<Ev>`,
-//! where `Ev` is the event's type. Generally, `Ev` is an Event enum defined at the top level of
-//! each component in the `crate::components` module.
+//! where `Ev` is the event's type, as every effect must have its return value either wrapped in an
+//! event through [`EffectExt::event`](crate::effect::EffectExt::event) or ignored using
+//! [`EffectExt::ignore`](crate::effect::EffectExt::ignore). As an example, the
+//! [`handle_event`](crate::components::Component::handle_event) function of a component always
+//! returns `Effect<Self::Event>`.
 //!
-//! ## Using effects
+//! # A primer on events
 //!
-//! To create an effect, an `EffectBuilder` will be passed in from the relevant reactor. For
+//! There are three distinct groups of events found around the node:
+//!
+//! * (unbound) events: These events are not associated with a particular reactor or component and
+//!   represent information or requests by themselves. An example is the
+//!   [`BlocklistAnnouncement`](`crate::effect::announcements::BlocklistAnnouncement`), it can be
+//!   emitted through an effect by different components and contains the ID of a peer that should be
+//!   shunned. It is not associated with a particular reactor or component though.
+//!
+//!   While the node is running, these unbound events cannot exist on their own, instead they are
+//!   typically converted into a concrete reactor event by the effect builder as soon as they are
+//!   created.
+//!
+//! * reactor events: A running reactor has a single event type that encompasses all possible
+//!   unbound events that can occur during its operation and all component events of components it
+//!   is made of. Usually they are implemented as one large `enum` with only newtype-variants.
+//!
+//! * component events: Every component defines its own set of events, typically for internal use.
+//!   If the component is able to process unbound events like announcements or requests, it will
+//!   have a `From` implementation that allows converting them into a suitable component event.
+//!
+//!   Component events are also created from the return values of effects: While effects do not
+//!   return events themselves when called, their return values are turned first into component
+//!   events through the [`event`](crate::effect::EffectExt) method. In a second step, inside the
+//!   reactors routing code, `wrap_effect` will then convert from component to reactor event.
+//!
+//! # Using effects
+//!
+//! To create an effect, an `EffectBuilder` will be passed in by the calling reactor runner. For
 //! example, given an effect builder `effect_builder`, we can create a `set_timeout` future and turn
 //! it into an effect:
 //!
@@ -17,6 +47,7 @@
 //! use std::time::Duration;
 //! use casper_node::effect::EffectExt;
 //!
+//! // Note: This is our "component" event.
 //! enum Event {
 //!     ThreeSecondsElapsed(Duration)
 //! }
@@ -30,35 +61,38 @@
 //! `Event::ThreeSecondsElapsed`. Note that effects do nothing on their own, they need to be passed
 //! to a [`reactor`](../reactor/index.html) to be executed.
 //!
-//! ## Arbitrary effects
+//! # Arbitrary effects
 //!
-//! While it is technically possible to turn any future into an effect, it is advisable to only use
-//! the effects explicitly listed in this module through traits to create them. Post-processing on
-//! effects to turn them into events should also be kept brief.
+//! While it is technically possible to turn any future into an effect, it is in general advisable
+//! to only use the methods on [`EffectBuilder`] or short, anonymous futures to create effects.
 //!
-//! ## Announcements and effects
+//! # Announcements and requests
 //!
-//! Some effects can be further classified into either announcements or requests, although these
-//! properties are not reflected in the type system.
+//! Events are usually classified into either announcements or requests, although these properties
+//! are not reflected in the type system.
 //!
-//! **Announcements** are effects emitted by components that are essentially "fire-and-forget"; the
-//! component will never expect an answer for these and does not rely on them being handled. It is
-//! also conceivable that they are being cloned and dispatched to multiple components by the
-//! reactor.
+//! **Announcements** are events that are essentially "fire-and-forget"; the component that created
+//! the effect resulting in the creation of the announcement will never expect an "answer".
+//! Announcements are often dispatched to multiple components by the reactor; since that usually
+//! involves a [`clone`](`Clone::clone`), they should be kept light.
 //!
 //! A good example is the arrival of a new deploy passed in by a client. Depending on the setup it
 //! may be stored, buffered or, in certain testing setups, just discarded. None of this is a concern
-//! of the component that talks to the client and deserializes the incoming deploy though, which
-//! considers the deploy no longer its concern after it has returned an announcement effect.
+//! of the component that talks to the client and deserializes the incoming deploy though, instead
+//! it simply returns an effect that produces an announcement.
 //!
-//! **Requests** are complex effects that are used when a component needs something from
-//! outside of itself (typically to be provided by another component); a request requires an
-//! eventual response.
+//! **Requests** are complex events that are used when a component needs something from other
+//! components. Typically, an effect (which uses [`EffectBuilder::make_request`] in its
+//! implementation) is called resulting in the actual request being scheduled and handled. In
+//! contrast to announcements, requests must always be handled by exactly one component.
 //!
-//! A request **must** have a `Responder` field, which a handler of a request **must** call at
-//! some point. Failing to do so will result in a resource leak.
+//! Every request has a [`Responder`]-typed field, which a handler of a request calls to produce
+//! another effect that will send the return value to the original requesting component. Failing to
+//! call the [`Responder::respond`] function will result in a runtime warning.
 
 pub(crate) mod announcements;
+pub(crate) mod diagnostics_port;
+pub(crate) mod incoming;
 pub(crate) mod requests;
 
 use std::{
@@ -67,6 +101,7 @@ use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt::{self, Debug, Display, Formatter},
     future::Future,
+    mem,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -74,61 +109,63 @@ use std::{
 use datasize::DataSize;
 use futures::{channel::oneshot, future::BoxFuture, FutureExt};
 use once_cell::sync::Lazy;
-use serde::Serialize;
+use serde::{Deserialize, Serialize, Serializer};
 use smallvec::{smallvec, SmallVec};
 use tokio::{sync::Semaphore, time};
-use tracing::error;
-#[cfg(not(feature = "fast-sync"))]
-use tracing::warn;
+use tracing::{debug, error, warn};
 
 use casper_execution_engine::{
     core::engine_state::{
-        self,
-        era_validators::GetEraValidatorsError,
-        genesis::GenesisSuccess,
-        upgrade::{UpgradeConfig, UpgradeSuccess},
-        BalanceRequest, BalanceResult, GetBidsRequest, GetBidsResult, QueryRequest, QueryResult,
+        self, era_validators::GetEraValidatorsError, genesis::GenesisSuccess, BalanceRequest,
+        BalanceResult, GetBidsRequest, GetBidsResult, QueryRequest, QueryResult, UpgradeConfig,
+        UpgradeSuccess,
     },
-    storage::trie::Trie,
+    shared::execution_journal::ExecutionJournal,
+    storage::trie::{TrieOrChunk, TrieOrChunkId},
 };
 use casper_hashing::Digest;
 use casper_types::{
-    account::Account, system::auction::EraValidators, Contract, ContractPackage, EraId,
-    ExecutionResult, Key, ProtocolVersion, PublicKey, StoredValue, Transfer, URef, U512,
+    account::Account, bytesrepr::Bytes, system::auction::EraValidators, Contract, ContractPackage,
+    EraId, ExecutionEffect, ExecutionResult, Key, ProtocolVersion, PublicKey, TimeDiff, Timestamp,
+    Transfer, URef, U512,
 };
 
 use crate::{
     components::{
         block_validator::ValidatingBlock,
-        chainspec_loader::{CurrentRunInfo, NextUpgrade},
-        consensus::{BlockContext, ClContext, ValidatorChange},
-        contract_runtime::EraValidatorsRequest,
+        chainspec_loader::NextUpgrade,
+        consensus::{BlockContext, ClContext, EraDump, ValidatorChange},
+        contract_runtime::{
+            BlockAndExecutionEffects, BlockExecutionError, EraValidatorsRequest, ExecutionPreState,
+        },
         deploy_acceptor,
         fetcher::FetchResult,
-        small_network::GossipedAddress,
+        small_network::FromIncoming,
     },
+    contract_runtime::SpeculativeExecutionState,
+    effect::announcements::ChainSynchronizerAnnouncement,
     reactor::{EventQueueHandle, QueueKind},
     types::{
-        Block, BlockByHeight, BlockHash, BlockHeader, BlockPayload, BlockSignatures, Chainspec,
-        ChainspecInfo, Deploy, DeployHash, DeployHeader, DeployMetadata, FinalitySignature,
-        FinalizedBlock, Item, TimeDiff, Timestamp,
+        AvailableBlockRange, Block, BlockAndDeploys, BlockHash, BlockHeader,
+        BlockHeaderWithMetadata, BlockHeadersBatch, BlockHeadersBatchId, BlockPayload,
+        BlockSignatures, BlockWithMetadata, Chainspec, ChainspecInfo, ChainspecRawBytes, Deploy,
+        DeployHash, DeployHeader, DeployMetadataExt, DeployWithFinalizedApprovals,
+        FinalitySignature, FinalizedApprovals, FinalizedBlock, Item, NodeId, NodeState,
     },
-    utils::Source,
+    utils::{fmt_limit::FmtLimit, SharedFlag, Source},
 };
 use announcements::{
-    ChainspecLoaderAnnouncement, ConsensusAnnouncement, ControlAnnouncement,
-    DeployAcceptorAnnouncement, GossiperAnnouncement, LinearChainAnnouncement, NetworkAnnouncement,
+    BlockProposerAnnouncement, BlocklistAnnouncement, ChainspecLoaderAnnouncement,
+    ConsensusAnnouncement, ContractRuntimeAnnouncement, ControlAnnouncement,
+    DeployAcceptorAnnouncement, GossiperAnnouncement, LinearChainAnnouncement, QueueDumpFormat,
     RpcServerAnnouncement,
 };
+use diagnostics_port::DumpConsensusStateRequest;
 use requests::{
-    BlockPayloadRequest, BlockProposerRequest, BlockValidationRequest, ChainspecLoaderRequest,
-    ConsensusRequest, ContractRuntimeRequest, FetcherRequest, MetricsRequest, NetworkInfoRequest,
-    NetworkRequest, StateStoreRequest, StorageRequest,
-};
-
-use self::announcements::{BlockProposerAnnouncement, BlocklistAnnouncement};
-use crate::components::contract_runtime::{
-    BlockAndExecutionEffects, BlockExecutionError, ContractRuntimeAnnouncement, ExecutionPreState,
+    BeginGossipRequest, BlockPayloadRequest, BlockProposerRequest, BlockValidationRequest,
+    ChainspecLoaderRequest, ConsensusRequest, ContractRuntimeRequest, FetcherRequest,
+    MarkBlockCompletedRequest, MetricsRequest, NetworkInfoRequest, NetworkRequest,
+    NodeStateRequest, StateStoreRequest, StorageRequest,
 };
 
 /// A resource that will never be available, thus trying to acquire it will wait forever.
@@ -151,42 +188,105 @@ pub(crate) type Multiple<T> = SmallVec<[T; 2]>;
 /// A responder satisfying a request.
 #[must_use]
 #[derive(DataSize)]
-pub(crate) struct Responder<T>(Option<oneshot::Sender<T>>);
+pub(crate) struct Responder<T> {
+    /// Sender through which the response ultimately should be sent.
+    sender: Option<oneshot::Sender<T>>,
+    /// Reactor flag indicating shutdown.
+    is_shutting_down: SharedFlag,
+}
+
+/// A responder that will automatically send a `None` on drop.
+#[must_use]
+#[derive(DataSize, Debug)]
+pub(crate) struct AutoClosingResponder<T>(Responder<Option<T>>);
+
+impl<T> AutoClosingResponder<T> {
+    /// Creates a new auto closing responder from a responder of `Option<T>`.
+    pub(crate) fn from_opt_responder(responder: Responder<Option<T>>) -> Self {
+        AutoClosingResponder(responder)
+    }
+
+    /// Extracts the inner responder.
+    fn into_inner(mut self) -> Responder<Option<T>> {
+        let is_shutting_down = self.0.is_shutting_down;
+        mem::replace(
+            &mut self.0,
+            Responder {
+                sender: None,
+                is_shutting_down,
+            },
+        )
+    }
+}
+
+impl<T: Debug> AutoClosingResponder<T> {
+    /// Send `Some(data)` to the origin of the request.
+    pub(crate) async fn respond(self, data: T) {
+        self.into_inner().respond(Some(data)).await
+    }
+
+    /// Send `None` to the origin of the request.
+    pub(crate) async fn respond_none(self) {
+        self.into_inner().respond(None).await
+    }
+}
+
+impl<T> Drop for AutoClosingResponder<T> {
+    fn drop(&mut self) {
+        if let Some(sender) = self.0.sender.take() {
+            debug!(
+                sending_value = %self.0,
+                "responding None by dropping auto-close responder"
+            );
+            // We still haven't answered, send an answer.
+            if let Err(_unsent_value) = sender.send(None) {
+                debug!(
+                    unsent_value = %self.0,
+                    "failed to auto-close responder, ignoring"
+                )
+            }
+        }
+    }
+}
 
 impl<T: 'static + Send> Responder<T> {
     /// Creates a new `Responder`.
     #[inline]
-    fn new(sender: oneshot::Sender<T>) -> Self {
-        Responder(Some(sender))
+    fn new(sender: oneshot::Sender<T>, is_shutting_down: SharedFlag) -> Self {
+        Responder {
+            sender: Some(sender),
+            is_shutting_down,
+        }
     }
 
     /// Helper method for tests.
     ///
-    /// Allows creating a responder manually. This function should not be used, unless you are
-    /// writing alternative infrastructure, e.g. for tests.
+    /// Allows creating a responder manually, without observing the shutdown flag. This function
+    /// should not be used, unless you are writing alternative infrastructure, e.g. for tests.
     #[cfg(test)]
     #[inline]
-    pub(crate) fn create(sender: oneshot::Sender<T>) -> Self {
-        Responder::new(sender)
+    pub(crate) fn without_shutdown(sender: oneshot::Sender<T>) -> Self {
+        Responder::new(sender, SharedFlag::global_shared())
     }
 }
 
-impl<T> Responder<T>
-where
-    T: Debug,
-{
+impl<T: Debug> Responder<T> {
     /// Send `data` to the origin of the request.
     pub(crate) async fn respond(mut self, data: T) {
-        if let Some(sender) = self.0.take() {
+        if let Some(sender) = self.sender.take() {
             if let Err(data) = sender.send(data) {
-                error!(
-                    ?data,
-                    "could not send response to request down oneshot channel"
+                // If we cannot send a response down the channel, it means the original requester is
+                // no longer interested in our response. This typically happens during shutdowns, or
+                // in cases where an originating external request has been cancelled.
+
+                debug!(
+                    data=?FmtLimit::new(1000, &data),
+                    "ignored failure to send response to request down oneshot channel"
                 );
             }
         } else {
             error!(
-                ?data,
+                data=?FmtLimit::new(1000, &data),
                 "tried to send a value down a responder channel, but it was already used"
             );
         }
@@ -207,23 +307,34 @@ impl<T> Display for Responder<T> {
 
 impl<T> Drop for Responder<T> {
     fn drop(&mut self) {
-        if self.0.is_some() {
-            // This is usually a very serious error, as another component will now be stuck.
-            error!(
-                responder=?self,
-                "dropped without being responded to --- \
-                 this is always a bug and will likely cause another component to be stuck!"
-            );
+        if self.sender.is_some() {
+            if self.is_shutting_down.is_set() {
+                debug!(
+                    responder=?self,
+                    "ignored dropping of responder during shutdown"
+                );
+            } else {
+                // This is usually a very serious error, as another component will now be stuck.
+                //
+                // See the code `make_request` for more details.
+                error!(
+                    responder=?self,
+                    "dropped without being responded to outside of shutdown"
+                );
+            }
         }
     }
 }
 
 impl<T> Serialize for Responder<T> {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         serializer.serialize_str(&format!("{:?}", self))
+    }
+}
+
+impl<T> Serialize for AutoClosingResponder<T> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
     }
 }
 
@@ -383,15 +494,23 @@ where
 
 /// A builder for [`Effect`](type.Effect.html)s.
 ///
-/// Provides methods allowing the creation of effects which need to be scheduled
-/// on the reactor's event queue, without giving direct access to this queue.
+/// Provides methods allowing the creation of effects which need to be scheduled on the reactor's
+/// event queue, without giving direct access to this queue.
+///
+/// The `REv` type parameter indicates which reactor event effects created by this builder will
+/// produce as side-effects.
 #[derive(Debug)]
-pub(crate) struct EffectBuilder<REv: 'static>(EventQueueHandle<REv>);
+pub(crate) struct EffectBuilder<REv: 'static> {
+    /// A handle to the referenced event queue.
+    event_queue: EventQueueHandle<REv>,
+}
 
 // Implement `Clone` and `Copy` manually, as `derive` will make it depend on `REv` otherwise.
 impl<REv> Clone for EffectBuilder<REv> {
     fn clone(&self) -> Self {
-        EffectBuilder(self.0)
+        EffectBuilder {
+            event_queue: self.event_queue,
+        }
     }
 }
 
@@ -399,35 +518,52 @@ impl<REv> Copy for EffectBuilder<REv> {}
 
 impl<REv> EffectBuilder<REv> {
     /// Creates a new effect builder.
-    pub(crate) fn new(event_queue_handle: EventQueueHandle<REv>) -> Self {
-        EffectBuilder(event_queue_handle)
-    }
-
-    /// Schedules a regular event.
-    pub(crate) async fn schedule_regular<E>(self, event: E)
-    where
-        REv: From<E>,
-    {
-        self.0.schedule(event, QueueKind::Regular).await
+    pub(crate) fn new(event_queue: EventQueueHandle<REv>) -> Self {
+        EffectBuilder { event_queue }
     }
 
     /// Extract the event queue handle out of the effect builder.
     #[cfg(test)]
     pub(crate) fn into_inner(self) -> EventQueueHandle<REv> {
-        self.0
+        self.event_queue
     }
 
     /// Performs a request.
     ///
-    /// Given a request `Q`, that when completed will yield a result of `T`, produces a future
-    /// that will
+    /// Given a request `Q`, that when completed will yield a result of `T`, produces a future that
+    /// will
     ///
     /// 1. create an event to send the request to the respective component (thus `Q: Into<REv>`),
-    /// 2. waits for a response and returns it.
+    /// 2. wait for a response and return it.
     ///
-    /// This function is usually only used internally by effects implement on the effects builder,
+    /// This function is usually only used internally by effects implemented on the effects builder,
     /// but IO components may also make use of it.
+    ///
+    /// # Cancellation safety
+    ///
+    /// This future is cancellation safe: If it is dropped without being polled, it merely indicates
+    /// the original requester is not longer interested in the result, which will be discarded.
     pub(crate) async fn make_request<T, Q, F>(self, f: F, queue_kind: QueueKind) -> T
+    where
+        T: Send + 'static,
+        Q: Into<REv>,
+        F: FnOnce(Responder<T>) -> Q,
+    {
+        let (event, wait_future) = self.create_request_parts(f);
+
+        // Schedule the request before awaiting the response.
+        self.event_queue.schedule(event, queue_kind).await;
+        wait_future.await
+    }
+
+    /// Creates the part necessary to make a request.
+    ///
+    /// A request usually consists of two parts: The request event that needs to be scheduled on the
+    /// reactor queue and associated future that allows waiting for the response. This function
+    /// creates both of them without processing or spawning either.
+    ///
+    /// Usually you will want to call the higher level `make_request` function.
+    pub(crate) fn create_request_parts<T, Q, F>(self, f: F) -> (REv, impl Future<Output = T>)
     where
         T: Send + 'static,
         Q: Into<REv>,
@@ -437,26 +573,36 @@ impl<REv> EffectBuilder<REv> {
         let (sender, receiver) = oneshot::channel();
 
         // Create response function.
-        let responder = Responder::new(sender);
+        let responder = Responder::new(sender, self.event_queue.shutdown_flag());
 
         // Now inject the request event into the event loop.
         let request_event = f(responder).into();
-        self.0.schedule(request_event, queue_kind).await;
 
-        match receiver.await {
-            Ok(value) => value,
-            Err(err) => {
-                // The channel should never be closed, ever. If it is, we pretend nothing happened
-                // though, instead of crashing.
-                error!(%err, ?queue_kind, channel=?type_name::<T>(), "request for channel closed, this may be a bug? \
-                       check if a component is stuck from now on ");
+        let fut = async move {
+            match receiver.await {
+                Ok(value) => value,
+                Err(err) => {
+                    // The channel should usually not be closed except during shutdowns, as it
+                    // indicates a panic or disappearance of the remote that is
+                    // supposed to process the request.
+                    //
+                    // If it does happen, we pretend nothing happened instead of crashing.
+                    if self.event_queue.shutdown_flag().is_set() {
+                        debug!(%err, channel=?type_name::<T>(), "ignoring closed channel due to shutdown")
+                    } else {
+                        error!(%err, channel=?type_name::<T>(), "request for channel closed, this may be a bug? \
+                            check if a component is stuck from now on");
+                    }
 
-                // We cannot produce any value to satisfy the request, so we just abandon this task
-                // by waiting on a resource we can never acquire.
-                let _ = UNOBTAINABLE.acquire().await;
-                panic!("should never obtain unobtainable semaphore");
+                    // We cannot produce any value to satisfy the request, so we just abandon this
+                    // task by waiting on a resource we can never acquire.
+                    let _ = UNOBTAINABLE.acquire().await;
+                    panic!("should never obtain unobtainable semaphore");
+                }
             }
-        }
+        };
+
+        (request_event, fut)
     }
 
     /// Run and end effect immediately.
@@ -481,7 +627,7 @@ impl<REv> EffectBuilder<REv> {
     where
         REv: From<ControlAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ControlAnnouncement::FatalError { file, line, msg },
                 QueueKind::Control,
@@ -512,38 +658,59 @@ impl<REv> EffectBuilder<REv> {
 
     /// Sends a network message.
     ///
-    /// The message is queued in "fire-and-forget" fashion, there is no guarantee that the peer
-    /// will receive it.
-    pub(crate) async fn send_message<I, P>(self, dest: I, payload: P)
+    /// The message is queued and sent, but no delivery guaranteed. Will return after the message
+    /// has been buffered in the outgoing kernel buffer and thus is subject to backpressure.
+    pub(crate) async fn send_message<P>(self, dest: NodeId, payload: P)
     where
-        REv: From<NetworkRequest<I, P>>,
+        REv: From<NetworkRequest<P>>,
     {
         self.make_request(
             |responder| NetworkRequest::SendMessage {
                 dest: Box::new(dest),
                 payload: Box::new(payload),
-                responder,
+                respond_after_queueing: false,
+                auto_closing_responder: AutoClosingResponder::from_opt_responder(responder),
             },
             QueueKind::Network,
         )
-        .await
+        .await;
+    }
+
+    /// Enqueues a network message.
+    ///
+    /// The message is queued in "fire-and-forget" fashion, there is no guarantee that the peer
+    /// will receive it. Returns as soon as the message is queued inside the networking component.
+    pub(crate) async fn enqueue_message<P>(self, dest: NodeId, payload: P)
+    where
+        REv: From<NetworkRequest<P>>,
+    {
+        self.make_request(
+            |responder| NetworkRequest::SendMessage {
+                dest: Box::new(dest),
+                payload: Box::new(payload),
+                respond_after_queueing: true,
+                auto_closing_responder: AutoClosingResponder::from_opt_responder(responder),
+            },
+            QueueKind::Network,
+        )
+        .await;
     }
 
     /// Broadcasts a network message.
     ///
     /// Broadcasts a network message to all peers connected at the time the message is sent.
-    pub(crate) async fn broadcast_message<I, P>(self, payload: P)
+    pub(crate) async fn broadcast_message<P>(self, payload: P)
     where
-        REv: From<NetworkRequest<I, P>>,
+        REv: From<NetworkRequest<P>>,
     {
         self.make_request(
             |responder| NetworkRequest::Broadcast {
                 payload: Box::new(payload),
-                responder,
+                auto_closing_responder: AutoClosingResponder::from_opt_responder(responder),
             },
             QueueKind::Network,
         )
-        .await
+        .await;
     }
 
     /// Gossips a network message.
@@ -552,15 +719,14 @@ impl<REv> EffectBuilder<REv> {
     /// excluding the indicated ones, and sends each a copy of the message.
     ///
     /// Returns the IDs of the chosen nodes.
-    pub(crate) async fn gossip_message<I, P>(
+    pub(crate) async fn gossip_message<P>(
         self,
         payload: P,
         count: usize,
-        exclude: HashSet<I>,
-    ) -> HashSet<I>
+        exclude: HashSet<NodeId>,
+    ) -> HashSet<NodeId>
     where
-        REv: From<NetworkRequest<I, P>>,
-        I: Send + 'static,
+        REv: From<NetworkRequest<P>>,
         P: Send,
     {
         self.make_request(
@@ -568,35 +734,46 @@ impl<REv> EffectBuilder<REv> {
                 payload: Box::new(payload),
                 count,
                 exclude,
-                responder,
+                auto_closing_responder: AutoClosingResponder::from_opt_responder(responder),
             },
             QueueKind::Network,
         )
         .await
+        .unwrap_or_default()
     }
 
-    /// Gets connected network peers.
-    pub(crate) async fn network_peers<I>(self) -> BTreeMap<I, String>
+    /// Gets a map of the current network peers to their socket addresses.
+    pub(crate) async fn network_peers(self) -> BTreeMap<NodeId, String>
     where
-        REv: From<NetworkInfoRequest<I>>,
-        I: Send + 'static,
+        REv: From<NetworkInfoRequest>,
     {
         self.make_request(
-            |responder| NetworkInfoRequest::GetPeers { responder },
+            |responder| NetworkInfoRequest::Peers { responder },
             QueueKind::Api,
         )
         .await
     }
 
-    /// Gets the current network peers in a random order.
-    pub async fn get_peers_in_random_order<I>(self) -> Vec<I>
+    /// Gets the current network peers in random order.
+    pub async fn get_fully_connected_peers(self) -> Vec<NodeId>
     where
-        REv: From<NetworkInfoRequest<I>>,
-        I: Send + 'static,
+        REv: From<NetworkInfoRequest>,
     {
         self.make_request(
-            |responder| NetworkInfoRequest::GetPeersInRandomOrder { responder },
-            QueueKind::Api,
+            |responder| NetworkInfoRequest::FullyConnectedPeers { responder },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Gets the current network non-syncing peers in random order.
+    pub async fn get_fully_connected_non_syncing_peers(self) -> Vec<NodeId>
+    where
+        REv: From<NetworkInfoRequest>,
+    {
+        self.make_request(
+            |responder| NetworkInfoRequest::FullyConnectedNonSyncingPeers { responder },
+            QueueKind::Regular,
         )
         .await
     }
@@ -606,7 +783,7 @@ impl<REv> EffectBuilder<REv> {
     where
         REv: From<BlockProposerAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 BlockProposerAnnouncement::DeploysExpired(hashes),
                 QueueKind::Regular,
@@ -614,43 +791,17 @@ impl<REv> EffectBuilder<REv> {
             .await;
     }
 
-    /// Announces that a network message has been received.
-    pub(crate) async fn announce_message_received<I, P>(self, sender: I, payload: P)
+    /// Announces an incoming network message.
+    pub(crate) async fn announce_incoming<P>(self, sender: NodeId, payload: P)
     where
-        REv: From<NetworkAnnouncement<I, P>>,
+        REv: FromIncoming<P>,
     {
-        self.0
+        self.event_queue
             .schedule(
-                NetworkAnnouncement::MessageReceived { sender, payload },
+                <REv as FromIncoming<P>>::from_incoming(sender, payload),
                 QueueKind::NetworkIncoming,
             )
-            .await;
-    }
-
-    /// Announces that we should gossip our own public listening address.
-    pub(crate) async fn announce_gossip_our_address<I, P>(self, our_address: GossipedAddress)
-    where
-        REv: From<NetworkAnnouncement<I, P>>,
-    {
-        self.0
-            .schedule(
-                NetworkAnnouncement::GossipOurAddress(our_address),
-                QueueKind::Regular,
-            )
-            .await;
-    }
-
-    /// Announces that a new peer has connected.
-    pub(crate) async fn announce_new_peer<I, P>(self, peer_id: I)
-    where
-        REv: From<NetworkAnnouncement<I, P>>,
-    {
-        self.0
-            .schedule(
-                NetworkAnnouncement::NewPeer(peer_id),
-                QueueKind::NetworkIncoming,
-            )
-            .await;
+            .await
     }
 
     /// Announces that a gossiper has received a new item, where the item's ID is the complete item.
@@ -663,12 +814,31 @@ impl<REv> EffectBuilder<REv> {
             "{} must be an item where the ID _is_ the complete item",
             item
         );
-        self.0
+        self.event_queue
             .schedule(
                 GossiperAnnouncement::NewCompleteItem(item),
                 QueueKind::Regular,
             )
             .await;
+    }
+
+    /// Request that a block with a specific height be marked completed.
+    ///
+    /// Completion means that the block itself (along with its header) and all of its deploys have
+    /// been persisted to storage and its global state root hash is missing no dependencies in the
+    /// global state.
+    pub(crate) async fn mark_block_completed(self, block_height: u64)
+    where
+        REv: From<MarkBlockCompletedRequest>,
+    {
+        self.make_request(
+            |responder| MarkBlockCompletedRequest {
+                block_height,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
     }
 
     /// Announces that the HTTP API server has received a deploy.
@@ -679,7 +849,7 @@ impl<REv> EffectBuilder<REv> {
     ) where
         REv: From<RpcServerAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 RpcServerAnnouncement::DeployReceived { deploy, responder },
                 QueueKind::Api,
@@ -688,15 +858,15 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Announces that a deploy not previously stored has now been accepted and stored.
-    pub(crate) fn announce_new_deploy_accepted<I>(
+    pub(crate) fn announce_new_deploy_accepted(
         self,
         deploy: Box<Deploy>,
-        source: Source<I>,
+        source: Source,
     ) -> impl Future<Output = ()>
     where
-        REv: From<DeployAcceptorAnnouncement<I>>,
+        REv: From<DeployAcceptorAnnouncement>,
     {
-        self.0.schedule(
+        self.event_queue.schedule(
             DeployAcceptorAnnouncement::AcceptedNewDeploy { deploy, source },
             QueueKind::Regular,
         )
@@ -708,7 +878,7 @@ impl<REv> EffectBuilder<REv> {
         REv: From<GossiperAnnouncement<T>>,
         T: Item,
     {
-        self.0
+        self.event_queue
             .schedule(
                 GossiperAnnouncement::FinishedGossiping(item_id),
                 QueueKind::Regular,
@@ -717,47 +887,105 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Announces that an invalid deploy has been received.
-    pub(crate) fn announce_invalid_deploy<I>(
+    pub(crate) fn announce_invalid_deploy(
         self,
         deploy: Box<Deploy>,
-        source: Source<I>,
+        source: Source,
     ) -> impl Future<Output = ()>
     where
-        REv: From<DeployAcceptorAnnouncement<I>>,
+        REv: From<DeployAcceptorAnnouncement>,
     {
-        self.0.schedule(
+        self.event_queue.schedule(
             DeployAcceptorAnnouncement::InvalidDeploy { deploy, source },
             QueueKind::Regular,
         )
     }
 
-    /// Announce new block has been created.
-    pub(crate) async fn announce_linear_chain_block(
-        self,
-        block: Block,
-        execution_results: HashMap<DeployHash, (DeployHeader, ExecutionResult)>,
-    ) where
-        REv: From<ContractRuntimeAnnouncement>,
-    {
-        self.0
-            .schedule(
-                ContractRuntimeAnnouncement::linear_chain_block(block, execution_results),
-                QueueKind::Regular,
-            )
-            .await
-    }
-
-    /// Announce upgrade activation point read.
+    /// Announces upgrade activation point read.
     pub(crate) async fn announce_upgrade_activation_point_read(self, next_upgrade: NextUpgrade)
     where
         REv: From<ChainspecLoaderAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ChainspecLoaderAnnouncement::UpgradeActivationPointRead(next_upgrade),
                 QueueKind::Regular,
             )
             .await
+    }
+
+    /// Announces a committed Step success.
+    pub(crate) async fn announce_commit_step_success(
+        self,
+        era_id: EraId,
+        execution_journal: ExecutionJournal,
+    ) where
+        REv: From<ContractRuntimeAnnouncement>,
+    {
+        self.event_queue
+            .schedule(
+                ContractRuntimeAnnouncement::CommitStepSuccess {
+                    era_id,
+                    execution_effect: ExecutionEffect::from(&execution_journal),
+                },
+                QueueKind::Regular,
+            )
+            .await
+    }
+
+    /// Announces a new block has been created.
+    pub(crate) async fn announce_new_linear_chain_block(
+        self,
+        block: Box<Block>,
+        execution_results: Vec<(DeployHash, DeployHeader, ExecutionResult)>,
+    ) where
+        REv: From<ContractRuntimeAnnouncement>,
+    {
+        self.event_queue
+            .schedule(
+                ContractRuntimeAnnouncement::LinearChainBlock {
+                    block,
+                    execution_results,
+                },
+                QueueKind::Regular,
+            )
+            .await
+    }
+
+    /// Announces validators for upcoming era.
+    pub(crate) async fn announce_upcoming_era_validators(
+        self,
+        era_that_is_ending: EraId,
+        upcoming_era_validators: BTreeMap<EraId, BTreeMap<PublicKey, U512>>,
+    ) where
+        REv: From<ContractRuntimeAnnouncement>,
+    {
+        self.event_queue
+            .schedule(
+                ContractRuntimeAnnouncement::UpcomingEraValidators {
+                    era_that_is_ending,
+                    upcoming_era_validators,
+                },
+                QueueKind::Regular,
+            )
+            .await
+    }
+
+    /// Begins gossiping an item.
+    pub(crate) async fn begin_gossip<T>(self, item_id: T::Id, source: Source)
+    where
+        T: Item,
+        REv: From<BeginGossipRequest<T>>,
+    {
+        self.make_request(
+            |responder| BeginGossipRequest {
+                item_id,
+                source,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
     }
 
     /// Puts the given block into the linear block store.
@@ -767,6 +995,18 @@ impl<REv> EffectBuilder<REv> {
     {
         self.make_request(
             |responder| StorageRequest::PutBlock { block, responder },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Puts the given block and its deploys into the store.
+    pub(crate) async fn put_block_and_deploys_to_storage(self, block: Box<BlockAndDeploys>)
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::PutBlockAndDeploys { block, responder },
             QueueKind::Regular,
         )
         .await
@@ -787,11 +1027,29 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
+    /// Gets the requested block and its deploys from the store.
+    pub(crate) async fn get_block_and_deploys_from_storage(
+        self,
+        block_hash: BlockHash,
+    ) -> Option<BlockAndDeploys>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetBlockAndDeploys {
+                block_hash,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
     /// Gets the requested block header from the linear block store.
-    #[allow(unused)]
     pub(crate) async fn get_block_header_from_storage(
         self,
         block_hash: BlockHash,
+        only_from_available_block_range: bool,
     ) -> Option<BlockHeader>
     where
         REv: From<StorageRequest>,
@@ -799,6 +1057,41 @@ impl<REv> EffectBuilder<REv> {
         self.make_request(
             |responder| StorageRequest::GetBlockHeader {
                 block_hash,
+                only_from_available_block_range,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    pub(crate) async fn get_block_header_at_height_from_storage(
+        self,
+        block_height: u64,
+        only_from_available_block_range: bool,
+    ) -> Option<BlockHeader>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetBlockHeaderByHeight {
+                block_height,
+                only_from_available_block_range,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Checks if a block header exists in storage
+    pub(crate) async fn block_header_exists(self, block_height: u64) -> bool
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::CheckBlockHeaderExistence {
+                block_height,
                 responder,
             },
             QueueKind::Regular,
@@ -824,7 +1117,25 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Puts the requested finality signatures into storage.
+    /// Puts a block header to storage.
+    pub(crate) async fn put_block_header_to_storage(self, block_header: Box<BlockHeader>) -> bool
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::PutBlockHeader {
+                block_header,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Puts the requested block signatures into storage.
+    ///
+    /// If `signatures.proofs` is empty, no attempt to store will be made, an error will be logged,
+    /// and this function will return `false`.
     pub(crate) async fn put_signatures_to_storage(self, signatures: BlockSignatures) -> bool
     where
         REv: From<StorageRequest>,
@@ -857,21 +1168,6 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Requests the block header at the given height.
-    pub(crate) async fn get_block_header_at_height_from_storage(
-        self,
-        height: u64,
-    ) -> Option<BlockHeader>
-    where
-        REv: From<StorageRequest>,
-    {
-        self.make_request(
-            |responder| StorageRequest::GetBlockHeaderAtHeight { height, responder },
-            QueueKind::Regular,
-        )
-        .await
-    }
-
     /// Requests the header of the block containing the given deploy.
     pub(crate) async fn get_block_header_for_deploy_from_storage(
         self,
@@ -890,18 +1186,6 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Requests the block at the given height.
-    pub(crate) async fn get_block_at_height_from_storage(self, height: u64) -> Option<Block>
-    where
-        REv: From<StorageRequest>,
-    {
-        self.make_request(
-            |responder| StorageRequest::GetBlockAtHeight { height, responder },
-            QueueKind::Regular,
-        )
-        .await
-    }
-
     /// Requests the highest block.
     pub(crate) async fn get_highest_block_from_storage(self) -> Option<Block>
     where
@@ -909,6 +1193,18 @@ impl<REv> EffectBuilder<REv> {
     {
         self.make_request(
             |responder| StorageRequest::GetHighestBlock { responder },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Requests the highest block header.
+    pub(crate) async fn get_highest_block_header_from_storage(self) -> Option<BlockHeader>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetHighestBlockHeader { responder },
             QueueKind::Regular,
         )
         .await
@@ -929,30 +1225,46 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Requests the key block header for the given era ID, ie. the header of the switch block at
-    /// the era before (if one exists).
-    pub(crate) async fn get_key_block_header_for_era_id_from_storage(
-        self,
-        era_id: EraId,
-    ) -> Option<BlockHeader>
+    /// Requests the height range of fully available blocks (not just block headers).
+    pub(crate) async fn get_available_block_range_from_storage(self) -> AvailableBlockRange
     where
         REv: From<StorageRequest>,
     {
-        let era_before = era_id.checked_sub(1)?;
-        self.get_switch_block_header_at_era_id_from_storage(era_before)
-            .await
+        self.make_request(
+            |responder| StorageRequest::GetAvailableBlockRange { responder },
+            QueueKind::Regular,
+        )
+        .await
     }
 
-    /// Get a trie by its hash key.
+    /// Get a trie or chunk by its ID.
     pub(crate) async fn get_trie(
         self,
-        trie_key: Digest,
-    ) -> Result<Option<Trie<Key, StoredValue>>, engine_state::Error>
+        trie_or_chunk_id: TrieOrChunkId,
+    ) -> Result<Option<TrieOrChunk>, engine_state::Error>
     where
         REv: From<ContractRuntimeRequest>,
     {
         self.make_request(
             |responder| ContractRuntimeRequest::GetTrie {
+                trie_or_chunk_id,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Get a trie by its hash key.
+    pub(crate) async fn get_trie_full(
+        self,
+        trie_key: Digest,
+    ) -> Result<Option<Bytes>, engine_state::Error>
+    where
+        REv: From<ContractRuntimeRequest>,
+    {
+        self.make_request(
+            |responder| ContractRuntimeRequest::GetTrieFull {
                 trie_key,
                 responder,
             },
@@ -962,16 +1274,36 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Puts a trie into the trie store and asynchronously returns any missing descendant trie keys.
-    #[allow(unused)]
     pub(crate) async fn put_trie_and_find_missing_descendant_trie_keys(
         self,
-        trie: Box<Trie<Key, StoredValue>>,
+        trie_bytes: Bytes,
     ) -> Result<Vec<Digest>, engine_state::Error>
     where
         REv: From<ContractRuntimeRequest>,
     {
         self.make_request(
-            |responder| ContractRuntimeRequest::PutTrie { trie, responder },
+            |responder| ContractRuntimeRequest::PutTrie {
+                trie_bytes,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Asynchronously returns any missing descendant trie keys given an ancestor.
+    pub(crate) async fn find_missing_descendant_trie_keys(
+        self,
+        trie_key: Digest,
+    ) -> Result<Vec<Digest>, engine_state::Error>
+    where
+        REv: From<ContractRuntimeRequest>,
+    {
+        self.make_request(
+            |responder| ContractRuntimeRequest::FindMissingDescendantTrieKeys {
+                trie_key,
+                responder,
+            },
             QueueKind::Regular,
         )
         .await
@@ -990,10 +1322,13 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Gets the requested deploys from the deploy store.
+    ///
+    /// Returns the "original" deploys, which are the first received by the node, along with a
+    /// potentially different set of approvals used during execution of the recorded block.
     pub(crate) async fn get_deploys_from_storage(
         self,
         deploy_hashes: Vec<DeployHash>,
-    ) -> Vec<Option<Deploy>>
+    ) -> SmallVec<[Option<DeployWithFinalizedApprovals>; 1]>
     where
         REv: From<StorageRequest>,
     {
@@ -1031,7 +1366,7 @@ impl<REv> EffectBuilder<REv> {
     pub(crate) async fn get_deploy_and_metadata_from_storage(
         self,
         deploy_hash: DeployHash,
-    ) -> Option<(Deploy, DeployMetadata)>
+    ) -> Option<(DeployWithFinalizedApprovals, DeployMetadataExt)>
     where
         REv: From<StorageRequest>,
     {
@@ -1045,17 +1380,19 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Gets the requested block and its associated metadata.
+    /// Gets the requested block and its finality signatures.
     pub(crate) async fn get_block_at_height_with_metadata_from_storage(
         self,
         block_height: u64,
-    ) -> Option<(Block, BlockSignatures)>
+        only_from_available_block_range: bool,
+    ) -> Option<BlockWithMetadata>
     where
         REv: From<StorageRequest>,
     {
         self.make_request(
             |responder| StorageRequest::GetBlockAndMetadataByHeight {
                 block_height,
+                only_from_available_block_range,
                 responder,
             },
             QueueKind::Regular,
@@ -1067,13 +1404,15 @@ impl<REv> EffectBuilder<REv> {
     pub(crate) async fn get_block_with_metadata_from_storage(
         self,
         block_hash: BlockHash,
-    ) -> Option<(Block, BlockSignatures)>
+        only_from_available_block_range: bool,
+    ) -> Option<BlockWithMetadata>
     where
         REv: From<StorageRequest>,
     {
         self.make_request(
             |responder| StorageRequest::GetBlockAndMetadataByHash {
                 block_hash,
+                only_from_available_block_range,
                 responder,
             },
             QueueKind::Regular,
@@ -1081,10 +1420,70 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Get the highest block with its associated metadata.
+    /// Gets the requested block header by hash with its associated metadata.
+    pub(crate) async fn get_block_header_with_metadata_from_storage(
+        self,
+        block_hash: BlockHash,
+        only_from_available_block_range: bool,
+    ) -> Option<BlockHeaderWithMetadata>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetBlockHeaderAndMetadataByHash {
+                block_hash,
+                only_from_available_block_range,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Gets the requested block by height with its associated metadata.
+    pub(crate) async fn get_block_with_metadata_from_storage_by_height(
+        self,
+        block_height: u64,
+        only_from_available_block_range: bool,
+    ) -> Option<BlockWithMetadata>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetBlockAndMetadataByHeight {
+                block_height,
+                only_from_available_block_range,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Gets the requested block header by height with its associated metadata.
+    pub(crate) async fn get_block_header_with_metadata_from_storage_by_height(
+        self,
+        block_height: u64,
+        only_from_available_block_range: bool,
+    ) -> Option<BlockHeaderWithMetadata>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetBlockHeaderAndMetadataByHeight {
+                block_height,
+                only_from_available_block_range,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Gets the highest block with its associated metadata.
     pub(crate) async fn get_highest_block_with_metadata_from_storage(
         self,
-    ) -> Option<(Block, BlockSignatures)>
+    ) -> Option<BlockWithMetadata>
     where
         REv: From<StorageRequest>,
     {
@@ -1095,61 +1494,15 @@ impl<REv> EffectBuilder<REv> {
         .await
     }
 
-    /// Gets the requested deploy using the `DeployFetcher`.
-    pub(crate) async fn fetch_deploy<I>(
-        self,
-        deploy_hash: DeployHash,
-        peer: I,
-    ) -> Option<FetchResult<Deploy, I>>
+    /// Fetches an item from a fetcher.
+    pub(crate) async fn fetch<T>(self, id: T::Id, peer: NodeId) -> FetchResult<T>
     where
-        REv: From<FetcherRequest<I, Deploy>>,
-        I: Send + 'static,
+        REv: From<FetcherRequest<T>>,
+        T: Item + 'static,
     {
         self.make_request(
-            |responder| FetcherRequest::Fetch {
-                id: deploy_hash,
-                peer,
-                responder,
-            },
-            QueueKind::Regular,
-        )
-        .await
-    }
-
-    /// Gets the requested block using the `BlockFetcher`
-    pub(crate) async fn fetch_block<I>(
-        self,
-        block_hash: BlockHash,
-        peer: I,
-    ) -> Option<FetchResult<Block, I>>
-    where
-        REv: From<FetcherRequest<I, Block>>,
-        I: Send + 'static,
-    {
-        self.make_request(
-            |responder| FetcherRequest::Fetch {
-                id: block_hash,
-                peer,
-                responder,
-            },
-            QueueKind::Regular,
-        )
-        .await
-    }
-
-    /// Requests a linear chain block at `block_height`.
-    pub(crate) async fn fetch_block_by_height<I>(
-        self,
-        block_height: u64,
-        peer: I,
-    ) -> Option<FetchResult<BlockByHeight, I>>
-    where
-        REv: From<FetcherRequest<I, BlockByHeight>>,
-        I: Send + 'static,
-    {
-        self.make_request(
-            |responder| FetcherRequest::Fetch {
-                id: block_height,
+            |responder| FetcherRequest {
+                id,
                 peer,
                 responder,
             },
@@ -1225,7 +1578,7 @@ impl<REv> EffectBuilder<REv> {
     ) where
         REv: From<ContractRuntimeRequest>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ContractRuntimeRequest::EnqueueBlockForExecution {
                     finalized_block,
@@ -1239,9 +1592,9 @@ impl<REv> EffectBuilder<REv> {
 
     /// Checks whether the deploys included in the block exist on the network and the block is
     /// valid.
-    pub(crate) async fn validate_block<I, T>(self, sender: I, block: T) -> bool
+    pub(crate) async fn validate_block<T>(self, sender: NodeId, block: T) -> bool
     where
-        REv: From<BlockValidationRequest<I>>,
+        REv: From<BlockValidationRequest>,
         T: Into<ValidatingBlock>,
     {
         self.make_request(
@@ -1260,7 +1613,7 @@ impl<REv> EffectBuilder<REv> {
     where
         REv: From<ConsensusAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ConsensusAnnouncement::Finalized(Box::new(finalized_block)),
                 QueueKind::Regular,
@@ -1275,7 +1628,7 @@ impl<REv> EffectBuilder<REv> {
     ) where
         REv: From<ConsensusAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ConsensusAnnouncement::CreatedFinalitySignature(Box::new(finality_signature)),
                 QueueKind::Regular,
@@ -1292,7 +1645,7 @@ impl<REv> EffectBuilder<REv> {
     ) where
         REv: From<ConsensusAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 ConsensusAnnouncement::Fault {
                     era_id,
@@ -1305,14 +1658,27 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Announce the intent to disconnect from a specific peer, which consensus thinks is faulty.
-    pub(crate) async fn announce_disconnect_from_peer<I>(self, peer: I)
+    pub(crate) async fn announce_disconnect_from_peer(self, peer: NodeId)
     where
-        REv: From<BlocklistAnnouncement<I>>,
+        REv: From<BlocklistAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 BlocklistAnnouncement::OffenseCommitted(Box::new(peer)),
                 QueueKind::Regular,
+            )
+            .await
+    }
+
+    /// Announce that the sync process has finished.
+    pub(crate) async fn announce_finished_chain_syncing(self)
+    where
+        REv: From<ChainSynchronizerAnnouncement>,
+    {
+        self.event_queue
+            .schedule(
+                ChainSynchronizerAnnouncement::SyncFinished,
+                QueueKind::Network,
             )
             .await
     }
@@ -1322,7 +1688,7 @@ impl<REv> EffectBuilder<REv> {
     where
         REv: From<LinearChainAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 LinearChainAnnouncement::BlockAdded(block),
                 QueueKind::Regular,
@@ -1335,7 +1701,7 @@ impl<REv> EffectBuilder<REv> {
     where
         REv: From<LinearChainAnnouncement>,
     {
-        self.0
+        self.event_queue
             .schedule(
                 LinearChainAnnouncement::NewFinalitySignature(fs),
                 QueueKind::Regular,
@@ -1347,6 +1713,7 @@ impl<REv> EffectBuilder<REv> {
     pub(crate) async fn commit_genesis(
         self,
         chainspec: Arc<Chainspec>,
+        chainspec_raw_bytes: Arc<ChainspecRawBytes>,
     ) -> Result<GenesisSuccess, engine_state::Error>
     where
         REv: From<ContractRuntimeRequest>,
@@ -1354,6 +1721,7 @@ impl<REv> EffectBuilder<REv> {
         self.make_request(
             |responder| ContractRuntimeRequest::CommitGenesis {
                 chainspec,
+                chainspec_raw_bytes,
                 responder,
             },
             QueueKind::Regular,
@@ -1388,31 +1756,52 @@ impl<REv> EffectBuilder<REv> {
             .await
     }
 
-    /// Gets the information about the current run of the node software.
-    pub(crate) async fn get_current_run_info(self) -> CurrentRunInfo
+    pub(crate) async fn get_node_state(self) -> NodeState
     where
-        REv: From<ChainspecLoaderRequest>,
+        REv: From<NodeStateRequest> + Send,
+    {
+        self.make_request(NodeStateRequest, QueueKind::Api).await
+    }
+
+    /// Retrieves finalized blocks with timestamps no older than the maximum deploy TTL.
+    ///
+    /// These blocks contain all deploy and transfer hashes that are known to be finalized but
+    /// may not have expired yet.
+    pub(crate) async fn get_finalized_blocks(self, ttl: TimeDiff) -> Vec<Block>
+    where
+        REv: From<StorageRequest>,
     {
         self.make_request(
-            ChainspecLoaderRequest::GetCurrentRunInfo,
+            move |responder| StorageRequest::GetFinalizedBlocks { ttl, responder },
             QueueKind::Regular,
         )
         .await
     }
 
-    /// Retrieves finalized deploys from blocks that were created more recently than the TTL.
-    pub(crate) async fn get_finalized_deploys(
-        self,
-        ttl: TimeDiff,
-    ) -> Vec<(DeployHash, DeployHeader)>
+    /// Loads potentially previously stored state from storage.
+    ///
+    /// Key must be a unique key across the the application, as all keys share a common namespace.
+    ///
+    /// If an error occurs during state loading or no data is found, returns `None`.
+    pub(crate) async fn load_state<T>(self, key: Cow<'static, [u8]>) -> Option<T>
     where
-        REv: From<StorageRequest>,
+        REv: From<StateStoreRequest>,
+        for<'de> T: Deserialize<'de>,
     {
+        // Due to object safety issues, we cannot ship the actual values around, but only the
+        // serialized bytes. Hence we retrieve raw bytes from storage and then deserialize here.
         self.make_request(
-            move |responder| StorageRequest::GetFinalizedDeploys { ttl, responder },
+            move |responder| StateStoreRequest::Load { key, responder },
             QueueKind::Regular,
         )
         .await
+        .map(|data| bincode::deserialize(&data))
+        .transpose()
+        .unwrap_or_else(|err| {
+            let type_name = type_name::<T>();
+            error!(%type_name, %err, "could not deserialize state from storage");
+            None
+        })
     }
 
     /// Save state to storage.
@@ -1421,7 +1810,6 @@ impl<REv> EffectBuilder<REv> {
     ///
     /// Returns whether or not storing the state was successful. A component that requires state to
     /// be successfully stored should check the return value and act accordingly.
-    #[cfg(not(feature = "fast-sync"))]
     pub(crate) async fn save_state<T>(self, key: Cow<'static, [u8]>, value: T) -> bool
     where
         REv: From<StateStoreRequest>,
@@ -1442,7 +1830,7 @@ impl<REv> EffectBuilder<REv> {
             }
             Err(err) => {
                 let type_name = type_name::<T>();
-                warn!(%type_name, %err, "Error serializing state");
+                warn!(%type_name, %err, "error serializing state");
                 false
             }
         }
@@ -1591,78 +1979,23 @@ impl<REv> EffectBuilder<REv> {
     }
 
     /// Gets the correct era validators set for the given era.
-    /// Takes emergency restarts into account based on the information from the chainspec loader.
+    /// Takes emergency restarts into account based on the information in the immediate switch
+    /// block after a restart.
     pub(crate) async fn get_era_validators(self, era_id: EraId) -> Option<BTreeMap<PublicKey, U512>>
     where
-        REv: From<ContractRuntimeRequest> + From<StorageRequest> + From<ChainspecLoaderRequest>,
+        REv: From<StorageRequest> + From<ChainspecLoaderRequest>,
     {
-        let CurrentRunInfo {
-            protocol_version,
-            initial_state_root_hash,
-            last_emergency_restart,
-            ..
-        } = self.get_current_run_info().await;
-        let cutoff_era_id = last_emergency_restart.unwrap_or_else(|| EraId::new(0));
-        if era_id < cutoff_era_id {
-            // we don't support getting the validators from before the last emergency restart
-            return None;
-        }
-        if era_id == cutoff_era_id {
-            // in the activation era, we read the validators from the global state; we use the
-            // global state hash of the first block in the era, if it exists - if we can't get it,
-            // we use the initial_state_root_hash passed from the chainspec loader
-            let root_hash = if era_id.is_genesis() {
-                // genesis era - use block at height 0
-                self.get_block_header_at_height_from_storage(0)
-                    .await
-                    .map(|hdr| *hdr.state_root_hash())
-                    .unwrap_or(initial_state_root_hash)
-            } else {
-                // non-genesis - calculate the height based on the key block
-                let maybe_key_block_header = self
-                    .get_key_block_header_for_era_id_from_storage(era_id)
-                    .await;
-                // this has to be a match because `Option::and_then` can't deal with async closures
-                match maybe_key_block_header {
-                    None => None,
-                    Some(kb_hdr) => {
-                        self.get_block_header_at_height_from_storage(kb_hdr.height() + 1)
-                            .await
-                    }
-                }
-                // default to the initial_state_root_hash if there was no key block or no block
-                // above the key block for the era
-                .map_or(initial_state_root_hash, |hdr| *hdr.state_root_hash())
-            };
-            let req = EraValidatorsRequest::new(root_hash, protocol_version);
-            self.get_era_validators_from_contract_runtime(req)
-                .await
-                .ok()
-                .and_then(|era_validators| era_validators.get(&era_id).cloned())
-        } else {
-            // in other eras, we just use the validators from the key block
-            let key_block_result = self
-                .get_key_block_header_for_era_id_from_storage(era_id)
-                .await
-                .and_then(|kb_hdr| kb_hdr.next_era_validator_weights().cloned());
-            if key_block_result.is_some() {
-                // if the key block read was successful, just return it
-                key_block_result
-            } else {
-                // if there was no key block, we might be looking at a future era - in such a case,
-                // read the state root hash from the highest block and check with the contract
-                // runtime
-                let highest_block = self.get_highest_block_from_storage().await?;
-                let req = EraValidatorsRequest::new(
-                    *highest_block.header().state_root_hash(),
-                    protocol_version,
-                );
-                self.get_era_validators_from_contract_runtime(req)
-                    .await
-                    .ok()
-                    .and_then(|era_validators| era_validators.get(&era_id).cloned())
-            }
-        }
+        // TODO (#3233): If there was an upgrade changing the validator set at `era_id`, the switch
+        // block at this era will be the immediate switch block created after the upgrade. We should
+        // check for such a case and return the validators from the switch block itself then.
+
+        // Era 0 contains no blocks other than the genesis immediate switch block which can be used
+        // to get the validators for era 0.  For any other era `n`, we need the switch block from
+        // era `n-1` to get the validators for `n`.
+        let era_before = era_id.saturating_sub(1);
+        self.get_switch_block_header_at_era_id_from_storage(era_before)
+            .await
+            .and_then(BlockHeader::maybe_take_next_era_validator_weights)
     }
 
     /// Checks whether the given validator is bonded in the given era.
@@ -1734,34 +2067,133 @@ impl<REv> EffectBuilder<REv> {
             .await
     }
 
-    /// Collects the key blocks for the eras identified by provided era IDs. Returns
-    /// `Some(HashMap(era_id → block_header))` if all the blocks have been read correctly, and
-    /// `None` if at least one was missing. The header for EraId `n` is from the key block for that
-    /// era, that is, the switch block of era `n-1`, ie. it contains the data necessary for
-    /// initialization of era `n`.
-    pub(crate) async fn collect_key_block_headers<I: IntoIterator<Item = EraId>>(
+    /// Dump consensus state for a specific era, using the supplied function to serialize the
+    /// output.
+    pub(crate) async fn diagnostics_port_dump_consensus_state(
         self,
-        era_ids: I,
-    ) -> Option<HashMap<EraId, BlockHeader>>
+        era_id: Option<EraId>,
+        serialize: fn(&EraDump<'_>) -> Result<Vec<u8>, Cow<'static, str>>,
+    ) -> Result<Vec<u8>, Cow<'static, str>>
+    where
+        REv: From<DumpConsensusStateRequest>,
+    {
+        self.make_request(
+            |responder| DumpConsensusStateRequest {
+                era_id,
+                serialize,
+                responder,
+            },
+            QueueKind::Control,
+        )
+        .await
+    }
+
+    /// Dump the event queue contents to the diagnostics port, using the given serializer.
+    pub(crate) async fn diagnostics_port_dump_queue(self, dump_format: QueueDumpFormat)
+    where
+        REv: From<ControlAnnouncement>,
+    {
+        self.make_request(
+            |responder| ControlAnnouncement::QueueDumpRequest {
+                dump_format,
+                finished: responder,
+            },
+            QueueKind::Control,
+        )
+        .await
+    }
+
+    /// Get the bytes for the chainspec file and genesis_accounts
+    /// and global_state bytes if the files are present.
+    pub(crate) async fn get_chainspec_raw_bytes(self) -> Arc<ChainspecRawBytes>
+    where
+        REv: From<ChainspecLoaderRequest> + Send,
+    {
+        self.make_request(
+            ChainspecLoaderRequest::GetChainspecRawBytes,
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Stores a set of given finalized approvals in storage.
+    ///
+    /// Any previously stored finalized approvals for the given hash are quietly overwritten
+    pub(crate) async fn store_finalized_approvals(
+        self,
+        deploy_hash: DeployHash,
+        finalized_approvals: FinalizedApprovals,
+    ) where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::StoreFinalizedApprovals {
+                deploy_hash,
+                finalized_approvals,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Stores a batch of block headers in storage.
+    ///
+    /// Any previously stored block headers with matching hash will be overwritten.
+    pub(crate) async fn put_block_headers_batch_to_storage(
+        self,
+        block_headers: Vec<BlockHeader>,
+    ) -> bool
     where
         REv: From<StorageRequest>,
     {
-        futures::future::join_all(
-            era_ids
-                .into_iter()
-                // we would get None for era 0 and that would make it seem like the entire
-                // function failed
-                .filter(|era_id| !era_id.is_genesis())
-                .map(|era_id| {
-                    self.get_key_block_header_for_era_id_from_storage(era_id)
-                        .map(move |maybe_header| {
-                            maybe_header.map(|block_header| (era_id, block_header))
-                        })
-                }),
+        self.make_request(
+            |responder| StorageRequest::PutHeadersBatch {
+                block_headers,
+                responder,
+            },
+            QueueKind::Regular,
         )
         .await
-        .into_iter()
-        .collect()
+    }
+
+    /// Reads batch of block headers from the storage.
+    pub(crate) async fn get_block_header_batch_from_storage(
+        self,
+        block_headers_id: BlockHeadersBatchId,
+    ) -> Option<BlockHeadersBatch>
+    where
+        REv: From<StorageRequest>,
+    {
+        self.make_request(
+            |responder| StorageRequest::GetHeadersBatch {
+                block_headers_id,
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
+    }
+
+    /// Requests execution of a single deploy, without commiting its effects.
+    /// Inteded to be used for debugging & discovery purposes.
+    pub(crate) async fn speculative_execute_deploy(
+        self,
+        execution_prestate: SpeculativeExecutionState,
+        deploy: Deploy,
+    ) -> Result<Option<ExecutionResult>, engine_state::Error>
+    where
+        REv: From<ContractRuntimeRequest>,
+    {
+        self.make_request(
+            |responder| ContractRuntimeRequest::SpeculativeDeployExecution {
+                execution_prestate,
+                deploy: Box::new(deploy),
+                responder,
+            },
+            QueueKind::Regular,
+        )
+        .await
     }
 }
 

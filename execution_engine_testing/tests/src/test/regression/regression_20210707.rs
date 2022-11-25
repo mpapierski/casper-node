@@ -1,22 +1,20 @@
 use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_PAYMENT,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_PAYMENT, MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_RUN_GENESIS_REQUEST,
 };
-use casper_execution_engine::{
-    core::{
-        engine_state::{Error as CoreError, ExecuteRequest},
-        execution::Error as ExecError,
-    },
-    shared::wasm,
+use casper_execution_engine::core::{
+    engine_state::{Error as CoreError, ExecuteRequest},
+    execution::Error as ExecError,
 };
 use casper_types::{
-    account::Account, runtime_args, system::mint, AccessRights, ContractHash, PublicKey,
-    RuntimeArgs, SecretKey, URef, U512,
+    account::{Account, AccountHash},
+    runtime_args,
+    system::mint,
+    AccessRights, ContractHash, PublicKey, RuntimeArgs, SecretKey, URef, U512,
 };
 use once_cell::sync::Lazy;
+
+use crate::wasm_utils;
 
 const HARDCODED_UREF: URef = URef::new([42; 32], AccessRights::READ_ADD_WRITE);
 const CONTRACT_HASH_NAME: &str = "contract_hash";
@@ -31,7 +29,6 @@ const ARG_SOURCE: &str = "source";
 const ARG_RECIPIENT: &str = "recipient";
 const ARG_AMOUNT: &str = "amount";
 const ARG_TARGET: &str = "target";
-const ARG_REFUND_PURSE: &str = "refund_purse";
 
 const REGRESSION_20210707: &str = "regression_20210707.wasm";
 
@@ -51,7 +48,9 @@ fn setup_regression_contract() -> ExecuteRequest {
     ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         REGRESSION_20210707,
-        RuntimeArgs::default(),
+        runtime_args! {
+            mint::ARG_AMOUNT => U512::from(MINIMUM_ACCOUNT_CREATION_BALANCE),
+        },
     )
     .build()
 }
@@ -82,17 +81,18 @@ fn get_account_contract_hash(account: &Account) -> ContractHash {
 fn assert_forged_uref_error(error: CoreError, forged_uref: URef) {
     assert!(
         matches!(error, CoreError::Exec(ExecError::ForgedReference(uref)) if uref == forged_uref),
-        "{:?}",
+        "Expected forged uref {:?} but received {:?}",
+        forged_uref,
         error
     );
 }
 
 #[ignore]
 #[test]
-fn should_not_transfer_funds_from_forged_purse_to_account() {
+fn should_transfer_funds_from_contract_to_new_account() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -107,8 +107,50 @@ fn should_not_transfer_funds_from_forged_purse_to_account() {
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
 
-    let take_from = builder.get_expected_account(*ALICE_ADDR);
-    let alice_main_purse = take_from.main_purse();
+    let contract_hash = get_account_contract_hash(&account);
+
+    assert!(builder.get_account(*BOB_ADDR).is_none());
+
+    let call_request = ExecuteRequestBuilder::contract_call_by_hash(
+        *DEFAULT_ACCOUNT_ADDR,
+        contract_hash,
+        METHOD_SEND_TO_ACCOUNT,
+        runtime_args! {
+            ARG_RECIPIENT => *BOB_ADDR,
+            ARG_AMOUNT => U512::from(700_000_000_000u64),
+        },
+    )
+    .build();
+
+    builder.exec(call_request).commit().expect_success();
+}
+
+#[ignore]
+#[test]
+fn should_transfer_funds_from_contract_to_existing_account() {
+    let mut builder = InMemoryWasmTestBuilder::default();
+
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
+
+    let store_request = setup_regression_contract();
+
+    let fund_request_1 = transfer(
+        *DEFAULT_ACCOUNT_ADDR,
+        *ALICE_ADDR,
+        MINIMUM_ACCOUNT_CREATION_BALANCE,
+    );
+
+    let fund_request_2 = transfer(
+        *DEFAULT_ACCOUNT_ADDR,
+        *BOB_ADDR,
+        MINIMUM_ACCOUNT_CREATION_BALANCE,
+    );
+
+    builder.exec(store_request).commit().expect_success();
+    builder.exec(fund_request_1).commit().expect_success();
+    builder.exec(fund_request_2).commit().expect_success();
+
+    let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
 
     let contract_hash = get_account_contract_hash(&account);
 
@@ -117,18 +159,13 @@ fn should_not_transfer_funds_from_forged_purse_to_account() {
         contract_hash,
         METHOD_SEND_TO_ACCOUNT,
         runtime_args! {
-            ARG_SOURCE => alice_main_purse,
             ARG_RECIPIENT => *BOB_ADDR,
             ARG_AMOUNT => U512::from(700_000_000_000u64),
         },
     )
     .build();
 
-    builder.exec(call_request).commit();
-
-    let error = builder.get_error().expect("should have error");
-
-    assert_forged_uref_error(error, alice_main_purse);
+    builder.exec(call_request).expect_success().commit();
 }
 
 #[ignore]
@@ -136,7 +173,7 @@ fn should_not_transfer_funds_from_forged_purse_to_account() {
 fn should_not_transfer_funds_from_forged_purse_to_account_native_transfer() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -176,7 +213,7 @@ fn should_not_transfer_funds_from_forged_purse_to_account_native_transfer() {
 fn should_not_transfer_funds_from_forged_purse_to_owned_purse() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -198,9 +235,6 @@ fn should_not_transfer_funds_from_forged_purse_to_owned_purse() {
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
 
-    let alice = builder.get_expected_account(*ALICE_ADDR);
-    let alice_main_purse = alice.main_purse();
-
     let bob = builder.get_expected_account(*BOB_ADDR);
     let bob_main_purse = bob.main_purse();
 
@@ -211,7 +245,6 @@ fn should_not_transfer_funds_from_forged_purse_to_owned_purse() {
         contract_hash,
         METHOD_SEND_TO_PURSE,
         runtime_args! {
-            ARG_SOURCE => alice_main_purse,
             ARG_TARGET => bob_main_purse,
             ARG_AMOUNT => U512::from(700_000_000_000u64),
         },
@@ -222,7 +255,7 @@ fn should_not_transfer_funds_from_forged_purse_to_owned_purse() {
 
     let error = builder.get_error().expect("should have error");
 
-    assert_forged_uref_error(error, alice_main_purse);
+    assert_forged_uref_error(error, bob_main_purse);
 }
 
 #[ignore]
@@ -230,7 +263,7 @@ fn should_not_transfer_funds_from_forged_purse_to_owned_purse() {
 fn should_not_transfer_funds_into_bob_purse() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -244,7 +277,6 @@ fn should_not_transfer_funds_into_bob_purse() {
     builder.exec(fund_request_1).commit().expect_success();
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
-    let account_main_purse = account.main_purse();
 
     let bob = builder.get_expected_account(*BOB_ADDR);
     let bob_main_purse = bob.main_purse();
@@ -256,7 +288,6 @@ fn should_not_transfer_funds_into_bob_purse() {
         contract_hash,
         METHOD_SEND_TO_PURSE,
         runtime_args! {
-            ARG_SOURCE => account_main_purse,
             ARG_TARGET => bob_main_purse,
             ARG_AMOUNT => U512::from(700_000_000_000u64),
         },
@@ -275,7 +306,7 @@ fn should_not_transfer_funds_into_bob_purse() {
 fn should_not_transfer_from_hardcoded_purse() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -290,9 +321,6 @@ fn should_not_transfer_from_hardcoded_purse() {
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
 
-    let bob = builder.get_expected_account(*BOB_ADDR);
-    let bob_main_purse = bob.main_purse();
-
     let contract_hash = get_account_contract_hash(&account);
 
     let call_request = ExecuteRequestBuilder::contract_call_by_hash(
@@ -300,7 +328,6 @@ fn should_not_transfer_from_hardcoded_purse() {
         contract_hash,
         METHOD_HARDCODED_PURSE_SRC,
         runtime_args! {
-            ARG_TARGET => bob_main_purse,
             ARG_AMOUNT => U512::from(700_000_000_000u64),
         },
     )
@@ -318,7 +345,7 @@ fn should_not_transfer_from_hardcoded_purse() {
 fn should_not_refund_to_bob_and_charge_alice() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -340,9 +367,6 @@ fn should_not_refund_to_bob_and_charge_alice() {
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
 
-    let alice = builder.get_expected_account(*ALICE_ADDR);
-    let alice_main_purse = alice.main_purse();
-
     let bob = builder.get_expected_account(*BOB_ADDR);
     let bob_main_purse = bob.main_purse();
 
@@ -350,14 +374,13 @@ fn should_not_refund_to_bob_and_charge_alice() {
 
     let call_request = {
         let args = runtime_args! {
-            ARG_REFUND_PURSE => alice_main_purse,
             ARG_SOURCE => bob_main_purse,
             ARG_AMOUNT => *DEFAULT_PAYMENT,
         };
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
             // Just do nothing if ever we'd get into session execution
-            .with_session_bytes(wasm::do_nothing_bytes(), RuntimeArgs::default())
+            .with_session_bytes(wasm_utils::do_nothing_bytes(), RuntimeArgs::default())
             .with_stored_payment_hash(contract_hash, METHOD_STORED_PAYMENT, args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
             .with_deploy_hash([77; 32])
@@ -370,7 +393,7 @@ fn should_not_refund_to_bob_and_charge_alice() {
 
     let error = builder.get_error().expect("should have error");
 
-    assert_forged_uref_error(error, alice_main_purse);
+    assert_forged_uref_error(error, bob_main_purse);
 }
 
 #[ignore]
@@ -378,7 +401,7 @@ fn should_not_refund_to_bob_and_charge_alice() {
 fn should_not_charge_alice_for_execution() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -399,7 +422,6 @@ fn should_not_charge_alice_for_execution() {
     builder.exec(fund_request_2).commit().expect_success();
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
-    let account_main_purse = account.main_purse();
 
     let bob = builder.get_expected_account(*BOB_ADDR);
     let bob_main_purse = bob.main_purse();
@@ -408,14 +430,13 @@ fn should_not_charge_alice_for_execution() {
 
     let call_request = {
         let args = runtime_args! {
-            ARG_REFUND_PURSE => account_main_purse,
             ARG_SOURCE => bob_main_purse,
             ARG_AMOUNT => *DEFAULT_PAYMENT,
         };
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
             // Just do nothing if ever we'd get into session execution
-            .with_session_bytes(wasm::do_nothing_bytes(), RuntimeArgs::default())
+            .with_session_bytes(wasm_utils::do_nothing_bytes(), RuntimeArgs::default())
             .with_stored_payment_hash(contract_hash, METHOD_STORED_PAYMENT, args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
             .with_deploy_hash([77; 32])
@@ -436,7 +457,7 @@ fn should_not_charge_alice_for_execution() {
 fn should_not_charge_for_execution_from_hardcoded_purse() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let store_request = setup_regression_contract();
 
@@ -457,19 +478,17 @@ fn should_not_charge_for_execution_from_hardcoded_purse() {
     builder.exec(fund_request_2).commit().expect_success();
 
     let account = builder.get_expected_account(*DEFAULT_ACCOUNT_ADDR);
-    let account_main_purse = account.main_purse();
 
     let contract_hash = get_account_contract_hash(&account);
 
     let call_request = {
         let args = runtime_args! {
-            ARG_REFUND_PURSE => account_main_purse,
             ARG_AMOUNT => *DEFAULT_PAYMENT,
         };
         let deploy = DeployItemBuilder::new()
             .with_address(*DEFAULT_ACCOUNT_ADDR)
             // Just do nothing if ever we'd get into session execution
-            .with_session_bytes(wasm::do_nothing_bytes(), RuntimeArgs::default())
+            .with_session_bytes(wasm_utils::do_nothing_bytes(), RuntimeArgs::default())
             .with_stored_payment_hash(contract_hash, METHOD_HARDCODED_PAYMENT, args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
             .with_deploy_hash([77; 32])

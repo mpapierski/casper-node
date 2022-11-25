@@ -9,6 +9,7 @@ use crate::{
     core::{
         engine_state::{genesis::GenesisError, upgrade::ProtocolUpgradeError},
         execution,
+        runtime::stack,
     },
     shared::wasm_engine,
     storage,
@@ -17,6 +18,7 @@ use crate::{
 
 /// Engine state errors.
 #[derive(Clone, Error, Debug)]
+#[non_exhaustive]
 pub enum Error {
     /// Specified state root hash is not found.
     #[error("Root not found: {0}")]
@@ -78,6 +80,24 @@ pub enum Error {
     /// Missing system contract hash.
     #[error("Missing system contract hash: {0}")]
     MissingSystemContractHash(String),
+    /// An attempt to push to the runtime stack while already at the maximum height.
+    #[error("Runtime stack overflow")]
+    RuntimeStackOverflow,
+    /// Failed to get the set of Key::Withdraw from global state.
+    #[error("Failed to get withdraw keys")]
+    FailedToGetWithdrawKeys,
+    /// Failed to get the purses stored under Key::Withdraw
+    #[error("Failed to get stored values under withdraws")]
+    FailedToGetStoredWithdraws,
+    /// Failed to convert the StoredValue into WithdrawPurse.
+    #[error("Failed to convert the stored value to a withdraw purse")]
+    FailedToGetWithdrawPurses,
+    /// Failed to retrieve the unbonding delay from the auction state.
+    #[error("Failed to retrieve the unbonding delay from the auction state")]
+    FailedToRetrieveUnbondingDelay,
+    /// Failed to retrieve the current EraId from the auction state.
+    #[error("Failed to retrieve the era_id from the auction state")]
+    FailedToRetrieveEraId,
 }
 
 impl Error {
@@ -108,6 +128,12 @@ impl From<bytesrepr::Error> for Error {
     }
 }
 
+impl From<lmdb::Error> for Error {
+    fn from(error: lmdb::Error) -> Self {
+        Error::Storage(storage::error::Error::Lmdb(error))
+    }
+}
+
 impl From<mint::Error> for Error {
     fn from(error: mint::Error) -> Self {
         Error::Mint(format!("{}", error))
@@ -117,6 +143,12 @@ impl From<mint::Error> for Error {
 impl From<GenesisError> for Error {
     fn from(genesis_error: GenesisError) -> Self {
         Self::Genesis(Box::new(genesis_error))
+    }
+}
+
+impl From<stack::RuntimeStackOverflow> for Error {
+    fn from(_: stack::RuntimeStackOverflow) -> Self {
+        Self::RuntimeStackOverflow
     }
 }
 

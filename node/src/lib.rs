@@ -8,7 +8,7 @@
 //! While the [`main`](fn.main.html) function is the central entrypoint for the node application,
 //! its core event loop is found inside the [reactor](reactor/index.html).
 
-#![doc(html_root_url = "https://docs.rs/casper-node/1.0.0")]
+#![doc(html_root_url = "https://docs.rs/casper-node/1.4.8")]
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Favicon_RGB_50px.png",
     html_logo_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Symbol_RGB.png",
@@ -31,13 +31,11 @@ pub(crate) mod reactor;
 #[cfg(test)]
 pub(crate) mod testing;
 pub(crate) mod tls;
-pub(crate) mod utils;
 
 // Public API
 pub mod cli;
-pub mod crypto;
 pub mod types;
-
+pub mod utils;
 pub use components::{
     contract_runtime,
     rpc_server::rpcs,
@@ -45,30 +43,26 @@ pub use components::{
 };
 pub use utils::WithDir;
 
-use std::sync::{
-    atomic::{AtomicBool, AtomicUsize},
-    Arc,
-};
+use std::sync::{atomic::AtomicUsize, Arc};
 
 use ansi_term::Color::Red;
 use once_cell::sync::Lazy;
 #[cfg(not(test))]
 use rand::SeedableRng;
-use signal_hook::{
-    consts::{signal::SIGUSR1, TERM_SIGNALS},
-    flag,
-};
+use signal_hook::{consts::TERM_SIGNALS, flag};
 
 pub(crate) use components::{
-    block_proposer::Config as BlockProposerConfig, consensus::Config as ConsensusConfig,
+    block_proposer::Config as BlockProposerConfig,
+    consensus::Config as ConsensusConfig,
     contract_runtime::Config as ContractRuntimeConfig,
-    deploy_acceptor::Config as DeployAcceptorConfig,
-    event_stream_server::Config as EventStreamServerConfig, fetcher::Config as FetcherConfig,
-    gossiper::Config as GossipConfig, linear_chain_sync::Config as LinearChainSyncConfig,
-    rest_server::Config as RestServerConfig, rpc_server::Config as RpcServerConfig,
+    diagnostics_port::Config as DiagnosticsPortConfig,
+    event_stream_server::Config as EventStreamServerConfig,
+    fetcher::Config as FetcherConfig,
+    gossiper::Config as GossipConfig,
+    rest_server::Config as RestServerConfig,
+    rpc_server::{Config as RpcServerConfig, SpeculativeExecConfig},
     small_network::Config as SmallNetworkConfig,
 };
-
 pub(crate) use types::NodeRng;
 
 /// The maximum thread count which should be spawned by the tokio runtime.
@@ -76,14 +70,9 @@ pub const MAX_THREAD_COUNT: usize = 512;
 
 fn version_string(color: bool) -> String {
     let mut version = format!(
-        "{}-{}{}",
+        "{}-{}",
         env!("CARGO_PKG_VERSION"),
-        env!("VERGEN_SHA_SHORT"),
-        if cfg!(feature = "casper-mainnet") {
-            "-casper-mainnet"
-        } else {
-            ""
-        }
+        env!("VERGEN_GIT_SHA_SHORT")
     );
 
     // Add a `@DEBUG` (or similar) tag to release string on non-release builds.
@@ -111,10 +100,6 @@ pub(crate) static VERSION_STRING: Lazy<String> = Lazy::new(|| version_string(fal
 pub(crate) static TERMINATION_REQUESTED: Lazy<Arc<AtomicUsize>> =
     Lazy::new(|| Arc::new(AtomicUsize::new(0)));
 
-/// Global flag that indicates the currently running reactor should dump its event queue.
-pub(crate) static QUEUE_DUMP_REQUESTED: Lazy<Arc<AtomicBool>> =
-    Lazy::new(|| Arc::new(AtomicBool::new(false)));
-
 /// Setup UNIX signal hooks for current application.
 pub(crate) fn setup_signal_hooks() {
     for signal in TERM_SIGNALS {
@@ -125,7 +110,6 @@ pub(crate) fn setup_signal_hooks() {
         )
         .unwrap_or_else(|error| panic!("failed to register signal {}: {}", signal, error));
     }
-    let _ = flag::register(SIGUSR1, Arc::clone(&*QUEUE_DUMP_REQUESTED));
 }
 
 /// Constructs a new `NodeRng`.

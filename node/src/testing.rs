@@ -4,6 +4,7 @@
 //! `casper-node` library.
 
 mod condition_check_reactor;
+pub(crate) mod fake_deploy_acceptor;
 pub(crate) mod filter_reactor;
 mod multi_stage_test_reactor;
 pub(crate) mod network;
@@ -13,6 +14,8 @@ mod test_rng;
 use std::{
     any::type_name,
     fmt::Debug,
+    fs,
+    io::Write,
     marker::PhantomData,
     ops::Range,
     sync::atomic::{AtomicU16, Ordering},
@@ -20,24 +23,33 @@ use std::{
 };
 
 use anyhow::Context;
+use assert_json_diff::{assert_json_eq, assert_json_matches_no_panic, CompareMode, Config};
+use casper_types::testing::TestRng;
 use derive_more::From;
 use futures::channel::oneshot;
 use once_cell::sync::Lazy;
 use rand::Rng;
+use serde_json::Value;
 use tempfile::TempDir;
 use tokio::runtime::{self, Runtime};
 use tracing::{debug, warn};
 
+use casper_types::{TimeDiff, Timestamp};
+
 use crate::{
     components::Component,
-    effect::{announcements::ControlAnnouncement, EffectBuilder, Effects, Responder},
+    effect::{
+        announcements::ControlAnnouncement, requests::NetworkRequest, EffectBuilder, Effects,
+        Responder,
+    },
     logging,
+    protocol::Message,
     reactor::{EventQueueHandle, QueueKind, ReactorEvent, Scheduler},
-    types::{Deploy, TimeDiff, Timestamp},
+    types::Deploy,
 };
 pub(crate) use condition_check_reactor::ConditionCheckReactor;
 pub(crate) use multi_stage_test_reactor::MultiStageTestReactor;
-pub(crate) use test_rng::TestRng;
+use schemars::schema::RootSchema;
 
 /// Time to wait (at most) for a `fatal` to resolve before considering the dropping of a responder a
 /// problem.
@@ -165,7 +177,7 @@ impl<REv: 'static> ComponentHarnessBuilder<REv> {
         let rng = self.rng.unwrap_or_else(TestRng::new);
 
         let scheduler = Box::leak(Box::new(Scheduler::new(QueueKind::weights())));
-        let event_queue_handle = EventQueueHandle::new(scheduler);
+        let event_queue_handle = EventQueueHandle::without_shutdown(scheduler);
         let effect_builder = EffectBuilder::new(event_queue_handle);
         let runtime = runtime::Builder::new_multi_thread()
             .enable_all()
@@ -218,7 +230,7 @@ impl<REv: 'static> ComponentHarness<REv> {
         let (sender, receiver) = oneshot::channel();
 
         // Create response function.
-        let responder = Responder::create(sender);
+        let responder = Responder::without_shutdown(sender);
 
         // Create the event for the component.
         let request_event = f(responder);
@@ -270,6 +282,9 @@ impl<REv: 'static> ComponentHarness<REv> {
                                 fatal
                             )
                         }
+                        ControlAnnouncement::QueueDumpRequest { .. } => {
+                            panic!("queue dumps are not supported in the test harness")
+                        }
                     }
                 } else {
                     debug!(?ev, "ignoring event while looking for a fatal")
@@ -303,19 +318,30 @@ impl<REv: 'static> Default for ComponentHarness<REv> {
 
 /// A special event for unit tests.
 ///
-/// Essentially discards all event (they are not even processed by the unit testing hardness),
+/// Essentially discards most events (they are not even processed by the unit testing harness),
 /// except for control announcements, which are preserved.
 #[derive(Debug, From)]
 pub(crate) enum UnitTestEvent {
     /// A preserved control announcement.
     #[from]
     ControlAnnouncement(ControlAnnouncement),
+    /// A network request made by the component under test.
+    #[from]
+    NetworkRequest(NetworkRequest<Message>),
 }
 
 impl ReactorEvent for UnitTestEvent {
     fn as_control(&self) -> Option<&ControlAnnouncement> {
         match self {
             UnitTestEvent::ControlAnnouncement(ctrl_ann) => Some(ctrl_ann),
+            _ => None,
+        }
+    }
+
+    fn try_into_control(self) -> Option<ControlAnnouncement> {
+        match self {
+            UnitTestEvent::ControlAnnouncement(ctrl_ann) => Some(ctrl_ann),
+            UnitTestEvent::NetworkRequest(_) => None,
         }
     }
 }
@@ -333,9 +359,9 @@ pub(crate) fn create_test_deploy(
     created_ago: TimeDiff,
     ttl: TimeDiff,
     now: Timestamp,
-    mut test_rng: &mut TestRng,
+    test_rng: &mut TestRng,
 ) -> Deploy {
-    Deploy::random_with_timestamp_and_ttl(&mut test_rng, now - created_ago, ttl)
+    Deploy::random_with_timestamp_and_ttl(test_rng, now - created_ago, ttl)
 }
 
 /// Creates a random deploy that is considered expired.
@@ -357,6 +383,37 @@ pub(crate) fn create_not_expired_deploy(now: Timestamp, test_rng: &mut TestRng) 
         test_rng,
     )
 }
+
+/// Assert that the file at `schema_path` matches the provided `RootSchema`, which can be derived
+/// from `schemars::schema_for!` or `schemars::schema_for_value!`, for example. This method will
+/// create a temporary file with the actual schema and print the location if it fails.
+pub fn assert_schema(schema_path: String, actual_schema: RootSchema) {
+    let expected_schema = fs::read_to_string(&schema_path).unwrap();
+    let expected_schema: Value = serde_json::from_str(&expected_schema).unwrap();
+    let actual_schema = serde_json::to_string_pretty(&actual_schema).unwrap();
+    let mut temp_file = tempfile::Builder::new()
+        .suffix(".json")
+        .tempfile_in(env!("OUT_DIR"))
+        .unwrap();
+    temp_file.write_all(actual_schema.as_bytes()).unwrap();
+    let actual_schema: Value = serde_json::from_str(&actual_schema).unwrap();
+    let (_file, temp_file_path) = temp_file.keep().unwrap();
+
+    let result = assert_json_matches_no_panic(
+        &actual_schema,
+        &expected_schema,
+        Config::new(CompareMode::Strict),
+    );
+    assert_eq!(
+        result,
+        Ok(()),
+        "schema does not match:\nexpected:\n{}\nactual:\n{}\n",
+        schema_path,
+        temp_file_path.display()
+    );
+    assert_json_eq!(actual_schema, expected_schema);
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;

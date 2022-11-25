@@ -13,13 +13,14 @@ use serde_json::Value;
 
 use crate::{
     bytesrepr::{self, Bytes, FromBytes, ToBytes, U32_SERIALIZED_LENGTH},
-    CLType, CLTyped,
+    checksummed_hex, CLType, CLTyped,
 };
 
 mod jsonrepr;
 
 /// Error while converting a [`CLValue`] into a given type.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct CLTypeMismatch {
     /// The [`CLType`] into which the `CLValue` was being converted.
     pub expected: CLType,
@@ -39,7 +40,8 @@ impl Display for CLTypeMismatch {
 }
 
 /// Error relating to [`CLValue`] operations.
-#[derive(PartialEq, Eq, Clone, Debug)]
+#[derive(PartialEq, Eq, Clone, Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "datasize", derive(DataSize))]
 pub enum CLValueError {
     /// An error while serializing or deserializing the underlying data.
     Serialization(bytesrepr::Error),
@@ -89,7 +91,7 @@ impl CLValue {
         let expected = T::cl_type();
 
         if self.cl_type == expected {
-            Ok(bytesrepr::deserialize(self.bytes.into())?)
+            Ok(bytesrepr::deserialize_from_slice(&self.bytes)?)
         } else {
             Err(CLValueError::Type(CLTypeMismatch {
                 expected,
@@ -152,6 +154,12 @@ impl ToBytes for CLValue {
     fn serialized_length(&self) -> usize {
         self.bytes.serialized_length() + self.cl_type.serialized_length()
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.bytes.write_bytes(writer)?;
+        self.cl_type.append_bytes(writer)?;
+        Ok(())
+    }
 }
 
 impl FromBytes for CLValue {
@@ -213,7 +221,7 @@ impl<'de> Deserialize<'de> for CLValue {
             let json = CLValueJson::deserialize(deserializer)?;
             (
                 json.cl_type.clone(),
-                base16::decode(&json.bytes).map_err(D::Error::custom)?,
+                checksummed_hex::decode(&json.bytes).map_err(D::Error::custom)?,
             )
         } else {
             <(CLType, Vec<u8>)>::deserialize(deserializer)?

@@ -3,6 +3,7 @@
 //! The block proposer stores deploy hashes in memory, tracking their suitability for inclusion into
 //! a new block. Upon request, it returns a list of candidates that can be included.
 
+mod cached_state;
 mod config;
 mod deploy_sets;
 mod event;
@@ -11,18 +12,18 @@ mod metrics;
 mod tests;
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     convert::Infallible,
     sync::Arc,
     time::Duration,
 };
 
-pub use config::Config;
 use datasize::DataSize;
+use futures::join;
 use prometheus::{self, Registry};
-use tracing::{debug, error, info, trace, warn};
+use tracing::{debug, error, info, warn};
 
-use casper_types::PublicKey;
+use casper_types::{PublicKey, Timestamp};
 
 use crate::{
     components::{
@@ -31,19 +32,22 @@ use crate::{
     },
     effect::{
         announcements::BlockProposerAnnouncement,
-        requests::{BlockPayloadRequest, BlockProposerRequest, StorageRequest},
+        requests::{BlockPayloadRequest, BlockProposerRequest, StateStoreRequest, StorageRequest},
         EffectBuilder, EffectExt, Effects,
     },
     types::{
         appendable_block::{AddError, AppendableBlock},
         chainspec::DeployConfig,
-        BlockPayload, Chainspec, DeployHash, DeployHeader, DeployOrTransferHash, Timestamp,
+        Approval, BlockPayload, Chainspec, DeployHash, DeployHeader, DeployOrTransferHash,
+        DeployWithApprovals, FinalizedBlock,
     },
     NodeRng,
 };
-use deploy_sets::{BlockProposerDeploySets, PruneResult};
+use cached_state::CachedState;
+pub use config::Config;
+use deploy_sets::{BlockProposerDeploySets, PendingDeployInfo, PruneResult};
 pub(crate) use event::{DeployInfo, Event};
-use metrics::BlockProposerMetrics;
+use metrics::Metrics;
 
 /// Block proposer component.
 #[derive(DataSize, Debug)]
@@ -52,8 +56,10 @@ pub(crate) struct BlockProposer {
     state: BlockProposerState,
 
     /// Metrics, present in all states.
-    metrics: BlockProposerMetrics,
+    metrics: Metrics,
 }
+
+const STATE_KEY: &[u8] = b"block proposer";
 
 /// Interval after which a pruning of the internal sets is triggered.
 // TODO: Make configurable.
@@ -66,10 +72,8 @@ const DEPLOY_APPROX_MIN_SIZE: usize = 300;
 /// The type of values expressing the block height in the chain.
 type BlockHeight = u64;
 
-/// A queue of contents of blocks that we know have been finalized, but we are still missing
-/// notifications about finalization of some of their ancestors. It maps block height to the
-/// deploys contained in the corresponding block.
-type FinalizationQueue = HashMap<BlockHeight, Vec<DeployOrTransferHash>>;
+/// A queue of blocks that we know have been finalized but are still missing some ancestors.
+type FinalizationQueue = HashMap<BlockHeight, FinalizedBlock>;
 
 /// A queue of requests we can't respond to yet, because we aren't up to date on finalized blocks.
 /// The key is the height of the next block we will expect to be finalized at the point when we can
@@ -103,15 +107,23 @@ impl BlockProposer {
         local_config: Config,
     ) -> Result<(Self, Effects<Event>), prometheus::Error>
     where
-        REv: From<Event> + From<StorageRequest> + Send + 'static,
+        REv: From<Event> + From<StorageRequest> + From<StateStoreRequest> + Send + 'static,
     {
         debug!(%next_finalized_block, "creating block proposer");
-        let effects = effect_builder
-            .get_finalized_deploys(chainspec.deploy_config.max_ttl)
-            .event(move |finalized_deploys| Event::Loaded {
-                finalized_deploys,
+        let max_ttl = chainspec.deploy_config.max_ttl;
+        let effects = async move {
+            join!(
+                effect_builder.get_finalized_blocks(max_ttl),
+                effect_builder.load_state::<CachedState>(STATE_KEY.into())
+            )
+        }
+        .event(
+            move |(finalized_blocks, maybe_cached_state)| Event::Loaded {
+                finalized_blocks,
                 next_finalized_block,
-            });
+                cached_state: maybe_cached_state.unwrap_or_default(),
+            },
+        );
 
         let block_proposer = BlockProposer {
             state: BlockProposerState::Initializing {
@@ -119,7 +131,7 @@ impl BlockProposer {
                 deploy_config: chainspec.deploy_config,
                 local_config,
             },
-            metrics: BlockProposerMetrics::new(registry)?,
+            metrics: Metrics::new(registry)?,
         };
 
         Ok((block_proposer, effects))
@@ -128,7 +140,12 @@ impl BlockProposer {
 
 impl<REv> Component<REv> for BlockProposer
 where
-    REv: From<Event> + From<StorageRequest> + From<BlockProposerAnnouncement> + Send + 'static,
+    REv: From<Event>
+        + From<StorageRequest>
+        + From<StateStoreRequest>
+        + From<BlockProposerAnnouncement>
+        + Send
+        + 'static,
 {
     type Event = Event;
     type ConstructionError = Infallible;
@@ -152,20 +169,40 @@ where
                     local_config,
                 },
                 Event::Loaded {
-                    finalized_deploys,
+                    finalized_blocks,
                     next_finalized_block,
+                    cached_state,
                 },
             ) => {
+                let (sets, pruned_hashes) = BlockProposerDeploySets::new(
+                    finalized_blocks,
+                    next_finalized_block,
+                    cached_state,
+                    deploy_config.max_ttl,
+                );
+
                 let mut new_ready_state = BlockProposerReady {
-                    sets: BlockProposerDeploySets::from_finalized(
-                        finalized_deploys,
-                        next_finalized_block,
-                    ),
-                    unhandled_finalized: Default::default(),
+                    sets,
                     deploy_config: *deploy_config,
                     request_queue: Default::default(),
                     local_config: local_config.clone(),
                 };
+
+                // Announce pruned hashes.
+                let pruned_count = pruned_hashes.total_pruned;
+                debug!(%pruned_count, "pruned deploys from buffer on loading");
+                effects.extend(
+                    effect_builder
+                        .announce_expired_deploys(pruned_hashes.expired_hashes_to_be_announced)
+                        .ignore(),
+                );
+
+                // After pruning, we store a state snapshot.
+                effects.extend(
+                    effect_builder
+                        .save_state(STATE_KEY.into(), CachedState::from(&new_ready_state.sets))
+                        .ignore(),
+                );
 
                 // Replay postponed events onto new state.
                 for ev in pending.drain(..) {
@@ -174,7 +211,7 @@ where
 
                 self.state = BlockProposerState::Ready(new_ready_state);
 
-                // Start pruning deploys after delay.
+                // Start pruning deploys after a delay.
                 effects.extend(
                     effect_builder
                         .set_timeout(PRUNE_INTERVAL)
@@ -212,10 +249,6 @@ where
 struct BlockProposerReady {
     /// Set of deploys currently stored in the block proposer.
     sets: BlockProposerDeploySets,
-    /// `unhandled_finalized` is a set of hashes for deploys that the `BlockProposer` has not yet
-    /// seen but were reported as reported to `finalized_deploys()`. They are used to
-    /// filter deploys for proposal, similar to `self.sets.finalized_deploys`.
-    unhandled_finalized: HashSet<DeployHash>,
     /// We don't need the whole Chainspec here, just the deploy config.
     deploy_config: DeployConfig,
     /// The queue of requests awaiting being handled.
@@ -231,7 +264,7 @@ impl BlockProposerReady {
         event: Event,
     ) -> Effects<Event>
     where
-        REv: Send + From<BlockProposerAnnouncement>,
+        REv: Send + From<StateStoreRequest> + From<BlockProposerAnnouncement>,
     {
         match event {
             Event::Request(BlockProposerRequest::RequestBlockPayload(request)) => {
@@ -258,8 +291,12 @@ impl BlockProposerReady {
                         .ignore()
                 }
             }
-            Event::BufferDeploy { hash, deploy_info } => {
-                self.add_deploy(Timestamp::now(), hash, *deploy_info);
+            Event::BufferDeploy {
+                hash,
+                approvals,
+                deploy_info,
+            } => {
+                self.add_deploy(Timestamp::now(), hash, approvals, *deploy_info);
                 Effects::new()
             }
             Event::Prune => {
@@ -268,7 +305,7 @@ impl BlockProposerReady {
                     .set_timeout(PRUNE_INTERVAL)
                     .event(|_| Event::Prune);
 
-                // Announce pruned hashes
+                // Announce pruned hashes.
                 let pruned_hashes = self.prune(Timestamp::now());
                 let pruned_count = pruned_hashes.total_pruned;
                 debug!(%pruned_count, "pruned deploys from buffer");
@@ -277,6 +314,14 @@ impl BlockProposerReady {
                         .announce_expired_deploys(pruned_hashes.expired_hashes_to_be_announced)
                         .ignore(),
                 );
+
+                // After pruning, we store a state snapshot.
+                effects.extend(
+                    effect_builder
+                        .save_state(STATE_KEY.into(), CachedState::from(&self.sets))
+                        .ignore(),
+                );
+
                 effects
             }
             Event::Loaded { .. } => {
@@ -285,21 +330,7 @@ impl BlockProposerReady {
                 Effects::new()
             }
             Event::FinalizedBlock(block) => {
-                let deploys = block
-                    .deploy_hashes()
-                    .iter()
-                    .copied()
-                    .map(DeployOrTransferHash::Deploy)
-                    .chain(
-                        block
-                            .transfer_hashes()
-                            .iter()
-                            .copied()
-                            .map(DeployOrTransferHash::Transfer),
-                    )
-                    .collect();
                 let mut height = block.height();
-
                 if height > self.sets.next_finalized {
                     warn!(
                         %height, next_finalized = %self.sets.next_finalized,
@@ -307,19 +338,15 @@ impl BlockProposerReady {
                     );
                     // safe to subtract 1 - height will never be 0 in this branch, because
                     // next_finalized is at least 0, and height has to be greater
-                    self.sets.finalization_queue.insert(height - 1, deploys);
+                    self.sets.finalization_queue.insert(height - 1, *block);
                     Effects::new()
                 } else {
                     debug!(%height, "handling finalized block");
-                    let mut effects = self.handle_finalized_block(effect_builder, height, deploys);
-                    while let Some(deploys) = self.sets.finalization_queue.remove(&height) {
+                    let mut effects = self.handle_finalized_block(&*block);
+                    while let Some(block) = self.sets.finalization_queue.remove(&height) {
                         info!(%height, "removed finalization queue entry");
                         height += 1;
-                        effects.extend(self.handle_finalized_block(
-                            effect_builder,
-                            height,
-                            deploys,
-                        ));
+                        effects.extend(self.handle_finalized_block(&block));
                     }
                     effects
                 }
@@ -332,79 +359,70 @@ impl BlockProposerReady {
         &mut self,
         current_instant: Timestamp,
         hash: DeployOrTransferHash,
+        approvals: BTreeSet<Approval>,
         deploy_info: DeployInfo,
     ) {
-        if deploy_info.header.expired(current_instant) {
-            trace!(%hash, "expired deploy rejected from the buffer");
-            return;
-        }
-        if self.unhandled_finalized.remove(hash.deploy_hash()) {
-            info!(%hash, "deploy was previously marked as finalized, storing header");
-            self.sets
-                .finalized_deploys
-                .insert(hash.into(), deploy_info.header);
-            return;
-        }
-        // only add the deploy if it isn't contained in a finalized block
-        if self.sets.finalized_deploys.contains_key(hash.deploy_hash()) {
-            info!(%hash, "deploy rejected from the buffer");
-            return;
-        }
-
         if hash.is_transfer() {
-            self.sets
-                .pending_transfers
-                .insert(*hash.deploy_hash(), (deploy_info, current_instant));
-        } else {
-            self.sets
-                .pending_deploys
-                .insert(*hash.deploy_hash(), (deploy_info, current_instant));
-        }
-
-        info!(%hash, "added deploy to the buffer");
-    }
-
-    /// Notifies the block proposer that a block has been finalized.
-    fn finalized_deploys<I>(&mut self, deploys: I)
-    where
-        I: IntoIterator<Item = DeployOrTransferHash>,
-    {
-        for deploy_hash in deploys.into_iter() {
-            let (hash, remove_result) = match deploy_hash {
-                DeployOrTransferHash::Deploy(hash) => {
-                    (hash, self.sets.pending_deploys.remove(&hash))
-                }
-                DeployOrTransferHash::Transfer(hash) => {
-                    (hash, self.sets.pending_transfers.remove(&hash))
-                }
-            };
-            match remove_result {
-                Some((deploy_info, _)) => {
-                    self.sets.finalized_deploys.insert(hash, deploy_info.header);
-                }
-                // If we haven't seen this deploy before, we still need to take note of it.
-                None => {
-                    self.unhandled_finalized.insert(hash);
-                }
+            // only add the transfer if it isn't contained in a finalized block
+            if self
+                .sets
+                .finalized_transfers
+                .contains_key(hash.deploy_hash())
+            {
+                info!(%hash, "finalized transfer rejected from the buffer");
+                self.sets
+                    .add_finalized_transfer(*hash.deploy_hash(), deploy_info.header.expires());
+                return;
             }
+            self.sets.pending_transfers.insert(
+                *hash.deploy_hash(),
+                PendingDeployInfo {
+                    approvals,
+                    info: deploy_info,
+                    timestamp: current_instant,
+                },
+            );
+            info!(%hash, "added transfer to the buffer");
+        } else {
+            // only add the deploy if it isn't contained in a finalized block
+            if self.sets.finalized_deploys.contains_key(hash.deploy_hash()) {
+                info!(%hash, "finalized deploy rejected from the buffer");
+                self.sets
+                    .add_finalized_deploy(*hash.deploy_hash(), deploy_info.header.expires());
+                return;
+            }
+            self.sets.pending_deploys.insert(
+                *hash.deploy_hash(),
+                PendingDeployInfo {
+                    approvals,
+                    info: deploy_info,
+                    timestamp: current_instant,
+                },
+            );
+            info!(%hash, "added deploy to the buffer");
         }
     }
 
     /// Handles finalization of a block.
-    fn handle_finalized_block<I, REv>(
-        &mut self,
-        _effect_builder: EffectBuilder<REv>,
-        height: BlockHeight,
-        deploys: I,
-    ) -> Effects<Event>
-    where
-        I: IntoIterator<Item = DeployOrTransferHash>,
-    {
-        self.finalized_deploys(deploys);
-        self.sets.next_finalized = self.sets.next_finalized.max(height + 1);
+    fn handle_finalized_block(&mut self, block: &FinalizedBlock) -> Effects<Event> {
+        for deploy_hash in block.deploy_hashes() {
+            let expiry = match self.sets.pending_deploys.remove(deploy_hash) {
+                Some(pending_deploy_info) => pending_deploy_info.info.header.expires(),
+                None => block.timestamp().saturating_add(self.deploy_config.max_ttl),
+            };
+            self.sets.add_finalized_deploy(*deploy_hash, expiry);
+        }
+        for transfer_hash in block.transfer_hashes() {
+            let expiry = match self.sets.pending_transfers.remove(transfer_hash) {
+                Some(pending_deploy_info) => pending_deploy_info.info.header.expires(),
+                None => block.timestamp().saturating_add(self.deploy_config.max_ttl),
+            };
+            self.sets.add_finalized_transfer(*transfer_hash, expiry);
+        }
 
+        self.sets.next_finalized = self.sets.next_finalized.max(block.height() + 1);
         if let Some(requests) = self.request_queue.remove(&self.sets.next_finalized) {
-            info!(height = %(height + 1), "handling queued requests");
+            info!(height = %self.sets.next_finalized, "handling queued requests");
             requests
                 .into_iter()
                 .flat_map(|request| {
@@ -451,19 +469,27 @@ impl BlockProposerReady {
         let mut appendable_block = AppendableBlock::new(deploy_config, block_timestamp);
 
         // We prioritize transfers over deploys, so we try to include them first.
-        for (hash, (deploy_info, received_time)) in &self.sets.pending_transfers {
-            if !self.deps_resolved(&deploy_info.header, &past_deploys)
+        for (hash, pending_deploy_info) in &self.sets.pending_transfers {
+            if !self.deps_resolved(&pending_deploy_info.info.header, &past_deploys)
                 || past_deploys.contains(hash)
                 || self.contains_finalized(hash)
-                || block_timestamp.saturating_diff(*received_time) < self.local_config.deploy_delay
+                || block_timestamp.saturating_diff(pending_deploy_info.timestamp)
+                    < self.local_config.deploy_delay
             {
                 continue;
             }
 
-            if let Err(err) = appendable_block.add_transfer(*hash, deploy_info) {
+            if let Err(err) = appendable_block.add_transfer(
+                DeployWithApprovals::new(*hash, pending_deploy_info.approvals.clone()),
+                &pending_deploy_info.info,
+            ) {
                 match err {
                     // We added the maximum number of transfers.
                     AddError::TransferCount | AddError::GasLimit | AddError::BlockSize => break,
+                    // This transfer would exceed the approval count, but another one with fewer
+                    // approvals might not.
+                    AddError::ApprovalCount if pending_deploy_info.approvals.len() > 1 => (),
+                    AddError::ApprovalCount => break,
                     // The deploy is not valid in this block, but might be valid in another.
                     AddError::InvalidDeploy => (),
                     // These errors should never happen when adding a transfer.
@@ -475,16 +501,20 @@ impl BlockProposerReady {
         }
 
         // Now we try to add other deploys to the block.
-        for (hash, (deploy_info, received_time)) in &self.sets.pending_deploys {
-            if !self.deps_resolved(&deploy_info.header, &past_deploys)
+        for (hash, pending_deploy_info) in &self.sets.pending_deploys {
+            if !self.deps_resolved(&pending_deploy_info.info.header, &past_deploys)
                 || past_deploys.contains(hash)
                 || self.contains_finalized(hash)
-                || block_timestamp.saturating_diff(*received_time) < self.local_config.deploy_delay
+                || block_timestamp.saturating_diff(pending_deploy_info.timestamp)
+                    < self.local_config.deploy_delay
             {
                 continue;
             }
 
-            if let Err(err) = appendable_block.add_deploy(*hash, deploy_info) {
+            if let Err(err) = appendable_block.add_deploy(
+                DeployWithApprovals::new(*hash, pending_deploy_info.approvals.clone()),
+                &pending_deploy_info.info,
+            ) {
                 match err {
                     // We added the maximum number of deploys.
                     AddError::DeployCount => break,
@@ -495,6 +525,10 @@ impl BlockProposerReady {
                             break; // Probably no deploy will fit in this block anymore.
                         }
                     }
+                    // This deploy would exceed the approval count, but another one with fewer
+                    // approvals might not.
+                    AddError::ApprovalCount if pending_deploy_info.approvals.len() > 1 => (),
+                    AddError::ApprovalCount => break,
                     // The deploy is not valid in this block, but might be valid in another.
                     // TODO: Do something similar to DEPLOY_APPROX_MIN_SIZE for gas.
                     AddError::InvalidDeploy | AddError::GasLimit => (),
@@ -518,7 +552,8 @@ impl BlockProposerReady {
         self.sets.prune(current_instant)
     }
 
-    fn contains_finalized(&self, dep: &DeployHash) -> bool {
-        self.sets.finalized_deploys.contains_key(dep) || self.unhandled_finalized.contains(dep)
+    fn contains_finalized(&self, hash: &DeployHash) -> bool {
+        self.sets.finalized_deploys.contains_key(hash)
+            || self.sets.finalized_transfers.contains_key(hash)
     }
 }

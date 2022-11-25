@@ -25,7 +25,7 @@ pub enum ValidatorChange {
 pub(super) struct ValidatorChanges(pub(super) Vec<(PublicKey, ValidatorChange)>);
 
 impl ValidatorChanges {
-    pub(super) fn new<I>(era0: &Era<I>, era1: &Era<I>) -> Self {
+    pub(super) fn new(era0: &Era, era1: &Era) -> Self {
         let era0_metadata = EraMetadata::from(era0);
         let era1_metadata = EraMetadata::from(era1);
         Self::new_from_metadata(era0_metadata, era1_metadata)
@@ -95,8 +95,8 @@ struct EraMetadata<'a> {
     cannot_propose: &'a HashSet<PublicKey>,
 }
 
-impl<'a, I> From<&'a Era<I>> for EraMetadata<'a> {
-    fn from(era: &'a Era<I>) -> Self {
+impl<'a> From<&'a Era> for EraMetadata<'a> {
+    fn from(era: &'a Era) -> Self {
         let seen_as_faulty = era
             .consensus
             .validators_with_evidence()
@@ -120,7 +120,8 @@ mod tests {
     use std::iter;
 
     use super::*;
-    use crate::{crypto::AsymmetricKeyExt, testing::TestRng};
+
+    use casper_types::testing::TestRng;
 
     fn preset_validators(rng: &mut TestRng) -> HashSet<PublicKey> {
         iter::repeat_with(|| PublicKey::random(rng))
@@ -189,11 +190,8 @@ mod tests {
             cannot_propose: &Default::default(),
         };
 
-        let expected_change = vec![(
-            seen_as_faulty_in_new_era.clone(),
-            ValidatorChange::SeenAsFaulty,
-        )];
         let actual_change = ValidatorChanges::new_from_metadata(era0_metadata, era1_metadata);
+        let expected_change = vec![(seen_as_faulty_in_new_era, ValidatorChange::SeenAsFaulty)];
         assert_eq!(expected_change, actual_change.0)
     }
 

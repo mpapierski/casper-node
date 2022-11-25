@@ -13,7 +13,7 @@ use tracing::{
 };
 use tracing_subscriber::{
     fmt::{
-        format,
+        format::{self, Writer},
         time::{FormatTime, SystemTime},
         FmtContext, FormatEvent, FormatFields, FormattedFields,
     },
@@ -148,13 +148,13 @@ where
     fn format_event(
         &self,
         ctx: &FmtContext<'_, S, N>,
-        writer: &mut dyn fmt::Write,
+        mut writer: Writer<'_>,
         event: &Event<'_>,
     ) -> fmt::Result {
         // print the date/time with dimmed style if `ansi_color` is true
-        self.enable_dimmed_if_ansi(writer)?;
-        SystemTime.format_time(writer)?;
-        self.disable_dimmed_if_ansi(writer)?;
+        self.enable_dimmed_if_ansi(&mut writer)?;
+        SystemTime.format_time(&mut writer)?;
+        self.disable_dimmed_if_ansi(&mut writer)?;
 
         // print the log level
         let meta = event.metadata();
@@ -171,7 +171,7 @@ where
                 writer,
                 " {}{:<6}{}",
                 color.prefix(),
-                meta.level().to_string(),
+                meta.level(),
                 color.suffix()
             )?;
         } else {
@@ -206,7 +206,7 @@ where
         let module = {
             let full_module_path = meta
                 .module_path()
-                .or_else(|| field_visitor.module.as_deref())
+                .or(field_visitor.module.as_deref())
                 .unwrap_or_default();
             if self.abbreviate_modules {
                 // Use a smallvec for going up to six levels deep.
@@ -229,10 +229,10 @@ where
 
         let file = if !self.abbreviate_modules {
             meta.file()
-                .or_else(|| field_visitor.file.as_deref())
+                .or(field_visitor.file.as_deref())
                 .unwrap_or_default()
-                .rsplitn(2, '/')
-                .next()
+                .rsplit_once('/')
+                .map(|parts| parts.1)
                 .unwrap_or_default()
         } else {
             ""
@@ -241,13 +241,13 @@ where
         let line = meta.line().or(field_visitor.line).unwrap_or_default();
 
         if !module.is_empty() && (!file.is_empty() || self.abbreviate_modules) {
-            self.enable_dimmed_if_ansi(writer)?;
+            self.enable_dimmed_if_ansi(&mut writer)?;
             write!(writer, "[{} {}:{}] ", module, file, line,)?;
-            self.disable_dimmed_if_ansi(writer)?;
+            self.disable_dimmed_if_ansi(&mut writer)?;
         }
 
         // print the log message and other fields
-        ctx.format_fields(writer, event)?;
+        ctx.format_fields(writer.by_ref(), event)?;
         writeln!(writer)
     }
 }

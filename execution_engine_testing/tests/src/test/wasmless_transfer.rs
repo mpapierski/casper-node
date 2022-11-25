@@ -1,18 +1,19 @@
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
-        DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    DEFAULT_ACCOUNT_ADDR,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
+    DEFAULT_ACCOUNT_ADDR, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROTOCOL_VERSION,
+    PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::{
         engine_state::{
+            engine_config::{
+                DEFAULT_MINIMUM_DELEGATION_AMOUNT, DEFAULT_STRICT_ARGUMENT_CHECKING,
+                DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
+            },
             EngineConfig, Error as CoreError, DEFAULT_MAX_QUERY_DEPTH,
-            WASMLESS_TRANSFER_FIXED_GAS_PRICE,
+            DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT, WASMLESS_TRANSFER_FIXED_GAS_PRICE,
         },
         execution::Error as ExecError,
     },
@@ -34,10 +35,12 @@ use casper_types::{
 };
 
 const CONTRACT_TRANSFER_PURSE_TO_ACCOUNT: &str = "transfer_purse_to_account.wasm";
+const CONTRACT_NEW_NAMED_UREF: &str = "new_named_uref.wasm";
 const CONTRACT_CREATE_PURSE_01: &str = "create_purse_01.wasm";
-const TRANSFER_RESULT_NAMED_KEY: &str = "transfer_result";
+const NON_UREF_NAMED_KEY: &str = "transfer_result";
 const TEST_PURSE_NAME: &str = "test_purse";
 const ARG_PURSE_NAME: &str = "purse_name";
+const ARG_UREF_NAME: &str = "uref_name";
 
 static ACCOUNT_1_SK: Lazy<SecretKey> =
     Lazy::new(|| SecretKey::secp256k1_from_bytes(&[234u8; 32]).unwrap());
@@ -181,6 +184,7 @@ fn transfer_wasmless(wasmless_transfer: WasmlessTransfer) {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_1_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -432,8 +436,7 @@ fn invalid_transfer_wasmless(invalid_wasmless_transfer: InvalidWasmlessTransfer)
             )
         }
         InvalidWasmlessTransfer::SourceURefNotPurse => {
-            let not_purse_uref =
-                get_default_account_named_uref(&mut builder, TRANSFER_RESULT_NAMED_KEY);
+            let not_purse_uref = get_default_account_named_uref(&mut builder, NON_UREF_NAMED_KEY);
             // passes an invalid uref as source (an existing uref that is not a purse uref)
             (
                 *DEFAULT_ACCOUNT_ADDR,
@@ -447,8 +450,7 @@ fn invalid_transfer_wasmless(invalid_wasmless_transfer: InvalidWasmlessTransfer)
             )
         }
         InvalidWasmlessTransfer::TargetURefNotPurse => {
-            let not_purse_uref =
-                get_default_account_named_uref(&mut builder, TRANSFER_RESULT_NAMED_KEY);
+            let not_purse_uref = get_default_account_named_uref(&mut builder, NON_UREF_NAMED_KEY);
             // passes an invalid uref as target (an existing uref that is not a purse uref)
             (
                 *DEFAULT_ACCOUNT_ADDR,
@@ -519,6 +521,7 @@ fn invalid_transfer_wasmless(invalid_wasmless_transfer: InvalidWasmlessTransfer)
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[addr])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -533,10 +536,10 @@ fn invalid_transfer_wasmless(invalid_wasmless_transfer: InvalidWasmlessTransfer)
     builder.exec(no_wasm_transfer_request);
 
     let result = builder
-        .get_exec_results()
-        .last()
+        .get_last_exec_results()
         .expect("Expected to be called after run()")
         .get(0)
+        .cloned()
         .expect("Unable to get first deploy result");
 
     assert!(result.is_failure(), "was expected to fail");
@@ -612,6 +615,7 @@ fn transfer_wasmless_should_create_target_if_it_doesnt_exist() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_1_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -668,7 +672,7 @@ fn init_wasmless_transform_builder(create_account_2: bool) -> InMemoryWasmTestBu
     .build();
 
     builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(create_account_1_request)
         .expect_success()
         .commit();
@@ -691,8 +695,23 @@ fn init_wasmless_transform_builder(create_account_2: bool) -> InMemoryWasmTestBu
     builder
         .exec(create_account_2_request)
         .commit()
-        .expect_success()
-        .to_owned()
+        .expect_success();
+
+    let new_named_uref_request = ExecuteRequestBuilder::standard(
+        *DEFAULT_ACCOUNT_ADDR,
+        CONTRACT_NEW_NAMED_UREF,
+        runtime_args! {
+            ARG_UREF_NAME => NON_UREF_NAMED_KEY,
+        },
+    )
+    .build();
+
+    builder
+        .exec(new_named_uref_request)
+        .commit()
+        .expect_success();
+
+    builder
 }
 
 #[ignore]
@@ -736,6 +755,7 @@ fn transfer_wasmless_should_fail_without_main_purse_minimum_balance() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_1_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -775,13 +795,14 @@ fn transfer_wasmless_should_fail_without_main_purse_minimum_balance() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_2_ADDR])
+            .with_deploy_hash([43; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
 
     builder.exec(no_wasm_transfer_request_2).commit();
 
-    let exec_result = &builder.get_exec_results().last().unwrap()[0];
+    let exec_result = &builder.get_last_exec_results().unwrap()[0];
     let error = exec_result
         .as_error()
         .unwrap_or_else(|| panic!("should have error {:?}", exec_result));
@@ -834,6 +855,7 @@ fn transfer_wasmless_should_transfer_funds_after_paying_for_transfer() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_1_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -873,6 +895,7 @@ fn transfer_wasmless_should_transfer_funds_after_paying_for_transfer() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_2_ADDR])
+            .with_deploy_hash([43; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -927,13 +950,14 @@ fn transfer_wasmless_should_fail_with_secondary_purse_insufficient_funds() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(runtime_args)
             .with_authorization_keys(&[*ACCOUNT_1_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
 
     builder.exec(no_wasm_transfer_request_1).commit();
 
-    let exec_result = &builder.get_exec_results().last().unwrap()[0];
+    let exec_result = &builder.get_last_exec_results().unwrap()[0];
     let error = exec_result.as_error().expect("should have error");
     assert!(
         matches!(error, CoreError::InsufficientPayment),
@@ -975,6 +999,10 @@ fn transfer_wasmless_should_observe_upgraded_cost() {
     let new_engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         new_max_associated_keys,
+        DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
+        DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+        DEFAULT_STRICT_ARGUMENT_CHECKING,
+        DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
         WasmConfig::default(),
         new_system_config,
     );
@@ -987,7 +1015,7 @@ fn transfer_wasmless_should_observe_upgraded_cost() {
     );
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -1017,6 +1045,7 @@ fn transfer_wasmless_should_observe_upgraded_cost() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(wasmless_transfer_args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item)
             .with_protocol_version(new_protocol_version)

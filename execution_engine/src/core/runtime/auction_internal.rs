@@ -1,14 +1,11 @@
 use std::collections::BTreeSet;
 
 use casper_types::{
-    account::{self, AccountHash},
+    account::AccountHash,
     bytesrepr::{FromBytes, ToBytes},
-    contracts::NamedKeys,
+    crypto,
     system::{
-        auction::{
-            AccountProvider, Auction, Bid, EraInfo, Error, MintProvider, RuntimeProvider,
-            StorageProvider, UnbondingPurse,
-        },
+        auction::{Bid, EraInfo, Error, UnbondingPurse},
         mint,
     },
     CLTyped, CLValue, EraId, Key, KeyTag, PublicKey, RuntimeArgs, StoredValue, URef,
@@ -16,7 +13,14 @@ use casper_types::{
 };
 
 use super::Runtime;
-use crate::{core::execution, storage::global_state::StateReader};
+use crate::{
+    core::execution,
+    storage::global_state::StateReader,
+    system::auction::{
+        providers::{AccountProvider, MintProvider, RuntimeProvider, StorageProvider},
+        Auction,
+    },
+};
 
 impl From<execution::Error> for Option<Error> {
     fn from(exec_error: execution::Error) -> Self {
@@ -76,9 +80,9 @@ where
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Storage))
     }
 
-    fn read_withdraw(&mut self, account_hash: &AccountHash) -> Result<Vec<UnbondingPurse>, Error> {
-        match self.context.read_gs(&Key::Withdraw(*account_hash)) {
-            Ok(Some(StoredValue::Withdraw(unbonding_purses))) => Ok(unbonding_purses),
+    fn read_unbond(&mut self, account_hash: &AccountHash) -> Result<Vec<UnbondingPurse>, Error> {
+        match self.context.read_gs(&Key::Unbond(*account_hash)) {
+            Ok(Some(StoredValue::Unbonding(unbonding_purses))) => Ok(unbonding_purses),
             Ok(Some(_)) => Err(Error::Storage),
             Ok(None) => Ok(Vec::new()),
             Err(execution::Error::BytesRepr(_)) => Err(Error::Serialization),
@@ -89,15 +93,15 @@ where
         }
     }
 
-    fn write_withdraw(
+    fn write_unbond(
         &mut self,
         account_hash: AccountHash,
         unbonding_purses: Vec<UnbondingPurse>,
     ) -> Result<(), Error> {
         self.context
             .metered_write_gs_unsafe(
-                Key::Withdraw(account_hash),
-                StoredValue::Withdraw(unbonding_purses),
+                Key::Unbond(account_hash),
+                StoredValue::Unbonding(unbonding_purses),
             )
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Storage))
     }
@@ -130,7 +134,11 @@ where
     }
 
     fn blake2b<T: AsRef<[u8]>>(&self, data: T) -> [u8; BLAKE2B_DIGEST_LENGTH] {
-        account::blake2b(data)
+        crypto::blake2b(data)
+    }
+
+    fn vesting_schedule_period_millis(&self) -> u64 {
+        self.config.vesting_schedule_period_millis()
     }
 }
 
@@ -141,7 +149,7 @@ where
 {
     fn unbond(&mut self, unbonding_purse: &UnbondingPurse) -> Result<(), Error> {
         let account_hash =
-            AccountHash::from_public_key(unbonding_purse.unbonder_public_key(), account::blake2b);
+            AccountHash::from_public_key(unbonding_purse.unbonder_public_key(), crypto::blake2b);
         let maybe_value = self
             .context
             .read_gs_direct(&Key::Account(account_hash))
@@ -176,10 +184,8 @@ where
         amount: U512,
         id: Option<u64>,
     ) -> Result<Result<(), mint::Error>, Error> {
-        // if caller is system proceed
-        // else if caller has access to uref proceed
-        if self.context.get_caller() != PublicKey::System.to_account_hash()
-            && self.context.validate_uref(&source).is_err()
+        if !(self.context.account().main_purse().addr() == source.addr()
+            || self.context.get_caller() == PublicKey::System.to_account_hash())
         {
             return Err(Error::InvalidCaller);
         }
@@ -195,19 +201,56 @@ where
         .map_err(|_| Error::CLValue)?;
 
         let gas_counter = self.gas_counter();
-        let call_stack = self.call_stack().clone();
+
+        self.context
+            .access_rights_extend(&[source, target.into_add()]);
+
+        let mint_contract_hash = self.get_mint_contract().map_err(|exec_error| {
+            <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
+        })?;
+
         let cl_value = self
-            .call_host_mint(
-                self.context.protocol_version(),
-                mint::METHOD_TRANSFER,
-                &mut NamedKeys::default(),
-                &args_values,
-                &[],
-                call_stack,
-            )
+            .call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Transfer))?;
+
         self.set_gas_counter(gas_counter);
         cl_value.into_t().map_err(|_| Error::CLValue)
+    }
+
+    fn mint_into_existing_purse(
+        &mut self,
+        amount: U512,
+        existing_purse: URef,
+    ) -> Result<(), Error> {
+        if self.context.get_caller() != PublicKey::System.to_account_hash() {
+            return Err(Error::InvalidCaller);
+        }
+
+        let args_values = RuntimeArgs::try_new(|args| {
+            args.insert(mint::ARG_AMOUNT, amount)?;
+            args.insert(mint::ARG_PURSE, existing_purse)?;
+            Ok(())
+        })
+        .map_err(|_| Error::CLValue)?;
+
+        let gas_counter = self.gas_counter();
+
+        let mint_contract_hash = self.get_mint_contract().map_err(|exec_error| {
+            <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
+        })?;
+
+        let cl_value = self
+            .call_contract(
+                mint_contract_hash,
+                mint::METHOD_MINT_INTO_EXISTING_PURSE,
+                args_values,
+            )
+            .map_err(|error| <Option<Error>>::from(error).unwrap_or(Error::MintError))?;
+        self.set_gas_counter(gas_counter);
+        cl_value
+            .into_t::<Result<(), mint::Error>>()
+            .map_err(|_| Error::CLValue)?
+            .map_err(|_| Error::MintError)
     }
 
     fn create_purse(&mut self) -> Result<URef, Error> {

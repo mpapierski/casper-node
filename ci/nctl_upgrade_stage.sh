@@ -11,7 +11,7 @@ function clean_up() {
 
     if [ "$EXIT_CODE" = '0' ] && [ ! -z ${DRONE} ]; then
         # Running in CI so don't cleanup stage dir
-        echo "Script completed succesfully!"
+        echo "Script completed successfully!"
         return
     fi
 
@@ -31,7 +31,7 @@ CONFIG_DIR="$ROOT_DIR/resources/local"
 TEMP_STAGE_DIR='/tmp/nctl_upgrade_stage'
 
 # FILES
-BIN_ARRAY=(casper-node casper-client)
+BIN_ARRAY=(casper-node)
 
 WASM_ARRAY=(add_bid.wasm \
             delegate.wasm \
@@ -39,7 +39,7 @@ WASM_ARRAY=(add_bid.wasm \
             undelegate.wasm \
             withdraw_bid.wasm)
 
-CONFIG_ARRAY=(chainspec.toml.in config.toml)
+CONFIG_ARRAY=(chainspec.toml.in config.toml accounts.toml)
 
 # Create temporary staging directory
 if [ ! -d "$TEMP_STAGE_DIR" ]; then
@@ -48,7 +48,6 @@ fi
 
 # Ensure files are built
 cd "$ROOT_DIR"
-cargo build --release --package casper-client
 cargo build --release --package casper-node
 make build-contract-rs/activate-bid
 make build-contract-rs/add-bid

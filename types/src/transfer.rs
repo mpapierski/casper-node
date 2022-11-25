@@ -21,7 +21,7 @@ use serde::{de::Error as SerdeError, Deserialize, Deserializer, Serialize, Seria
 use crate::{
     account::AccountHash,
     bytesrepr::{self, FromBytes, ToBytes},
-    CLType, CLTyped, URef, U512,
+    checksummed_hex, CLType, CLTyped, URef, U512,
 };
 
 /// The length of a deploy hash.
@@ -32,7 +32,7 @@ pub(super) const TRANSFER_ADDR_FORMATTED_STRING_PREFIX: &str = "transfer-";
 
 /// A newtype wrapping a <code>[u8; [DEPLOY_HASH_LENGTH]]</code> which is the raw bytes of the
 /// deploy hash.
-#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy, Debug)]
+#[derive(Default, PartialOrd, Ord, PartialEq, Eq, Hash, Clone, Copy)]
 #[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct DeployHash([u8; DEPLOY_HASH_LENGTH]);
 
@@ -75,6 +75,11 @@ impl ToBytes for DeployHash {
     fn serialized_length(&self) -> usize {
         self.0.serialized_length()
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.0.write_bytes(writer)?;
+        Ok(())
+    }
 }
 
 impl FromBytes for DeployHash {
@@ -98,12 +103,19 @@ impl<'de> Deserialize<'de> for DeployHash {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let bytes = if deserializer.is_human_readable() {
             let hex_string = String::deserialize(deserializer)?;
-            let vec_bytes = base16::decode(hex_string.as_bytes()).map_err(SerdeError::custom)?;
+            let vec_bytes =
+                checksummed_hex::decode(hex_string.as_bytes()).map_err(SerdeError::custom)?;
             <[u8; DEPLOY_HASH_LENGTH]>::try_from(vec_bytes.as_ref()).map_err(SerdeError::custom)?
         } else {
             <[u8; DEPLOY_HASH_LENGTH]>::deserialize(deserializer)?
         };
         Ok(DeployHash(bytes))
+    }
+}
+
+impl Debug for DeployHash {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        write!(formatter, "DeployHash({})", base16::encode_lower(&self.0))
     }
 }
 
@@ -115,6 +127,7 @@ impl Distribution<DeployHash> for Standard {
 
 /// Represents a transfer from one purse to another
 #[derive(Debug, Copy, Clone, Ord, PartialOrd, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "datasize", derive(DataSize))]
 #[cfg_attr(feature = "json-schema", derive(JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct Transfer {
@@ -191,14 +204,14 @@ impl FromBytes for Transfer {
 impl ToBytes for Transfer {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut result = bytesrepr::allocate_buffer(self)?;
-        result.append(&mut self.deploy_hash.to_bytes()?);
-        result.append(&mut self.from.to_bytes()?);
-        result.append(&mut self.to.to_bytes()?);
-        result.append(&mut self.source.to_bytes()?);
-        result.append(&mut self.target.to_bytes()?);
-        result.append(&mut self.amount.to_bytes()?);
-        result.append(&mut self.gas.to_bytes()?);
-        result.append(&mut self.id.to_bytes()?);
+        self.deploy_hash.write_bytes(&mut result)?;
+        self.from.write_bytes(&mut result)?;
+        self.to.write_bytes(&mut result)?;
+        self.source.write_bytes(&mut result)?;
+        self.target.write_bytes(&mut result)?;
+        self.amount.write_bytes(&mut result)?;
+        self.gas.write_bytes(&mut result)?;
+        self.id.write_bytes(&mut result)?;
         Ok(result)
     }
 
@@ -212,10 +225,23 @@ impl ToBytes for Transfer {
             + self.gas.serialized_length()
             + self.id.serialized_length()
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.deploy_hash.write_bytes(writer)?;
+        self.from.write_bytes(writer)?;
+        self.to.write_bytes(writer)?;
+        self.source.write_bytes(writer)?;
+        self.target.write_bytes(writer)?;
+        self.amount.write_bytes(writer)?;
+        self.gas.write_bytes(writer)?;
+        self.id.write_bytes(writer)?;
+        Ok(())
+    }
 }
 
 /// Error returned when decoding a `TransferAddr` from a formatted string.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FromStrError {
     /// The prefix is invalid.
     InvalidPrefix,
@@ -285,7 +311,8 @@ impl TransferAddr {
         let remainder = input
             .strip_prefix(TRANSFER_ADDR_FORMATTED_STRING_PREFIX)
             .ok_or(FromStrError::InvalidPrefix)?;
-        let bytes = <[u8; TRANSFER_ADDR_LENGTH]>::try_from(base16::decode(remainder)?.as_ref())?;
+        let bytes =
+            <[u8; TRANSFER_ADDR_LENGTH]>::try_from(checksummed_hex::decode(remainder)?.as_ref())?;
         Ok(TransferAddr(bytes))
     }
 }
@@ -326,26 +353,6 @@ impl<'de> Deserialize<'de> for TransferAddr {
     }
 }
 
-// impl TryFrom<&[u8]> for AccountHash {
-//     type Error = TryFromSliceForAccountHashError;
-//
-//     fn try_from(bytes: &[u8]) -> Result<Self, TryFromSliceForAccountHashError> {
-//         [u8; TRANSFER_ADDR_LENGTH]::try_from(bytes)
-//             .map(AccountHash::new)
-//             .map_err(|_| TryFromSliceForAccountHashError(()))
-//     }
-// }
-//
-// impl TryFrom<&alloc::vec::Vec<u8>> for AccountHash {
-//     type Error = TryFromSliceForAccountHashError;
-//
-//     fn try_from(bytes: &Vec<u8>) -> Result<Self, Self::Error> {
-//         [u8; TRANSFER_ADDR_LENGTH]::try_from(bytes as &[u8])
-//             .map(AccountHash::new)
-//             .map_err(|_| TryFromSliceForAccountHashError(()))
-//     }
-// }
-
 impl Display for TransferAddr {
     fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}", base16::encode_lower(&self.0))
@@ -374,6 +381,12 @@ impl ToBytes for TransferAddr {
     fn serialized_length(&self) -> usize {
         self.0.serialized_length()
     }
+
+    #[inline(always)]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        self.0.write_bytes(writer)?;
+        Ok(())
+    }
 }
 
 impl FromBytes for TransferAddr {
@@ -396,7 +409,7 @@ impl Distribution<TransferAddr> for Standard {
 }
 
 /// Generators for [`Transfer`]
-#[cfg(any(feature = "gens", test))]
+#[cfg(any(feature = "testing", test))]
 pub mod gens {
     use proptest::prelude::{prop::option, Arbitrary, Strategy};
 

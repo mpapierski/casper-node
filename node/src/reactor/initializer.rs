@@ -8,30 +8,31 @@ use prometheus::Registry;
 use reactor::ReactorEvent;
 use serde::Serialize;
 use thiserror::Error;
-use tracing::info;
+use tracing::{error, warn};
 
 use casper_execution_engine::core::engine_state;
 
 use crate::{
     components::{
         chainspec_loader::{self, ChainspecLoader},
-        contract_runtime::{self, ContractRuntime, ContractRuntimeAnnouncement},
-        gossiper,
-        small_network::{GossipedAddress, SmallNetworkIdentity, SmallNetworkIdentityError},
+        contract_runtime::{self, ContractRuntime},
+        small_network::{SmallNetworkIdentity, SmallNetworkIdentityError},
         storage::{self, Storage},
         Component,
     },
     effect::{
-        announcements::{ChainspecLoaderAnnouncement, ControlAnnouncement},
+        announcements::{
+            ChainspecLoaderAnnouncement, ContractRuntimeAnnouncement, ControlAnnouncement,
+        },
         requests::{
-            ConsensusRequest, ContractRuntimeRequest, LinearChainRequest, NetworkRequest,
-            RestRequest, StateStoreRequest, StorageRequest,
+            ChainspecLoaderRequest, ContractRuntimeRequest, MarkBlockCompletedRequest,
+            NetworkRequest, StorageRequest,
         },
         EffectBuilder, Effects,
     },
     protocol::Message,
     reactor::{self, participating, EventQueueHandle, ReactorExit},
-    types::{chainspec, NodeId},
+    types::chainspec,
     utils::WithDir,
     NodeRng,
 };
@@ -45,26 +46,44 @@ pub(crate) enum Event {
     Chainspec(chainspec_loader::Event),
 
     /// Storage event.
-
     #[from]
-    Storage(#[serde(skip_serializing)] storage::Event),
+    Storage(storage::Event),
 
     /// Contract runtime event.
-    ContractRuntime(#[serde(skip_serializing)] Box<ContractRuntimeRequest>),
-
-    /// Request for state storage.
     #[from]
-    StateStoreRequest(StateStoreRequest),
+    ContractRuntime(contract_runtime::Event),
 
-    /// Control announcement
+    /// Control announcement.
     #[from]
     ControlAnnouncement(ControlAnnouncement),
-}
 
-impl From<ContractRuntimeRequest> for Event {
-    fn from(contract_runtime_request: ContractRuntimeRequest) -> Self {
-        Event::ContractRuntime(Box::new(contract_runtime_request))
-    }
+    /// Chainspec loader announcement.
+    #[from]
+    ChainspecLoaderAnnouncement(#[serde(skip_serializing)] ChainspecLoaderAnnouncement),
+
+    /// Contract runtime announcement.
+    #[from]
+    ContractRuntimeAnnouncement(#[serde(skip_serializing)] ContractRuntimeAnnouncement),
+
+    /// ChainspecLoader request.
+    #[from]
+    ChainspecLoaderRequest(ChainspecLoaderRequest),
+
+    /// Storage request.
+    #[from]
+    StorageRequest(StorageRequest),
+
+    /// Mark block as complete request.
+    #[from]
+    MarkBlockCompletedRequest(MarkBlockCompletedRequest),
+
+    /// Contract runtime request.
+    #[from]
+    ContractRuntimeRequest(ContractRuntimeRequest),
+
+    // Network request.
+    #[from]
+    NetworkRequest(NetworkRequest<Message>),
 }
 
 impl ReactorEvent for Event {
@@ -76,62 +95,28 @@ impl ReactorEvent for Event {
         }
     }
 
+    fn try_into_control(self) -> Option<ControlAnnouncement> {
+        if let Self::ControlAnnouncement(ctrl_ann) = self {
+            Some(ctrl_ann)
+        } else {
+            None
+        }
+    }
+
     fn description(&self) -> &'static str {
         match self {
             Event::Chainspec(_) => "Chainspec",
             Event::Storage(_) => "Storage",
-            Event::ContractRuntime(_) => "ContractRuntime",
-            Event::StateStoreRequest(_) => "StateStoreRequest",
+            Event::ContractRuntimeRequest(_) => "ContractRuntimeRequest",
             Event::ControlAnnouncement(_) => "ControlAnnouncement",
+            Event::StorageRequest(_) => "StorageRequest",
+            Event::MarkBlockCompletedRequest(_) => "MarkBlockCompletedRequest",
+            Event::ContractRuntime(_) => "ContractRuntime",
+            Event::ChainspecLoaderAnnouncement(_) => "ChainspecLoaderAnnouncement",
+            Event::ContractRuntimeAnnouncement(_) => "ContractRuntimeAnnouncement",
+            Event::NetworkRequest(_) => "NetworkRequest",
+            Event::ChainspecLoaderRequest(_) => "ChainspecLoaderRequest",
         }
-    }
-}
-
-impl From<StorageRequest> for Event {
-    fn from(request: StorageRequest) -> Self {
-        Event::Storage(storage::Event::StorageRequest(request))
-    }
-}
-
-impl From<NetworkRequest<NodeId, Message>> for Event {
-    fn from(_request: NetworkRequest<NodeId, Message>) -> Self {
-        unreachable!("no network traffic happens during initialization")
-    }
-}
-
-impl From<ChainspecLoaderAnnouncement> for Event {
-    fn from(_announcement: ChainspecLoaderAnnouncement) -> Self {
-        unreachable!("no chainspec announcements happen during initialization")
-    }
-}
-
-impl From<LinearChainRequest<NodeId>> for Event {
-    fn from(_req: LinearChainRequest<NodeId>) -> Self {
-        unreachable!("no linear chain events happen during initialization")
-    }
-}
-
-impl From<NetworkRequest<NodeId, gossiper::Message<GossipedAddress>>> for Event {
-    fn from(_request: NetworkRequest<NodeId, gossiper::Message<GossipedAddress>>) -> Self {
-        unreachable!("no gossiper events happen during initialization")
-    }
-}
-
-impl From<ConsensusRequest> for Event {
-    fn from(_request: ConsensusRequest) -> Self {
-        unreachable!("no chainspec announcements happen during initialization")
-    }
-}
-
-impl From<RestRequest<NodeId>> for Event {
-    fn from(_request: RestRequest<NodeId>) -> Self {
-        unreachable!("no rest requests happen during initialization")
-    }
-}
-
-impl From<ContractRuntimeAnnouncement> for Event {
-    fn from(_request: ContractRuntimeAnnouncement) -> Self {
-        unreachable!("no block executor requests happen during initialization")
     }
 }
 
@@ -140,11 +125,25 @@ impl Display for Event {
         match self {
             Event::Chainspec(event) => write!(formatter, "chainspec: {}", event),
             Event::Storage(event) => write!(formatter, "storage: {}", event),
-            Event::ContractRuntime(event) => write!(formatter, "contract runtime: {:?}", event),
-            Event::StateStoreRequest(request) => {
-                write!(formatter, "state store request: {}", request)
+            Event::ContractRuntimeRequest(event) => {
+                write!(formatter, "contract runtime request: {:?}", event)
             }
             Event::ControlAnnouncement(ctrl_ann) => write!(formatter, "control: {}", ctrl_ann),
+            Event::StorageRequest(req) => write!(formatter, "storage request: {}", req),
+            Event::MarkBlockCompletedRequest(req) => {
+                write!(formatter, "mark block completed request: {}", req)
+            }
+            Event::ContractRuntime(event) => write!(formatter, "contract runtime event: {}", event),
+            Event::ChainspecLoaderAnnouncement(ann) => {
+                write!(formatter, "chainspec loader announcement: {}", ann)
+            }
+            Event::ContractRuntimeAnnouncement(ann) => {
+                write!(formatter, "contract runtime announcement: {}", ann)
+            }
+            Event::NetworkRequest(request) => write!(formatter, "network request: {:?}", request),
+            Event::ChainspecLoaderRequest(req) => {
+                write!(formatter, "chainspec_loader request: {}", req)
+            }
         }
     }
 }
@@ -162,7 +161,7 @@ pub(crate) enum Error {
 
     /// `Storage` component error.
     #[error("storage error: {0}")]
-    Storage(#[from] storage::Error),
+    Storage(#[from] storage::FatalStorageError),
 
     /// `ContractRuntime` component error.
     #[error("contract runtime config error: {0}")]
@@ -175,18 +174,6 @@ pub(crate) enum Error {
     /// An execution engine state error.
     #[error(transparent)]
     EngineState(#[from] engine_state::Error),
-
-    /// Trie key store is corrupted (missing trie keys).
-    #[error(
-        "Missing trie keys. Number of state roots: {state_root_count}, \
-         Number of missing trie keys: {missing_trie_key_count}"
-    )]
-    MissingTrieKeys {
-        /// The number of state roots in all of the block headers.
-        state_root_count: usize,
-        /// The number of trie keys we could not find.
-        missing_trie_key_count: usize,
-    },
 }
 
 /// Initializer node reactor.
@@ -201,7 +188,7 @@ pub(crate) struct Reactor {
 
 impl Reactor {
     fn new_with_chainspec_loader(
-        (crashed, config): <Self as reactor::Reactor>::Config,
+        config: <Self as reactor::Reactor>::Config,
         registry: &Registry,
         chainspec_loader: ChainspecLoader,
         chainspec_effects: Effects<chainspec_loader::Event>,
@@ -213,7 +200,6 @@ impl Reactor {
             &storage_config,
             hard_reset_to_start_of_era,
             chainspec_loader.chainspec().protocol_config.version,
-            crashed,
             &chainspec_loader.chainspec().network_config.name,
         )?;
 
@@ -224,31 +210,30 @@ impl Reactor {
             chainspec_loader.chainspec().wasm_config,
             chainspec_loader.chainspec().system_costs_config,
             chainspec_loader.chainspec().core_config.max_associated_keys,
+            chainspec_loader
+                .chainspec()
+                .core_config
+                .max_runtime_call_stack_height,
+            chainspec_loader
+                .chainspec()
+                .core_config
+                .minimum_delegation_amount,
+            chainspec_loader
+                .chainspec()
+                .core_config
+                .strict_argument_checking,
+            chainspec_loader
+                .chainspec()
+                .core_config
+                .vesting_schedule_period
+                .millis(),
             registry,
         )?;
 
-        // TODO: This integrity check is misplaced, it should be part of the components
-        // `handle_event` function. Ideally it would be in the constructor, but since a query to
-        // storage needs to be made, this is not possible.
-        //
-        // Refactoring this has been postponed for now, since it is unclear whether time-consuming
-        // integrity checks are even a good idea, as they can block the node for one or more hours
-        // on restarts (online checks are an alternative).
-        if crashed {
-            info!("running trie-store integrity check, this may take a while");
-            let state_roots = storage.read_state_root_hashes_for_trie_check()?;
-            let missing_trie_keys = contract_runtime.trie_store_check(state_roots.clone())?;
-            if !missing_trie_keys.is_empty() {
-                return Err(Error::MissingTrieKeys {
-                    state_root_count: state_roots.len(),
-                    missing_trie_key_count: missing_trie_keys.len(),
-                });
-            }
-        }
-
         let effects = reactor::wrap_effects(Event::Chainspec, chainspec_effects);
 
-        let small_network_identity = SmallNetworkIdentity::new()?;
+        let network_config = config.map_ref(|config| config.network.clone());
+        let small_network_identity = SmallNetworkIdentity::from_config(network_config)?;
 
         let reactor = Reactor {
             config,
@@ -267,11 +252,16 @@ impl Reactor {
     pub(crate) fn storage(&self) -> &Storage {
         &self.storage
     }
+
+    /// Inspect the contract runtime.
+    pub(crate) fn contract_runtime(&self) -> &ContractRuntime {
+        &self.contract_runtime
+    }
 }
 
 impl reactor::Reactor for Reactor {
     type Event = Event;
-    type Config = (bool, WithDir<participating::Config>);
+    type Config = WithDir<participating::Config>;
     type Error = Error;
 
     fn new(
@@ -284,7 +274,7 @@ impl reactor::Reactor for Reactor {
 
         // Construct the `ChainspecLoader` first so we fail fast if the chainspec is invalid.
         let (chainspec_loader, chainspec_effects) =
-            ChainspecLoader::new(config.1.dir(), effect_builder)?;
+            ChainspecLoader::new(config.dir(), effect_builder)?;
         Self::new_with_chainspec_loader(config, registry, chainspec_loader, chainspec_effects)
     }
 
@@ -300,19 +290,59 @@ impl reactor::Reactor for Reactor {
                 self.chainspec_loader
                     .handle_event(effect_builder, rng, event),
             ),
+            Event::ChainspecLoaderRequest(event) => reactor::wrap_effects(
+                Event::Chainspec,
+                self.chainspec_loader.handle_event(
+                    effect_builder,
+                    rng,
+                    chainspec_loader::Event::Request(event),
+                ),
+            ),
             Event::Storage(event) => reactor::wrap_effects(
                 Event::Storage,
                 self.storage.handle_event(effect_builder, rng, event),
             ),
             Event::ContractRuntime(event) => reactor::wrap_effects(
-                Event::from,
+                Event::ContractRuntime,
                 self.contract_runtime
-                    .handle_event(effect_builder, rng, *event),
+                    .handle_event(effect_builder, rng, event),
             ),
-            Event::StateStoreRequest(request) => {
-                self.dispatch_event(effect_builder, rng, Event::Storage(request.into()))
+            Event::ContractRuntimeRequest(event) => reactor::wrap_effects(
+                Event::ContractRuntime,
+                self.contract_runtime
+                    .handle_event(effect_builder, rng, event.into()),
+            ),
+            Event::StorageRequest(req) => reactor::wrap_effects(
+                Event::Storage,
+                self.storage.handle_event(effect_builder, rng, req.into()),
+            ),
+            Event::MarkBlockCompletedRequest(req) => reactor::wrap_effects(
+                Event::Storage,
+                self.storage.handle_event(effect_builder, rng, req.into()),
+            ),
+            Event::ControlAnnouncement(ann) => {
+                error!(%ann, "control announcement dispatched in initializer");
+                Effects::new()
             }
-            Event::ControlAnnouncement(_) => unreachable!("unhandled control announcement"),
+            Event::ChainspecLoaderAnnouncement(ann) => {
+                // We don't dispatch ChainspecLoaderAnnouncement as it is ignored in the
+                // initializer. This indicates a situation that is not harmful but
+                // theoretically shouldn't happen, hence the warning.
+                warn!(%ann, "chainspec loader announcement received by initializer, ignoring");
+                Effects::new()
+            }
+            Event::ContractRuntimeAnnouncement(ann) => {
+                // We don't dispatch ContractRuntimeAnnouncement as it shouldn't actually arrive at
+                // the initializer. This indicates a possible bug.
+                error!(%ann, "contract runtime announcement received by initializer, possibly a bug");
+                Effects::new()
+            }
+            Event::NetworkRequest(ann) => {
+                // No network traffic is expected during initialization. This indicates a possible
+                // bug.
+                error!(%ann, "network request received by initializer, possibly a bug");
+                Effects::new()
+            }
         }
     }
 
@@ -322,10 +352,15 @@ impl reactor::Reactor for Reactor {
 }
 
 #[cfg(test)]
-pub(crate) mod test {
-    use super::*;
-    use crate::{testing::network::NetworkedReactor, types::Chainspec};
+pub(crate) mod tests {
     use std::sync::Arc;
+
+    use super::*;
+
+    use crate::{
+        testing::network::NetworkedReactor,
+        types::{Chainspec, ChainspecRawBytes, NodeId},
+    };
 
     impl Reactor {
         pub(crate) fn new_with_chainspec(
@@ -333,17 +368,17 @@ pub(crate) mod test {
             registry: &Registry,
             event_queue: EventQueueHandle<Event>,
             chainspec: Arc<Chainspec>,
+            chainspec_raw_bytes: Arc<ChainspecRawBytes>,
         ) -> Result<(Self, Effects<Event>), Error> {
             let effect_builder = EffectBuilder::new(event_queue);
             let (chainspec_loader, chainspec_effects) =
-                ChainspecLoader::new_with_chainspec(chainspec, effect_builder);
+                ChainspecLoader::new_with_chainspec(chainspec, chainspec_raw_bytes, effect_builder);
             Self::new_with_chainspec_loader(config, registry, chainspec_loader, chainspec_effects)
         }
     }
 
     impl NetworkedReactor for Reactor {
-        type NodeId = NodeId;
-        fn node_id(&self) -> Self::NodeId {
+        fn node_id(&self) -> NodeId {
             NodeId::from(&self.small_network_identity)
         }
     }

@@ -3,9 +3,7 @@
 // TODO - remove once schemars stops causing warning.
 #![allow(clippy::field_reassign_with_default)]
 
-use futures::{future::BoxFuture, FutureExt};
-use http::Response;
-use hyper::Body;
+use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use schemars::{
     gen::{SchemaGenerator, SchemaSettings},
@@ -14,29 +12,23 @@ use schemars::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use warp_json_rpc::Builder;
 
 use casper_types::ProtocolVersion;
 
 use super::{
     account::PutDeploy,
-    chain::{GetBlock, GetBlockTransfers, GetStateRootHash},
-    info::{GetDeploy, GetPeers, GetStatus},
-    state::{GetAuctionInfo, GetBalance, GetItem},
-    Error, ReactorEventT, RpcWithOptionalParams, RpcWithParams, RpcWithoutParams,
-    RpcWithoutParamsExt,
-};
-use crate::{
-    effect::EffectBuilder,
-    rpcs::{
-        chain::GetEraInfoBySwitchBlock,
-        info::GetValidatorChanges,
-        state::{GetAccountInfo, GetDictionaryItem, QueryGlobalState},
+    chain::{GetBlock, GetBlockTransfers, GetEraInfoBySwitchBlock, GetStateRootHash},
+    info::{GetChainspec, GetDeploy, GetPeers, GetStatus, GetValidatorChanges},
+    state::{
+        GetAccountInfo, GetAuctionInfo, GetBalance, GetDictionaryItem, GetItem, QueryBalance,
+        QueryGlobalState,
     },
+    Error, ReactorEventT, RpcWithOptionalParams, RpcWithParams, RpcWithoutParams,
 };
+use crate::effect::EffectBuilder;
 
 pub(crate) const DOCS_EXAMPLE_PROTOCOL_VERSION: ProtocolVersion =
-    ProtocolVersion::from_parts(1, 3, 2);
+    ProtocolVersion::from_parts(1, 4, 8);
 
 const DEFINITIONS_PATH: &str = "#/components/schemas/";
 
@@ -81,10 +73,17 @@ pub(crate) static OPEN_RPC_SCHEMA: Lazy<OpenRpcSchema> = Lazy::new(|| {
     schema.push_with_params::<QueryGlobalState>(
         "a query to global state using either a Block hash or state root hash",
     );
+    schema.push_with_params::<QueryBalance>(
+        "query for a balance using a purse identifier and a state identifier",
+    );
     schema.push_without_params::<GetPeers>("returns a list of peers connected to the node");
     schema.push_without_params::<GetStatus>("returns the current status of the node");
     schema
         .push_without_params::<GetValidatorChanges>("returns status changes of active validators");
+    schema.push_without_params::<GetChainspec>(
+        "returns the raw bytes of the chainspec.toml, genesis accounts.toml, and \
+        global_state.toml files",
+    );
     schema.push_with_optional_params::<GetBlock>("returns a Block from the network");
     schema.push_with_optional_params::<GetBlockTransfers>(
         "returns all transfers for a Block from the network",
@@ -92,13 +91,17 @@ pub(crate) static OPEN_RPC_SCHEMA: Lazy<OpenRpcSchema> = Lazy::new(|| {
     schema.push_with_optional_params::<GetStateRootHash>(
         "returns a state root hash at a given Block",
     );
-    schema.push_with_params::<GetItem>("returns a stored value from the network. This RPC is deprecated, use `query_global_state` instead.");
+    schema.push_with_params::<GetItem>(
+        "returns a stored value from the network. This RPC is deprecated, use \
+        `query_global_state` instead.",
+    );
     schema.push_with_params::<GetBalance>("returns a purse's balance from the network");
     schema.push_with_optional_params::<GetEraInfoBySwitchBlock>(
         "returns an EraInfo from the network",
     );
     schema.push_with_optional_params::<GetAuctionInfo>(
-        "returns the bids and validators as of either a specific block (by height or hash), or the most recently added block",
+        "returns the bids and validators as of either a specific block (by height or hash), or \
+        the most recently added block",
     );
 
     schema
@@ -117,7 +120,7 @@ pub trait DocExample {
 
 /// The main schema for the casper node's RPC server, compliant with
 /// [the OpenRPC Specification](https://spec.open-rpc.org).
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 pub struct OpenRpcSchema {
     openrpc: String,
     info: OpenRpcInfoField,
@@ -288,7 +291,7 @@ impl OpenRpcSchema {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct OpenRpcInfoField {
     version: String,
     title: String,
@@ -297,26 +300,26 @@ struct OpenRpcInfoField {
     license: OpenRpcLicenseField,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct OpenRpcContactField {
     name: String,
     url: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct OpenRpcLicenseField {
     name: String,
     url: String,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct OpenRpcServerEntry {
     name: String,
     url: String,
 }
 
 /// The struct containing the documentation for the RPCs.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 pub struct Method {
     name: String,
     summary: String,
@@ -325,21 +328,21 @@ pub struct Method {
     examples: Vec<Example>,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct SchemaParam {
     name: String,
     schema: Schema,
     required: bool,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct ResponseResult {
     name: String,
     schema: Schema,
 }
 
 /// An example pair of request params and response result.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 pub struct Example {
     name: String,
     params: Vec<ExampleParam>,
@@ -393,19 +396,19 @@ impl Example {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct ExampleParam {
     name: String,
     value: Value,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct ExampleResult {
     name: String,
     value: Value,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, Debug, JsonSchema)]
 struct Components {
     schemas: Map<String, Schema>,
 }
@@ -413,7 +416,7 @@ struct Components {
 /// Result for "rpc.discover" RPC response.
 //
 // Fields named as per https://spec.open-rpc.org/#service-discovery-method.
-#[derive(Clone, Serialize, Deserialize, JsonSchema, Debug)]
+#[derive(Clone, PartialEq, Serialize, Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ListRpcsResult {
     /// The RPC API version.
@@ -432,33 +435,56 @@ impl DocExample for ListRpcsResult {
 }
 
 /// "rpc.discover" RPC.
-#[derive(Clone, Serialize, Deserialize, Debug)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct ListRpcs {}
 
+#[async_trait]
 impl RpcWithoutParams for ListRpcs {
     // Named as per https://spec.open-rpc.org/#service-discovery-method.
     const METHOD: &'static str = "rpc.discover";
     type ResponseResult = ListRpcsResult;
-}
 
-impl RpcWithoutParamsExt for ListRpcs {
-    fn handle_request<REv: ReactorEventT>(
+    async fn do_handle_request<REv: ReactorEventT>(
         _effect_builder: EffectBuilder<REv>,
-        response_builder: Builder,
         _api_version: ProtocolVersion,
-    ) -> BoxFuture<'static, Result<Response<Body>, Error>> {
-        async move { Ok(response_builder.success(ListRpcsResult::doc_example().clone())?) }.boxed()
+    ) -> Result<Self::ResponseResult, Error> {
+        Ok(ListRpcsResult::doc_example().clone())
     }
 }
+
+mod doc_example_impls {
+    use std::str::FromStr;
+
+    use once_cell::sync::Lazy;
+
+    use casper_types::Timestamp;
+
+    use super::DocExample;
+
+    static TIMESTAMP_EXAMPLE: Lazy<Timestamp> = Lazy::new(|| {
+        let example_str: &str = "2020-11-17T00:39:24.072Z";
+        Timestamp::from_str(example_str).unwrap()
+    });
+
+    impl DocExample for Timestamp {
+        fn doc_example() -> &'static Self {
+            &*TIMESTAMP_EXAMPLE
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{types::Chainspec, utils::Loadable};
+    use crate::{
+        types::{Chainspec, ChainspecRawBytes},
+        utils::Loadable,
+    };
 
     use super::*;
 
     #[test]
     fn check_docs_example_version() {
-        let chainspec = Chainspec::from_resources("production");
+        let (chainspec, _) = <(Chainspec, ChainspecRawBytes)>::from_resources("production");
         assert_eq!(
             DOCS_EXAMPLE_PROTOCOL_VERSION, chainspec.protocol_config.version,
             "DOCS_EXAMPLE_VERSION needs to be updated to match the [protocol.version] in \

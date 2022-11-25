@@ -13,10 +13,9 @@ use super::{
 /// Default maximum number of pages of the Wasm memory.
 pub const DEFAULT_WASM_MAX_MEMORY: u32 = 64;
 /// Default maximum stack height.
-pub const DEFAULT_MAX_STACK_HEIGHT: u32 = 64 * 1024;
+pub const DEFAULT_MAX_STACK_HEIGHT: u32 = 188;
 /// Default execution mode.
-pub(crate) const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Compiled;
-
+pub(crate) const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Interpreted;
 /// Configuration of the Wasm execution environment.
 ///
 /// This structure contains various Wasm execution configuration options, such as memory limits,

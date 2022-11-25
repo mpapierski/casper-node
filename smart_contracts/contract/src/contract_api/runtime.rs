@@ -1,6 +1,6 @@
 //! Functions for interacting with the current runtime.
 
-use alloc::{vec, vec::Vec};
+use alloc::{collections::BTreeSet, vec, vec::Vec};
 use core::mem::MaybeUninit;
 
 use casper_types::{
@@ -14,6 +14,9 @@ use casper_types::{
 };
 
 use crate::{contract_api, ext_ffi, unwrap_or_revert::UnwrapOrRevert};
+
+/// Number of random bytes returned from the `random_bytes()` function.
+const RANDOM_BYTES_COUNT: usize = 32;
 
 /// Returns the given [`CLValue`] to the host, terminating the currently running module.
 ///
@@ -274,6 +277,31 @@ pub fn remove_key(name: &str) {
     unsafe { ext_ffi::casper_remove_key(name_ptr, name_size) }
 }
 
+/// Returns the set of [`AccountHash`] from the calling account's context `authorization_keys`.
+pub fn list_authorization_keys() -> BTreeSet<AccountHash> {
+    let (total_authorization_keys, result_size) = {
+        let mut authorization_keys = MaybeUninit::uninit();
+        let mut result_size = MaybeUninit::uninit();
+        let ret = unsafe {
+            ext_ffi::casper_load_authorization_keys(
+                authorization_keys.as_mut_ptr(),
+                result_size.as_mut_ptr(),
+            )
+        };
+        api_error::result_from(ret).unwrap_or_revert();
+        let total_authorization_keys = unsafe { authorization_keys.assume_init() };
+        let result_size = unsafe { result_size.assume_init() };
+        (total_authorization_keys, result_size)
+    };
+
+    if total_authorization_keys == 0 {
+        return BTreeSet::new();
+    }
+
+    let bytes = read_host_buffer(result_size).unwrap_or_revert();
+    bytesrepr::deserialize(bytes).unwrap_or_revert()
+}
+
 /// Returns the named keys of the current context.
 ///
 /// The current context is either the caller's account or a stored contract depending on whether the
@@ -314,6 +342,14 @@ pub fn blake2b<T: AsRef<[u8]>>(input: T) -> [u8; BLAKE2B_DIGEST_LENGTH] {
             BLAKE2B_DIGEST_LENGTH,
         )
     };
+    api_error::result_from(result).unwrap_or_revert();
+    ret
+}
+
+/// Returns 32 pseudo random bytes.
+pub fn random_bytes() -> [u8; RANDOM_BYTES_COUNT] {
+    let mut ret = [0; RANDOM_BYTES_COUNT];
+    let result = unsafe { ext_ffi::casper_random_bytes(ret.as_mut_ptr(), RANDOM_BYTES_COUNT) };
     api_error::result_from(result).unwrap_or_revert();
     ret
 }

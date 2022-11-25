@@ -9,13 +9,14 @@ use casper_types::{
 };
 
 use crate::{
-    core::resolvers::error::ResolverError,
-    shared::wasm_engine::{self, RuntimeError},
+    core::{resolvers::error::ResolverError, runtime::stack},
+    shared::wasm_engine::{self, PreprocessingError, RuntimeError},
     storage,
 };
 
 /// Possible execution errors.
 #[derive(Error, Debug, Clone)]
+#[non_exhaustive]
 pub enum Error {
     /// WASM interpreter error.
     #[error("Interpreter error: {}", _0)]
@@ -160,6 +161,18 @@ pub enum Error {
     /// Missing system contract hash.
     #[error("Missing system contract hash: {0}")]
     MissingSystemContractHash(String),
+    /// An attempt to push to the runtime stack which is already at the maximum height.
+    #[error("Runtime stack overflow")]
+    RuntimeStackOverflow,
+    /// An attempt to write a value to global state where its serialized size is too large.
+    #[error("Value too large")]
+    ValueTooLarge,
+    /// The runtime stack is `None`.
+    #[error("Runtime stack missing")]
+    MissingRuntimeStack,
+    /// Contract is disabled.
+    #[error("Contract is disabled")]
+    DisabledContract(ContractHash),
 }
 
 impl From<wasm_engine::PreprocessingError> for Error {
@@ -288,5 +301,11 @@ impl From<system::Error> for Error {
 impl From<CLValueError> for Error {
     fn from(e: CLValueError) -> Self {
         Error::CLValue(e)
+    }
+}
+
+impl From<stack::RuntimeStackOverflow> for Error {
+    fn from(_: stack::RuntimeStackOverflow) -> Self {
+        Error::RuntimeStackOverflow
     }
 }

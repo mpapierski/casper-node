@@ -11,14 +11,13 @@ use std::{convert::TryFrom, path::Path};
 use serde::{Deserialize, Serialize};
 
 use casper_execution_engine::shared::{system_config::SystemConfig, wasm_config::WasmConfig};
-use casper_types::{EraId, ProtocolVersion};
+use casper_types::{bytesrepr::Bytes, file_utils, ProtocolVersion};
 
 use super::{
     accounts_config::AccountsConfig, global_state_update::GlobalStateUpdateConfig, ActivationPoint,
-    Chainspec, CoreConfig, DeployConfig, Error, GlobalStateUpdate, HighwayConfig, NetworkConfig,
-    ProtocolConfig,
+    Chainspec, ChainspecRawBytes, CoreConfig, DeployConfig, Error, GlobalStateUpdate,
+    HighwayConfig, NetworkConfig, ProtocolConfig,
 };
-use crate::utils::{self, Loadable};
 
 #[derive(PartialEq, Eq, Serialize, Deserialize, Debug)]
 // Disallow unknown fields to ensure config files and command-line overrides contain valid keys.
@@ -35,7 +34,6 @@ struct TomlProtocol {
     version: ProtocolVersion,
     hard_reset: bool,
     activation_point: ActivationPoint,
-    last_emergency_restart: Option<EraId>,
 }
 
 /// A chainspec configuration as laid out in the TOML-encoded configuration file.
@@ -58,7 +56,6 @@ impl From<&Chainspec> for TomlChainspec {
             version: chainspec.protocol_config.version,
             hard_reset: chainspec.protocol_config.hard_reset,
             activation_point: chainspec.protocol_config.activation_point,
-            last_emergency_restart: chainspec.protocol_config.last_emergency_restart,
         };
         let network = TomlNetwork {
             name: chainspec.network_config.name.clone(),
@@ -82,9 +79,12 @@ impl From<&Chainspec> for TomlChainspec {
     }
 }
 
-pub(super) fn parse_toml<P: AsRef<Path>>(chainspec_path: P) -> Result<Chainspec, Error> {
-    let bytes = utils::read_file(chainspec_path.as_ref()).map_err(Error::LoadChainspec)?;
-    let toml_chainspec: TomlChainspec = toml::from_slice(&bytes)?;
+pub(super) fn parse_toml<P: AsRef<Path>>(
+    chainspec_path: P,
+) -> Result<(Chainspec, ChainspecRawBytes), Error> {
+    let chainspec_bytes =
+        file_utils::read_file(chainspec_path.as_ref()).map_err(Error::LoadChainspec)?;
+    let toml_chainspec: TomlChainspec = toml::from_slice(&chainspec_bytes)?;
 
     let root = chainspec_path
         .as_ref()
@@ -92,7 +92,7 @@ pub(super) fn parse_toml<P: AsRef<Path>>(chainspec_path: P) -> Result<Chainspec,
         .unwrap_or_else(|| Path::new(""));
 
     // accounts.toml must live in the same directory as chainspec.toml.
-    let accounts_config = AccountsConfig::from_path(root)?;
+    let (accounts_config, maybe_genesis_accounts_bytes) = AccountsConfig::from_dir(root)?;
 
     let network_config = NetworkConfig {
         name: toml_chainspec.network.name,
@@ -100,19 +100,21 @@ pub(super) fn parse_toml<P: AsRef<Path>>(chainspec_path: P) -> Result<Chainspec,
         maximum_net_message_size: toml_chainspec.network.maximum_net_message_size,
     };
 
-    let global_state_update = Option::<GlobalStateUpdateConfig>::from_path(root)?
-        .map(GlobalStateUpdate::try_from)
-        .transpose()?;
+    // global_state_update.toml must live in the same directory as chainspec.toml.
+    let (global_state_update, maybe_global_state_bytes) =
+        match GlobalStateUpdateConfig::from_dir(root)? {
+            Some((config, bytes)) => (Some(GlobalStateUpdate::try_from(config)?), Some(bytes)),
+            None => (None, None),
+        };
 
     let protocol_config = ProtocolConfig {
         version: toml_chainspec.protocol.version,
         hard_reset: toml_chainspec.protocol.hard_reset,
         activation_point: toml_chainspec.protocol.activation_point,
         global_state_update,
-        last_emergency_restart: toml_chainspec.protocol.last_emergency_restart,
     };
 
-    Ok(Chainspec {
+    let chainspec = Chainspec {
         protocol_config,
         network_config,
         core_config: toml_chainspec.core,
@@ -120,5 +122,12 @@ pub(super) fn parse_toml<P: AsRef<Path>>(chainspec_path: P) -> Result<Chainspec,
         highway_config: toml_chainspec.highway,
         wasm_config: toml_chainspec.wasm,
         system_costs_config: toml_chainspec.system_costs,
-    })
+    };
+    let chainspec_raw_bytes = ChainspecRawBytes::new(
+        Bytes::from(chainspec_bytes),
+        maybe_genesis_accounts_bytes,
+        maybe_global_state_bytes,
+    );
+
+    Ok((chainspec, chainspec_raw_bytes))
 }

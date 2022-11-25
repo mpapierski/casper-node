@@ -2,18 +2,17 @@ use num_traits::Zero;
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, StepRequestBuilder,
-        DEFAULT_ACCOUNTS, DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
-        TIMESTAMP_MILLIS_INCREMENT,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
-    MINIMUM_ACCOUNT_CREATION_BALANCE,
+    utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, StepRequestBuilder, DEFAULT_ACCOUNTS,
+    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
+    DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    TIMESTAMP_MILLIS_INCREMENT,
 };
 use casper_execution_engine::core::engine_state::{
-    genesis::GenesisValidator, GenesisAccount, RewardItem,
+    engine_config::DEFAULT_MINIMUM_DELEGATION_AMOUNT, genesis::GenesisValidator, GenesisAccount,
+    RewardItem,
 };
 use casper_types::{
+    account::AccountHash,
     runtime_args,
     system::auction::{self, DelegationRate, BLOCK_REWARD, INITIAL_ERA_ID},
     Motes, ProtocolVersion, PublicKey, RuntimeArgs, SecretKey, U512,
@@ -33,7 +32,7 @@ static DELEGATOR_1: Lazy<PublicKey> = Lazy::new(|| PublicKey::from(&*DELEGATOR_1
 static DELEGATOR_1_ADDR: Lazy<AccountHash> = Lazy::new(|| AccountHash::from(&*DELEGATOR_1));
 
 const VALIDATOR_STAKE: u64 = 1_000_000_000;
-const DELEGATE_AMOUNT: u64 = 1_234_567;
+const DELEGATE_AMOUNT: u64 = 1_234_567 + DEFAULT_MINIMUM_DELEGATION_AMOUNT;
 
 #[ignore]
 #[test]
@@ -149,14 +148,15 @@ fn should_run_ee_1152_regression_test() {
         .with_protocol_version(ProtocolVersion::V1_0_0)
         // Next era id is used for returning future era validators, which we don't need to inspect
         // in this test.
-        .with_next_era_id(era_id);
+        .with_next_era_id(era_id)
+        .with_era_end_timestamp_millis(timestamp_millis);
 
     for (public_key, _stake) in trusted_era_validators.clone().into_iter() {
         let reward_amount = BLOCK_REWARD / trusted_era_validators.len() as u64;
         step_request = step_request.with_reward_item(RewardItem::new(public_key, reward_amount));
     }
 
-    builder.step(step_request.build());
+    builder.step(step_request.build()).unwrap();
 
     builder.run_auction(timestamp_millis, Vec::new());
 }

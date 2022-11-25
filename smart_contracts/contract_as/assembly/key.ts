@@ -1,14 +1,14 @@
 import * as externals from "./externals";
-import {readHostBuffer} from ".";
-import {UREF_SERIALIZED_LENGTH} from "./constants";
-import {URef} from "./uref";
-import {CLValue} from "./clvalue";
-import {Error, ErrorCode} from "./error";
-import {checkTypedArrayEqual, typedToArray, encodeUTF8} from "./utils";
-import {Ref} from "./ref";
-import {Result, Error as BytesreprError} from "./bytesrepr";
-import {PublicKey} from "./public_key";
-import {RuntimeArgs} from "./runtime_args";
+import { readHostBuffer } from ".";
+import { UREF_SERIALIZED_LENGTH } from "./constants";
+import { URef } from "./uref";
+import { CLValue } from "./clvalue";
+import { Error, ErrorCode } from "./error";
+import { checkTypedArrayEqual, typedToArray, encodeUTF8 } from "./utils";
+import { Ref } from "./ref";
+import { Result, Error as BytesreprError } from "./bytesrepr";
+import { PublicKey } from "./public_key";
+import { RuntimeArgs } from "./runtime_args";
 import * as runtime from "./runtime";
 
 /**
@@ -21,6 +21,8 @@ export enum KeyVariant {
     HASH_ID = 1,
     /** The URef variant */
     UREF_ID = 2,
+    /** The Dictionary variant */
+    DICTIONARY_ID = 9,
 }
 
 /** A cryptographic public key. */
@@ -30,7 +32,7 @@ export class AccountHash {
      *
      * @param bytes The bytes constituting the public key.
      */
-    constructor(public bytes: Uint8Array) {}
+    constructor(public bytes: Uint8Array) { }
 
     /** Checks whether two `AccountHash`s are equal. */
     @operator("==")
@@ -44,23 +46,49 @@ export class AccountHash {
         return !this.equalsTo(other);
     }
 
-    static fromPublicKey(publicKey: PublicKey) : AccountHash {
+    @operator(">")
+    greaterThan(other: AccountHash): bool {
+        for (let i = 0; i < 32; i++) {
+            if (this.bytes[i] > other.bytes[i]) {
+                return true;
+            }
+            if (this.bytes[i] < other.bytes[i]) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    @operator("<")
+    lowerThan(other: AccountHash): bool {
+        for (let i = 0; i < 32; i++) {
+            if (this.bytes[i] < other.bytes[i]) {
+                return true;
+            }
+            if (this.bytes[i] > other.bytes[i]) {
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static fromPublicKey(publicKey: PublicKey): AccountHash {
         let algorithmName = publicKey.getAlgorithmName();
         let algorithmNameBytes = encodeUTF8(algorithmName);
         let publicKeyBytes = publicKey.getRawBytes();
         let dataLength = algorithmNameBytes.length + publicKeyBytes.length + 1;
-        
+
         let data = new Array<u8>(dataLength);
-        for (let i=0; i < algorithmNameBytes.length; i++){
-            data[i]=algorithmNameBytes[i];
+        for (let i = 0; i < algorithmNameBytes.length; i++) {
+            data[i] = algorithmNameBytes[i];
         }
 
         data[algorithmNameBytes.length] = 0;
 
-        for (let i=0; i < publicKeyBytes.length; i++) {
+        for (let i = 0; i < publicKeyBytes.length; i++) {
             data[algorithmNameBytes.length + 1 + i] = publicKeyBytes[i];
         }
-        
+
         const accountHashBytes = runtime.blake2b(data);
         return new AccountHash(accountHashBytes);
     }
@@ -93,29 +121,47 @@ export class Key {
     hash: Uint8Array | null;
     uref: URef | null;
     account: AccountHash | null;
+    dictionaryAddr: Uint8Array | null;
 
     /** Creates a `Key` from a given [[URef]]. */
     static fromURef(uref: URef): Key {
-        let key = new Key();
-        key.variant = KeyVariant.UREF_ID;
-        key.uref = uref;
-        return key;
+        let urefKey = new Key();
+        urefKey.variant = KeyVariant.UREF_ID;
+        urefKey.uref = uref;
+        return urefKey;
     }
 
     /** Creates a `Key` from a given hash. */
     static fromHash(hash: Uint8Array): Key {
-        let key = new Key();
-        key.variant = KeyVariant.HASH_ID;
-        key.hash = hash;
-        return key;
+        let hashKey = new Key();
+        hashKey.variant = KeyVariant.HASH_ID;
+        hashKey.hash = hash;
+        return hashKey;
     }
 
     /** Creates a `Key` from a [[<AccountHash>]] representing an account. */
     static fromAccount(account: AccountHash): Key {
+        let accountKey = new Key();
+        accountKey.variant = KeyVariant.ACCOUNT_ID;
+        accountKey.account = account;
+        return accountKey;
+    }
+
+    /** Creates a `Key` from a given dictionary address. */
+    static fromDictionaryAddr(addrBytes: Uint8Array): Key {
         let key = new Key();
-        key.variant = KeyVariant.ACCOUNT_ID;
-        key.account = account;
+        key.variant = KeyVariant.DICTIONARY_ID;
+        key.dictionaryAddr = addrBytes;
         return key;
+    }
+
+    /** Creates a `Key.Dictionary` from a seedURef and item key */
+    static createDictionaryKey(seedURef: URef, dictionary_item_key: String): Key {
+        let dictionary_key_buffer = seedURef.getBytes();
+        let buffer = typedToArray(dictionary_key_buffer);
+        let finalBuffer = buffer.concat(typedToArray(encodeUTF8(dictionary_item_key)));
+        let dictionaryAddress = runtime.blake2b(finalBuffer);
+        return Key.fromDictionaryAddr(dictionaryAddress);
     }
 
     /**
@@ -150,9 +196,9 @@ export class Key {
             var hashBytes = bytes.subarray(1, 32 + 1);
             currentPos += 32;
 
-            let key = Key.fromHash(hashBytes);
-            let ref = new Ref<Key>(key);
-            return new Result<Key>(ref, BytesreprError.Ok, currentPos);
+            const hashKey = Key.fromHash(hashBytes);
+            let keyRef = new Ref<Key>(hashKey);
+            return new Result<Key>(keyRef, BytesreprError.Ok, currentPos);
         }
         else if (tag == KeyVariant.UREF_ID) {
             var urefBytes = bytes.subarray(1);
@@ -160,9 +206,9 @@ export class Key {
             if (urefResult.error != BytesreprError.Ok) {
                 return new Result<Key>(null, urefResult.error, 0);
             }
-            let key = Key.fromURef(urefResult.value);
-            let ref = new Ref<Key>(key);
-            return new Result<Key>(ref, BytesreprError.Ok, currentPos + urefResult.position);
+            const urefKey = Key.fromURef(urefResult.value);
+            const keyRef = new Ref<Key>(urefKey);
+            return new Result<Key>(keyRef, BytesreprError.Ok, currentPos + urefResult.position);
         }
         else if (tag == KeyVariant.ACCOUNT_ID) {
             let accountHashBytes = bytes.subarray(1);
@@ -171,7 +217,15 @@ export class Key {
                 return new Result<Key>(null, accountHashResult.error, currentPos);
             }
             currentPos += accountHashResult.position;
-            let key = Key.fromAccount(accountHashResult.value);
+            const accountKey = Key.fromAccount(accountHashResult.value);
+            const keyRef = new Ref<Key>(accountKey);
+            return new Result<Key>(keyRef, BytesreprError.Ok, currentPos);
+        }
+        else if (tag == KeyVariant.DICTIONARY_ID) {
+            var dictionaryAddr = bytes.subarray(1, 32 + 1);
+            currentPos += 32;
+
+            let key = Key.fromDictionaryAddr(dictionaryAddr);
             let ref = new Ref<Key>(key);
             return new Result<Key>(ref, BytesreprError.Ok, currentPos);
         }
@@ -182,7 +236,7 @@ export class Key {
 
     /** Serializes a `Key` into an array of bytes. */
     toBytes(): Array<u8> {
-        if(this.variant == KeyVariant.UREF_ID){
+        if (this.variant == KeyVariant.UREF_ID) {
             let bytes = new Array<u8>();
             bytes.push(<u8>this.variant)
             bytes = bytes.concat((<URef>this.uref).toBytes());
@@ -201,6 +255,15 @@ export class Key {
             let bytes = new Array<u8>();
             bytes.push(<u8>this.variant);
             bytes = bytes.concat((<AccountHash>this.account).toBytes());
+            return bytes;
+        }
+        else if (this.variant == KeyVariant.DICTIONARY_ID) {
+            var dictionaryAddrBytes = <Uint8Array>this.dictionaryAddr;
+            let bytes = new Array<u8>(1 + dictionaryAddrBytes.length);
+            bytes[0] = <u8>this.variant;
+            for (let i = 0; i < dictionaryAddrBytes.length; i++) {
+                bytes[i + 1] = dictionaryAddrBytes[i];
+            }
             return bytes;
         }
         unreachable();

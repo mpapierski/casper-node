@@ -28,57 +28,58 @@ use std::{convert::Infallible, fmt::Debug, time::Instant};
 use datasize::DataSize;
 use futures::{future::BoxFuture, join, FutureExt};
 use tokio::{sync::oneshot, task::JoinHandle};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use casper_types::ProtocolVersion;
 
 use super::Component;
 use crate::{
+    components::rpc_server::rpcs::docs::OPEN_RPC_SCHEMA,
     effect::{
         requests::{
             ChainspecLoaderRequest, ConsensusRequest, MetricsRequest, NetworkInfoRequest,
-            StorageRequest,
+            NodeStateRequest, RestRequest, StorageRequest,
         },
         EffectBuilder, EffectExt, Effects,
     },
     reactor::Finalize,
-    types::{NodeId, StatusFeed},
+    types::StatusFeed,
     utils::{self, ListeningError},
     NodeRng,
 };
-
-use crate::{components::rpc_server::rpcs::docs::OPEN_RPC_SCHEMA, effect::requests::RestRequest};
 pub use config::Config;
 pub(crate) use event::Event;
 
 /// A helper trait capturing all of this components Request type dependencies.
 pub(crate) trait ReactorEventT:
     From<Event>
-    + From<RestRequest<NodeId>>
-    + From<NetworkInfoRequest<NodeId>>
+    + From<RestRequest>
+    + From<NetworkInfoRequest>
     + From<StorageRequest>
     + From<ChainspecLoaderRequest>
     + From<ConsensusRequest>
     + From<MetricsRequest>
+    + From<NodeStateRequest>
     + Send
 {
 }
 
 impl<REv> ReactorEventT for REv where
     REv: From<Event>
-        + From<RestRequest<NodeId>>
-        + From<NetworkInfoRequest<NodeId>>
+        + From<RestRequest>
+        + From<NetworkInfoRequest>
         + From<StorageRequest>
         + From<ChainspecLoaderRequest>
         + From<ConsensusRequest>
         + From<MetricsRequest>
+        + From<NodeStateRequest>
         + Send
         + 'static
 {
 }
 
 #[derive(DataSize, Debug)]
-pub(crate) struct RestServer {
+pub(crate) struct InnerRestServer {
     /// When the message is sent, it signals the server loop to exit cleanly.
     #[data_size(skip)]
     shutdown_sender: oneshot::Sender<()>,
@@ -87,6 +88,12 @@ pub(crate) struct RestServer {
     server_join_handle: Option<JoinHandle<()>>,
     /// The instant at which the node has started.
     node_startup_instant: Instant,
+}
+
+#[derive(DataSize, Debug)]
+pub(crate) struct RestServer {
+    /// Inner server is present only when enabled in the config.
+    inner_rest: Option<InnerRestServer>,
 }
 
 impl RestServer {
@@ -99,21 +106,27 @@ impl RestServer {
     where
         REv: ReactorEventT,
     {
+        if !config.enable_server {
+            return Ok(RestServer { inner_rest: None });
+        }
+
         let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
 
         let builder = utils::start_listening(&config.address)?;
-        let server_join_handle = tokio::spawn(http_server::run(
+        let server_join_handle = Some(tokio::spawn(http_server::run(
             builder,
             effect_builder,
             api_version,
             shutdown_receiver,
             config.qps_limit,
-        ));
+        )));
 
         Ok(RestServer {
-            shutdown_sender,
-            server_join_handle: Some(server_join_handle),
-            node_startup_instant,
+            inner_rest: Some(InnerRestServer {
+                shutdown_sender,
+                server_join_handle,
+                node_startup_instant,
+            }),
         })
     }
 }
@@ -131,22 +144,38 @@ where
         _rng: &mut NodeRng,
         event: Self::Event,
     ) -> Effects<Self::Event> {
+        let rest_server = match &self.inner_rest {
+            Some(rest_server) => rest_server,
+            None => {
+                return Effects::new();
+            }
+        };
+
         match event {
             Event::RestRequest(RestRequest::Status { responder }) => {
-                let node_uptime = self.node_startup_instant.elapsed();
+                let node_uptime = rest_server.node_startup_instant.elapsed();
                 async move {
-                    let (last_added_block, peers, chainspec_info, consensus_status) = join!(
+                    let (
+                        last_added_block,
+                        peers,
+                        chainspec_info,
+                        consensus_status,
+                        node_state,
+                    ) = join!(
                         effect_builder.get_highest_block_from_storage(),
                         effect_builder.network_peers(),
                         effect_builder.get_chainspec_info(),
-                        effect_builder.consensus_status()
+                        effect_builder.consensus_status(),
+                        effect_builder.get_node_state()
                     );
+
                     let status_feed = StatusFeed::new(
                         last_added_block,
                         peers,
                         chainspec_info,
                         consensus_status,
                         node_uptime,
+                        node_state,
                     );
                     responder.respond(status_feed).await;
                 }
@@ -171,20 +200,73 @@ where
 }
 
 impl Finalize for RestServer {
-    fn finalize(mut self) -> BoxFuture<'static, ()> {
+    fn finalize(self) -> BoxFuture<'static, ()> {
         async {
-            let _ = self.shutdown_sender.send(());
+            if let Some(mut rest_server) = self.inner_rest {
+                let _ = rest_server.shutdown_sender.send(());
 
-            // Wait for the server to exit cleanly.
-            if let Some(join_handle) = self.server_join_handle.take() {
-                match join_handle.await {
-                    Ok(_) => debug!("rest server exited cleanly"),
-                    Err(error) => error!(%error, "could not join rest server task cleanly"),
+                // Wait for the server to exit cleanly.
+                if let Some(join_handle) = rest_server.server_join_handle.take() {
+                    match join_handle.await {
+                        Ok(_) => debug!("rest server exited cleanly"),
+                        Err(error) => error!(%error, "could not join rest server task cleanly"),
+                    }
+                } else {
+                    warn!("rest server shutdown while already shut down")
                 }
             } else {
-                warn!("rest server shutdown while already shut down")
+                info!("rest server was disabled in config, no shutdown performed")
             }
         }
         .boxed()
+    }
+}
+
+#[cfg(test)]
+mod schema_tests {
+    use crate::{
+        rpcs::{
+            docs::OpenRpcSchema,
+            info::{GetChainspecResult, GetValidatorChangesResult},
+        },
+        testing::assert_schema,
+        types::GetStatusResult,
+    };
+    use schemars::schema_for;
+
+    #[test]
+    fn schema_status() {
+        let schema_path = format!(
+            "{}/../resources/test/rest_schema_status.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert_schema(schema_path, schema_for!(GetStatusResult));
+    }
+
+    #[test]
+    fn schema_validator_changes() {
+        let schema_path = format!(
+            "{}/../resources/test/rest_schema_validator_changes.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert_schema(schema_path, schema_for!(GetValidatorChangesResult));
+    }
+
+    #[test]
+    fn schema_rpc_schema() {
+        let schema_path = format!(
+            "{}/../resources/test/rest_schema_rpc_schema.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert_schema(schema_path, schema_for!(OpenRpcSchema));
+    }
+
+    #[test]
+    fn schema_chainspec_bytes() {
+        let schema_path = format!(
+            "{}/../resources/test/rest_schema_chainspec_bytes.json",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        assert_schema(schema_path, schema_for!(GetChainspecResult));
     }
 }

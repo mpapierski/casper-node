@@ -13,6 +13,8 @@ use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tracing::{trace, warn};
 
+use casper_types::Timestamp;
+
 use super::{
     active_validator::Effect,
     finality_detector::{FinalityDetector, FttExceeded},
@@ -37,7 +39,6 @@ use crate::{
         traits::{ConsensusValueT, Context, ValidatorSecret},
         BlockContext,
     },
-    types::Timestamp,
     NodeRng,
 };
 
@@ -390,7 +391,7 @@ where
     fn node_mut(&mut self, validator_id: &ValidatorId) -> TestResult<&mut HighwayNode> {
         self.virtual_net
             .node_mut(validator_id)
-            .ok_or_else(|| TestRunError::MissingValidator(*validator_id))
+            .ok_or(TestRunError::MissingValidator(*validator_id))
     }
 
     fn call_validator<F>(
@@ -1005,7 +1006,7 @@ pub(crate) struct SignatureWrapper(u64);
 
 impl Debug for SignatureWrapper {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:10}", HexFmt(self.0.to_le_bytes()))
+        write!(f, "{:10}", HexFmt(&self.0.to_le_bytes()))
     }
 }
 
@@ -1016,7 +1017,7 @@ pub(crate) struct HashWrapper(u64);
 
 impl Debug for HashWrapper {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "{:10}", HexFmt(self.0.to_le_bytes()))
+        write!(f, "{:10}", HexFmt(&self.0.to_le_bytes()))
     }
 }
 
@@ -1064,6 +1065,8 @@ mod test_harness {
 
     use itertools::Itertools;
 
+    use casper_types::Timestamp;
+
     use super::{
         crank_until, crank_until_finalized, crank_until_time, test_params, ConsensusValue,
         HighwayTestHarness, HighwayTestHarnessBuilder, InstantDeliveryNoDropping, TestRunError,
@@ -1075,7 +1078,6 @@ mod test_harness {
             tests::consensus_des_testing::{Fault as DesFault, ValidatorId},
         },
         logging,
-        types::Timestamp,
     };
     use logging::{LoggingConfig, LoggingFormat};
 

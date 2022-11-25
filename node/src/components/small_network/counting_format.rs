@@ -13,7 +13,8 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
-use hex_fmt::HexFmt;
+#[cfg(test)]
+use casper_types::testing::TestRng;
 use openssl::ssl::SslRef;
 use pin_project::pin_project;
 #[cfg(test)]
@@ -24,10 +25,8 @@ use tracing::{trace, warn};
 
 use casper_hashing::Digest;
 
-use super::{tls::KeyFingerprint, Message, Payload};
-#[cfg(test)]
-use crate::testing::TestRng;
-use crate::{components::networking_metrics::NetworkingMetrics, types::NodeId, utils};
+use super::{tls::KeyFingerprint, Message, Metrics, Payload};
+use crate::{types::NodeId, utils};
 
 /// Lazily-evaluated network message ID generator.
 ///
@@ -37,7 +36,7 @@ struct TraceId([u8; 8]);
 
 impl Display for TraceId {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.write_str(&format!("{:x}", HexFmt(&self.0)))
+        f.write_str(&base16::encode_lower(&self.0))
     }
 }
 
@@ -61,14 +60,14 @@ pub struct CountingFormat<F> {
     /// Our role in the connection.
     role: Role,
     /// Metrics to update.
-    metrics: Weak<NetworkingMetrics>,
+    metrics: Weak<Metrics>,
 }
 
 impl<F> CountingFormat<F> {
     /// Creates a new counting formatter.
     #[inline]
     pub(super) fn new(
-        metrics: Weak<NetworkingMetrics>,
+        metrics: Weak<Metrics>,
         connection_id: ConnectionId,
         role: Role,
         inner: F,
@@ -99,7 +98,7 @@ where
         let serialized = F::serialize(projection, item)?;
         let msg_size = serialized.len() as u64;
         let msg_kind = item.classify();
-        NetworkingMetrics::record_payload_out(this.metrics, msg_kind, msg_size);
+        Metrics::record_payload_out(this.metrics, msg_kind, msg_size);
 
         let trace_id = this
             .connection_id
@@ -131,6 +130,7 @@ where
 
         let deserialized = F::deserialize(projection, src)?;
         let msg_kind = deserialized.classify();
+        Metrics::record_payload_in(this.metrics, msg_kind, msg_size);
 
         let trace_id = this
             .connection_id
@@ -269,6 +269,16 @@ impl ConnectionId {
     #[inline]
     pub(crate) fn from_connection(ssl: &SslRef, our_id: NodeId, their_id: NodeId) -> Self {
         Self::create(TlsRandomData::collect(ssl), our_id, their_id)
+    }
+
+    /// Creates a random `ConnectionId`.
+    #[cfg(test)]
+    pub(super) fn random(rng: &mut TestRng) -> Self {
+        ConnectionId::create(
+            TlsRandomData::random(rng),
+            NodeId::random(rng),
+            NodeId::random(rng),
+        )
     }
 }
 

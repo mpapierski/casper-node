@@ -1,3 +1,6 @@
+//! This module defines the `TrackingCopy` - a utility that caches operations on the state, so that
+//! the underlying state remains unmodified, but it can be interacted with as if the modifications
+//! were applied on it.
 mod byte_size;
 mod ext;
 pub(self) mod meter;
@@ -15,35 +18,41 @@ use thiserror::Error;
 
 use casper_hashing::Digest;
 use casper_types::{
-    bytesrepr, CLType, CLValue, CLValueError, Key, KeyTag, StoredValue, StoredValueTypeMismatch,
-    Tagged, U512,
+    bytesrepr::{self},
+    CLType, CLValue, CLValueError, Key, KeyTag, StoredValue, StoredValueTypeMismatch, Tagged, U512,
 };
 
 pub use self::ext::TrackingCopyExt;
 use self::meter::{heap_meter::HeapSize, Meter};
 use super::engine_state::EngineConfig;
 use crate::{
-    core::{
-        engine_state::{execution_effect::ExecutionEffect, op::Op},
-        runtime_context::dictionary,
-    },
+    core::{engine_state::execution_effect::ExecutionEffect, runtime_context::dictionary},
     shared::{
-        additive_map::AdditiveMap,
+        execution_journal::ExecutionJournal,
         newtypes::CorrelationId,
         transform::{self, Transform},
     },
     storage::{global_state::StateReader, trie::merkle_proof::TrieMerkleProof},
 };
 
+/// Result of a query on a `TrackingCopy`.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TrackingCopyQueryResult {
+    /// The query was successful.
     Success {
+        /// The value read from the state.
         value: StoredValue,
+        /// Merkle proofs for the value.
         proofs: Vec<TrieMerkleProof<Key, StoredValue>>,
     },
+    /// The value wasn't found.
     ValueNotFound(String),
+    /// A circular reference was found in the state while traversing it.
     CircularReference(String),
+    /// The query reached the depth limit.
     DepthLimit {
+        /// The depth reached.
         depth: u64,
     },
 }
@@ -201,27 +210,36 @@ impl<M: Meter<Key, StoredValue>> TrackingCopyCache<M> {
         self.reads_cached.get_refresh(key).map(|v| &*v)
     }
 
+    /// Gets the set of mutated keys in the cache by `KeyTag`.
     pub fn get_key_tag_muts_cached(&mut self, key_tag: &KeyTag) -> Option<&BTreeSet<Key>> {
         self.key_tag_muts_cached.get(key_tag)
     }
 
+    /// Gets the set of read keys in the cache by `KeyTag`.
     pub fn get_key_tag_reads_cached(&mut self, key_tag: &KeyTag) -> Option<&BTreeSet<Key>> {
         self.key_tag_reads_cached.get_refresh(key_tag).map(|v| &*v)
     }
 }
 
+/// An interface for the global state that caches all operations (reads and writes) instead of
+/// applying them directly to the state. This way the state remains unmodified, while the user can
+/// interact with it as if it was being modified in real time.
 pub struct TrackingCopy<R> {
     reader: R,
     cache: TrackingCopyCache<HeapSize>,
-    ops: AdditiveMap<Key, Op>,
-    fns: AdditiveMap<Key, Transform>,
+    journal: ExecutionJournal,
 }
 
+/// Result of executing an "add" operation on a value in the state.
 #[derive(Debug)]
 pub enum AddResult {
+    /// The operation was successful.
     Success,
+    /// The key was not found.
     KeyNotFound(Key),
+    /// There was a type mismatch between the stored value and the value being added.
     TypeMismatch(StoredValueTypeMismatch),
+    /// Serialization error.
     Serialization(bytesrepr::Error),
 }
 
@@ -239,6 +257,7 @@ impl From<CLValueError> for AddResult {
 }
 
 impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
+    /// Creates a new `TrackingCopy` using the `reader` as the interface to the state.
     pub fn new(reader: R) -> TrackingCopy<R> {
         TrackingCopy {
             reader,
@@ -246,11 +265,11 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
             /* TODO: Should `max_cache_size`
              * be fraction of wasm memory
              * limit? */
-            ops: AdditiveMap::new(),
-            fns: AdditiveMap::new(),
+            journal: Default::default(),
         }
     }
 
+    /// Returns the `reader` used to access the state.
     pub fn reader(&self) -> &R {
         &self.reader
     }
@@ -271,7 +290,7 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         TrackingCopy::new(self)
     }
 
-    pub fn get(
+    pub(super) fn get(
         &mut self,
         correlation_id: CorrelationId,
         key: &Key,
@@ -287,6 +306,7 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         }
     }
 
+    /// Gets the set of keys in the state whose tag is `key_tag`.
     pub fn get_keys(
         &mut self,
         correlation_id: CorrelationId,
@@ -310,6 +330,7 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         Ok(ret)
     }
 
+    /// Reads the value stored under `key`.
     pub fn read(
         &mut self,
         correlation_id: CorrelationId,
@@ -317,19 +338,19 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
     ) -> Result<Option<StoredValue>, R::Error> {
         let normalized_key = key.normalize();
         if let Some(value) = self.get(correlation_id, &normalized_key)? {
-            self.ops.insert_add(normalized_key, Op::Read);
-            self.fns.insert_add(normalized_key, Transform::Identity);
+            self.journal.push((normalized_key, Transform::Identity));
             Ok(Some(value))
         } else {
             Ok(None)
         }
     }
 
+    /// Writes `value` under `key`. Note that the write is only cached, and the global state itself
+    /// remains unmodified.
     pub fn write(&mut self, key: Key, value: StoredValue) {
         let normalized_key = key.normalize();
         self.cache.insert_write(normalized_key, value.clone());
-        self.ops.insert_add(normalized_key, Op::Write);
-        self.fns.insert_add(normalized_key, Transform::Write(value));
+        self.journal.push((normalized_key, Transform::Write(value)));
     }
 
     /// Ok(None) represents missing key to which we want to "add" some value.
@@ -398,8 +419,7 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         match transform.clone().apply(current_value) {
             Ok(new_value) => {
                 self.cache.insert_write(normalized_key, new_value);
-                self.ops.insert_add(normalized_key, Op::Add);
-                self.fns.insert_add(normalized_key, transform);
+                self.journal.push((normalized_key, transform));
                 Ok(AddResult::Success)
             }
             Err(transform::Error::TypeMismatch(type_mismatch)) => {
@@ -409,8 +429,14 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         }
     }
 
+    /// Returns the execution effects cached by this instance.
     pub fn effect(&self) -> ExecutionEffect {
-        ExecutionEffect::new(self.ops.clone(), self.fns.clone())
+        ExecutionEffect::from(self.journal.clone())
+    }
+
+    /// Returns the journal of operations executed on this instance.
+    pub fn execution_journal(&self) -> ExecutionJournal {
+        self.journal.clone()
     }
 
     /// Calling `query()` avoids calling into `self.cache`, so this will not return any values
@@ -528,6 +554,9 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
                     return Ok(query.into_not_found_result("Bid value found."));
                 }
                 StoredValue::Withdraw(_) => {
+                    return Ok(query.into_not_found_result("WithdrawPurses value found."));
+                }
+                StoredValue::Unbonding(_) => {
                     return Ok(query.into_not_found_result("UnbondingPurses value found."));
                 }
             }

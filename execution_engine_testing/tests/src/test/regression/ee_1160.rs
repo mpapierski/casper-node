@@ -1,15 +1,14 @@
 use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_INITIAL_BALANCE, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::engine_state::WASMLESS_TRANSFER_FIXED_GAS_PRICE,
     shared::system_config::DEFAULT_WASMLESS_TRANSFER_COST,
 };
-use casper_types::{runtime_args, system::mint, Gas, Motes, RuntimeArgs, U512};
+use casper_types::{
+    account::AccountHash, runtime_args, system::mint, Gas, Motes, RuntimeArgs, U512,
+};
 
 const ACCOUNT_1_ADDR: AccountHash = AccountHash::new([1u8; 32]);
 
@@ -27,7 +26,7 @@ fn ee_1160_wasmless_transfer_should_empty_account() {
         U512::from(DEFAULT_ACCOUNT_INITIAL_BALANCE) - wasmless_transfer_cost.value();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -45,6 +44,7 @@ fn ee_1160_wasmless_transfer_should_empty_account() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(wasmless_transfer_args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -54,7 +54,7 @@ fn ee_1160_wasmless_transfer_should_empty_account() {
         .expect_success()
         .commit();
 
-    let last_result = builder.get_exec_result(0).unwrap().clone();
+    let last_result = builder.get_exec_result_owned(0).unwrap();
     let last_result = &last_result[0];
 
     assert!(last_result.as_error().is_none(), "{:?}", last_result);
@@ -80,7 +80,7 @@ fn ee_1160_transfer_larger_than_balance_should_fail() {
         + U512::one();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -100,6 +100,7 @@ fn ee_1160_transfer_larger_than_balance_should_fail() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(wasmless_transfer_args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -115,7 +116,7 @@ fn ee_1160_transfer_larger_than_balance_should_fail() {
     )
     .expect("gas overflow");
 
-    let last_result = builder.get_exec_result(0).unwrap().clone();
+    let last_result = builder.get_exec_result_owned(0).unwrap();
     let last_result = &last_result[0];
     assert_eq!(
         balance_before - wasmless_transfer_motes.value(),
@@ -140,7 +141,7 @@ fn ee_1160_large_wasmless_transfer_should_avoid_overflow() {
     let transfer_amount = U512::max_value();
 
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -160,6 +161,7 @@ fn ee_1160_large_wasmless_transfer_should_avoid_overflow() {
             .with_empty_payment_bytes(runtime_args! {})
             .with_transfer_args(wasmless_transfer_args)
             .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+            .with_deploy_hash([42; 32])
             .build();
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
@@ -180,7 +182,7 @@ fn ee_1160_large_wasmless_transfer_should_avoid_overflow() {
         balance_after
     );
 
-    let last_result = builder.get_exec_result(0).unwrap().clone();
+    let last_result = builder.get_exec_result_owned(0).unwrap();
     let last_result = &last_result[0];
     assert_eq!(last_result.cost(), wasmless_transfer_gas_cost);
 

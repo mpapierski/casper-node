@@ -15,7 +15,7 @@ use crate::{
     account,
     account::TryFromSliceForAccountHashError,
     bytesrepr::{Bytes, Error, FromBytes, ToBytes},
-    uref, CLType, CLTyped, HashAddr,
+    checksummed_hex, uref, CLType, CLTyped, HashAddr,
 };
 
 const CONTRACT_WASM_MAX_DISPLAY_LEN: usize = 16;
@@ -27,6 +27,7 @@ const WASM_STRING_PREFIX: &str = "contract-wasm-";
 pub struct TryFromSliceForContractHashError(());
 
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum FromStrError {
     InvalidPrefix,
     Hex(base16::DecodeError),
@@ -114,7 +115,7 @@ impl ContractWasmHash {
         let remainder = input
             .strip_prefix(WASM_STRING_PREFIX)
             .ok_or(FromStrError::InvalidPrefix)?;
-        let bytes = HashAddr::try_from(base16::decode(remainder)?.as_ref())?;
+        let bytes = HashAddr::try_from(checksummed_hex::decode(remainder)?.as_ref())?;
         Ok(ContractWasmHash(bytes))
     }
 }
@@ -130,6 +131,7 @@ impl Debug for ContractWasmHash {
         write!(f, "ContractWasmHash({})", base16::encode_lower(&self.0))
     }
 }
+
 impl CLTyped for ContractWasmHash {
     fn cl_type() -> CLType {
         CLType::ByteArray(KEY_HASH_LENGTH as u32)
@@ -145,6 +147,12 @@ impl ToBytes for ContractWasmHash {
     #[inline(always)]
     fn serialized_length(&self) -> usize {
         self.0.serialized_length()
+    }
+
+    #[inline(always)]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        self.0.write_bytes(writer)?;
+        Ok(())
     }
 }
 
@@ -226,6 +234,7 @@ impl JsonSchema for ContractWasmHash {
 
 /// A container for contract's WASM bytes.
 #[derive(PartialEq, Eq, Clone, Serialize)]
+#[cfg_attr(feature = "datasize", derive(DataSize))]
 pub struct ContractWasm {
     bytes: Bytes,
 }
@@ -270,6 +279,11 @@ impl ToBytes for ContractWasm {
 
     fn serialized_length(&self) -> usize {
         self.bytes.serialized_length()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        self.bytes.write_bytes(writer)?;
+        Ok(())
     }
 }
 

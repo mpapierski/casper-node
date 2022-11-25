@@ -11,6 +11,7 @@ pub(crate) mod tests;
 
 pub(crate) use params::Params;
 use quanta::Clock;
+use serde::{Deserialize, Serialize};
 pub(crate) use weight::Weight;
 
 pub(crate) use index_panorama::{IndexObservation, IndexPanorama};
@@ -30,6 +31,8 @@ use rand_chacha::ChaCha8Rng;
 use thiserror::Error;
 use tracing::{error, info, trace, warn};
 
+use casper_types::{TimeDiff, Timestamp};
+
 use crate::{
     components::consensus::{
         highway_core::{
@@ -37,10 +40,10 @@ use crate::{
             evidence::Evidence,
             highway::{Endorsements, HashedWireUnit, SignedWireUnit, WireUnit},
             validators::{ValidatorIndex, ValidatorMap},
+            ENABLE_ENDORSEMENTS,
         },
         traits::Context,
     },
-    types::{TimeDiff, Timestamp},
     utils::ds,
 };
 use block::Block;
@@ -112,7 +115,7 @@ pub(crate) enum UnitError {
 /// The `Banned` state is fixed from the beginning and can't be replaced. However, `Indirect` can
 /// be replaced with `Direct` evidence, which has the same effect but doesn't rely on information
 /// from other consensus protocol instances.
-#[derive(Clone, DataSize, Debug, Eq, PartialEq, Hash)]
+#[derive(Clone, DataSize, Debug, Deserialize, Eq, PartialEq, Hash, Serialize)]
 pub(crate) enum Fault<C>
 where
     C: Context,
@@ -140,7 +143,7 @@ impl<C: Context> Fault<C> {
 /// Both observers and active validators must instantiate this, pass in all incoming vertices from
 /// peers, and use a [FinalityDetector](../finality_detector/struct.FinalityDetector.html) to
 /// determine the outcome of the consensus process.
-#[derive(Debug, Clone, DataSize)]
+#[derive(Debug, Clone, DataSize, Serialize)]
 pub(crate) struct State<C>
 where
     C: Context,
@@ -186,6 +189,8 @@ where
     pings: ValidatorMap<Timestamp>,
     /// Clock to measure time spent in fork choice computation.
     #[data_size(skip)] // Not implemented for Clock; probably negligible.
+    #[serde(skip, default)]
+    // Serialization is used by external tools only, which cannot make sense of `Clock`.
     clock: Clock,
 }
 
@@ -815,16 +820,26 @@ impl<C: Context> State<C> {
                 }
             }
         }
-        // All endorsed units from the panorama of this wunit.
-        let endorsements_in_panorama = panorama
-            .iter_correct_hashes()
-            .flat_map(|hash| self.unit(hash).claims_endorsed())
-            .collect::<HashSet<_>>();
-        if endorsements_in_panorama
-            .iter()
-            .any(|&e| !wunit.endorsed.iter().any(|h| h == e))
-        {
-            return Err(UnitError::EndorsementsNotMonotonic);
+        if ENABLE_ENDORSEMENTS {
+            // All endorsed units from the panorama of this wunit.
+            let endorsements_in_panorama = panorama
+                .iter_correct_hashes()
+                .flat_map(|hash| self.unit(hash).claims_endorsed())
+                .collect::<HashSet<_>>();
+            if endorsements_in_panorama
+                .iter()
+                .any(|&e| !wunit.endorsed.iter().any(|h| h == e))
+            {
+                return Err(UnitError::EndorsementsNotMonotonic);
+            }
+            for hash in &wunit.endorsed {
+                if !wunit.panorama.sees(self, hash) {
+                    return Err(UnitError::EndorsedButUnseen {
+                        hash: format!("{:?}", hash),
+                        wire_unit: format!("{:?}", wunit),
+                    });
+                }
+            }
         }
         if wunit.value.is_some() {
             // If this unit is a block, it must be the first unit in this round, its timestamp must
@@ -839,14 +854,6 @@ impl<C: Context> State<C> {
             let is_terminal = |hash: &C::Hash| self.is_terminal_block(hash);
             if self.fork_choice(panorama).map_or(false, is_terminal) {
                 return Err(UnitError::ValueAfterTerminalBlock);
-            }
-        }
-        for hash in &wunit.endorsed {
-            if !wunit.panorama.sees(self, hash) {
-                return Err(UnitError::EndorsedButUnseen {
-                    hash: format!("{:?}", hash),
-                    wire_unit: format!("{:?}", wunit),
-                });
             }
         }
         match self.validate_lnc(creator, panorama, &wunit.endorsed) {
@@ -935,6 +942,9 @@ impl<C: Context> State<C> {
 
     /// Returns the set of units (by hash) that are endorsed and seen from the panorama.
     pub(crate) fn seen_endorsed(&self, pan: &Panorama<C>) -> BTreeSet<C::Hash> {
+        if !ENABLE_ENDORSEMENTS {
+            return Default::default();
+        };
         // First we collect all units that were already seen as endorsed by earlier units.
         let mut result: BTreeSet<C::Hash> = pan
             .iter_correct_hashes()
@@ -964,7 +974,7 @@ impl<C: Context> State<C> {
     }
 
     /// Validates whether a unit with the given panorama and `endorsed` set satisfies the
-    /// Limited Naïveté Criterion (LNC).
+    /// Limited Naivety Criterion (LNC).
     /// Returns index of the first equivocator that was cited naively in violation of the LNC, or
     /// `None` if the LNC is satisfied.
     fn validate_lnc(
@@ -973,6 +983,9 @@ impl<C: Context> State<C> {
         panorama: &Panorama<C>,
         endorsed: &BTreeSet<C::Hash>,
     ) -> Option<ValidatorIndex> {
+        if !ENABLE_ENDORSEMENTS {
+            return None;
+        }
         let violates_lnc =
             |eq_idx: &ValidatorIndex| !self.satisfies_lnc_for(creator, panorama, endorsed, *eq_idx);
         panorama.iter_faulty().find(violates_lnc)

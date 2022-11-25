@@ -1,9 +1,6 @@
 use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_GAS_PRICE,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_GAS_PRICE, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::{
@@ -13,6 +10,7 @@ use casper_execution_engine::{
     shared::system_config::DEFAULT_WASMLESS_TRANSFER_COST,
 };
 use casper_types::{
+    account::AccountHash,
     runtime_args,
     system::{handle_payment, mint},
     ApiError, Gas, Motes, RuntimeArgs, U512,
@@ -23,7 +21,7 @@ const ACCOUNT_1_ADDR: AccountHash = AccountHash::new([1u8; 32]);
 
 fn setup() -> InMemoryWasmTestBuilder {
     let mut builder = InMemoryWasmTestBuilder::default();
-    builder.run_genesis(&*DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
     builder
 }
 
@@ -48,9 +46,10 @@ fn should_charge_for_user_error(
     let proposer_purse_balance_after = builder.get_proposer_purse_balance();
 
     let response = builder
-        .get_exec_result(0)
+        .get_exec_result_owned(0)
         .expect("should have result")
         .get(0)
+        .cloned()
         .expect("should have first result");
     assert_eq!(response.cost(), transfer_cost);
     assert_eq!(
@@ -167,9 +166,10 @@ fn should_properly_charge_fixed_cost_with_nondefault_gas_price() {
     let proposer_purse_balance_after = builder.get_proposer_purse_balance();
 
     let response = builder
-        .get_exec_result(0)
+        .get_exec_result_owned(0)
         .expect("should have result")
         .get(0)
+        .cloned()
         .expect("should have first result");
     assert_eq!(
         response.cost(),

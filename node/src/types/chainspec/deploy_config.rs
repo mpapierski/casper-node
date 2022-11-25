@@ -10,14 +10,12 @@ use serde::{Deserialize, Serialize};
 
 #[cfg(test)]
 use casper_execution_engine::core::engine_state::MAX_PAYMENT_AMOUNT;
+#[cfg(test)]
+use casper_types::testing::TestRng;
 use casper_types::{
     bytesrepr::{self, FromBytes, ToBytes},
-    Motes, U512,
+    Motes, TimeDiff, U512,
 };
-
-#[cfg(test)]
-use crate::testing::TestRng;
-use crate::types::TimeDiff;
 
 #[derive(Copy, Clone, DataSize, PartialEq, Eq, Serialize, Deserialize, Debug)]
 // Disallow unknown fields to ensure config files and command-line overrides contain valid keys.
@@ -30,6 +28,7 @@ pub struct DeployConfig {
     pub(crate) max_deploy_size: u32,
     pub(crate) block_max_deploy_count: u32,
     pub(crate) block_max_transfer_count: u32,
+    pub(crate) block_max_approval_count: u32,
     pub(crate) block_gas_limit: u64,
     pub(crate) payment_args_max_length: u32,
     pub(crate) session_args_max_length: u32,
@@ -47,6 +46,7 @@ impl DeployConfig {
         let max_deploy_size = rng.gen_range(100_000..1_000_000);
         let block_max_deploy_count = rng.gen();
         let block_max_transfer_count = rng.gen();
+        let block_max_approval_count = rng.gen();
         let block_gas_limit = rng.gen_range(100_000_000_000..1_000_000_000_000_000);
         let payment_args_max_length = rng.gen();
         let session_args_max_length = rng.gen();
@@ -61,6 +61,7 @@ impl DeployConfig {
             max_deploy_size,
             block_max_deploy_count,
             block_max_transfer_count,
+            block_max_approval_count,
             block_gas_limit,
             payment_args_max_length,
             session_args_max_length,
@@ -80,6 +81,7 @@ impl Default for DeployConfig {
             max_deploy_size: 1_048_576,
             block_max_deploy_count: 10,
             block_max_transfer_count: 1000,
+            block_max_approval_count: 2600,
             block_gas_limit: 10_000_000_000_000,
             payment_args_max_length: 1024,
             session_args_max_length: 1024,
@@ -98,6 +100,7 @@ impl ToBytes for DeployConfig {
         buffer.extend(self.max_deploy_size.to_bytes()?);
         buffer.extend(self.block_max_deploy_count.to_bytes()?);
         buffer.extend(self.block_max_transfer_count.to_bytes()?);
+        buffer.extend(self.block_max_approval_count.to_bytes()?);
         buffer.extend(self.block_gas_limit.to_bytes()?);
         buffer.extend(self.payment_args_max_length.to_bytes()?);
         buffer.extend(self.session_args_max_length.to_bytes()?);
@@ -113,6 +116,7 @@ impl ToBytes for DeployConfig {
             + self.max_deploy_size.serialized_length()
             + self.block_max_deploy_count.serialized_length()
             + self.block_max_transfer_count.serialized_length()
+            + self.block_max_approval_count.serialized_length()
             + self.block_gas_limit.serialized_length()
             + self.payment_args_max_length.serialized_length()
             + self.session_args_max_length.serialized_length()
@@ -130,6 +134,7 @@ impl FromBytes for DeployConfig {
         let (max_deploy_size, remainder) = u32::from_bytes(remainder)?;
         let (block_max_deploy_count, remainder) = u32::from_bytes(remainder)?;
         let (block_max_transfer_count, remainder) = u32::from_bytes(remainder)?;
+        let (block_max_approval_count, remainder) = u32::from_bytes(remainder)?;
         let (block_gas_limit, remainder) = u64::from_bytes(remainder)?;
         let (payment_args_max_length, remainder) = u32::from_bytes(remainder)?;
         let (session_args_max_length, remainder) = u32::from_bytes(remainder)?;
@@ -142,6 +147,7 @@ impl FromBytes for DeployConfig {
             max_deploy_size,
             block_max_deploy_count,
             block_max_transfer_count,
+            block_max_approval_count,
             block_gas_limit,
             payment_args_max_length,
             session_args_max_length,

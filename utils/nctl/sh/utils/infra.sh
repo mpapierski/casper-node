@@ -206,6 +206,18 @@ function get_node_port()
 }
 
 #######################################
+# Calculates speculative execution port.
+# Arguments:
+#   Node ordinal identifier.
+#######################################
+function get_node_port_speculative_exec()
+{
+    local NODE_ID=${1}    
+
+    get_node_port "$NCTL_BASE_PORT_SPEC_EXEC" "$NODE_ID"
+}
+
+#######################################
 # Calculates REST port.
 # Arguments:
 #   Node ordinal identifier.
@@ -339,4 +351,12 @@ function get_process_name_of_node_group()
     else
         echo "$NCTL_PROCESS_GROUP_3"
     fi
+}
+
+#######################################
+# Returns count of nodes that atleast attempted to start
+#######################################
+function get_count_of_started_nodes()
+{
+    nctl-status | grep -v 'Not started' | wc -l
 }

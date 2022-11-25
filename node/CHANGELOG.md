@@ -10,11 +10,156 @@ All notable changes to this project will be documented in this file.  The format
 [comment]: <> (Security:   in case of vulnerabilities)
 
 
+
 ## [Unreleased]
 
 ### Added
-* Add `enable_manual_sync` boolean option to `[contract_runtime]` in the config.toml which enables manual LMDB sync.
+* Introduce fast-syncing to join the network, avoiding the need to execute every block to catch up.
+* Merkle root hashes for execution results and deploy approvals are written to global state after each block execution.
+* Add `max_parallel_deploy_fetches` and `max_parallel_trie_fetches` config options to the `[node]` section to control how many requests are made in parallel while syncing.
+* Add `retry_interval` to `[node]` config section to control the delay between retry attempts while syncing.
+* Add `sync_to_genesis` to `[node]` config section, which if set to `true` will cause the node to retrieve all blocks, deploys and global state back to genesis while running in participating mode.
+* Add new event to the main SSE server stream across all endpoints `<IP:PORT>/events/*` which emits a shutdown event when the node shuts down.
+* Add `SIGUSR2` signal handling to dump the queue in JSON format (see "Changed" section for `SIGUSR1`).
+* A diagnostic port can now be enabled via the `[diagnostics_port]` section in the configuration file. See the `README.md` for details.
+* Add capabilities for known nodes to slow down the reconnection process of outdated legacy nodes still out on the internet.
+* Add `strict_argument_checking` to the chainspec to enable strict args checking when executing a contract; i.e. that all non-optional args are provided and of the correct `CLType`.
+* In addition to `consensus` and `deploy_requests`, the following values can now be controlled via the `[network.estimator_weights]` section in config: `gossip`, `finality_signatures`, `deploy_responses`, `block_requests`, `block_responses`, `trie_requests` and `trie_responses`.
+* Nodes will now also gossip deploys onwards while joining.
+* Add `node_state` field to the `/status` endpoint and the `info_get_status` JSON-RPC, giving an indication of the node's operating mode (joining or participating) and the progress of any ongoing chain-sync task.
+* Add new REST `/chainspec` and JSON-RPC `info_get_chainspec` endpoints that return the raw bytes of the `chainspec.toml`, `accounts.toml` and `global_state.toml` files as read at node startup.
+* Add a new parameter to `info_get_deploys` JSON-RPC, `finalized_approvals` - controlling whether the approvals returned with the deploy should be the ones originally received by the node, or overridden by the approvals that were finalized along with the deploy.
+* Add metrics `accumulated_outgoing_limiter_delay` and `accumulated_incoming_limiter_delay` to report how much time was spent throttling other peers.
+* Add a configuration option `max_in_flight_demands` that controls the maximum number of in-flight requests for data.
+* Add a new identifier `PurseIdentifier` which is a new parameter to identify URefs for balance related queries.
+* Extend `GlobalStateIdentifier` to include `BlockHeight`.
+* Add a new RPC endpoint `query_balance` which queries for balances underneath a URef identified by a given `PurseIdentifier`.
+* Add new `block_hash` and `block_height` optional fields to `info_get_deploy` RPC query which will be present when execution results aren't available.
+* Add a new config option `[rpc_server.max_body_bytes]` to allow a configurable value for the maximum size of the body of a JSON-RPC request.
+* Add new JSON RPC endpoint `/speculative_exec` that accepts a deploy and a block hash and executes that deploy, returning the execution effects.
+* Add `enable_server` option to all HTTP server configuration sections (`rpc_server`, `rest_server`, `event_stream_server`) which allow users to enable/disable each server independently (enabled by default).
+* Add `enable_server`, `address`, `qps_limit` and `max_body_bytes` to new `speculative_exec_server` section to `config.toml` to configure speculative execution JSON-RPC server (disabled by default).
+* Add `testing` feature to casper-node crate to support test-only functionality (random constructors) on blocks and deploys.
+* The network handshake now contains the hash of the chainspec used and will be successful only if they match.
+* Add an `identity` option to load existing network identity certificates signed by a CA.
+* Add a `lock_status` field to the JSON representation of the `ContractPackage` values.
+
+### Changed
+* Detection of a crash no longer triggers DB integrity checks to run on node start; the checks can be triggered manually instead.
+* `SIGUSR1`/`SIGUSR2` queue dumps have been removed in favor of the diagnostics port.
+* Incoming connections from peers are rejected if they are exceeding the default incoming connections per peer limit of 3.
+* Nodes no longer connect to nodes that do not speak the same protocol version by default.
+* Chain automatically creates a switch block immediately after genesis or an upgrade.
+* Connection handshake timeouts can now be configured via the `handshake_timeout` variable (they were hardcoded at 20 seconds before).
+* `Key::SystemContractRegistry` is now readable and can be queried via the RPC.
+* Requests for data from a peer are now de-prioritized over networking messages necessary for consensus and chain advancement.
+* JSON-RPC responses which fail to provide requested data will now also include an indication of that node's available block range, i.e. the block heights for which it holds all global state. For nodes running with `[node.sync_to_genesis]` set to true, the range will be the full blockchain, otherwise the range will start at a block near the tip of the chain when the node started running.  See [#2789](https://github.com/casper-network/casper-node/pull/2789) for an example of the new error response.
+* OpenSSL has been bumped to version 1.1.1.n, if compiling with vendored OpenSSL to address [CVE-2022-0778](https://www.openssl.org/news/secadv/20220315.txt).
+* Switch blocks immediately after genesis or an upgrade are now signed.
+* Added CORS behavior to allow any route on the JSON-RPC, REST and SSE servers.
+* The network message format has been replaced with a more efficient encoding while keeping the initial handshake intact.
+* The node flushes outgoing messages immediately, trading bandwidth for latency. This change is made to optimize feedback loops of various components in the system.
+* The JSON-RPC server now returns more useful responses in many error cases.
+
+### Deprecated
+* Deprecate the `starting_state_root_hash` field from the REST and JSON-RPC status endpoints.
+* `null` should no longer be used as a value for `params` in JSON-RPC requests.  Prefer an empty Array or Object.
+
+### Removed
+* Legacy synchronization from genesis in favor of fast sync has been removed.
+* The `casper-mainnet` feature flag has been removed.
+* Integrity check has been removed.
+* Remove `verify_accounts` option from `config.toml`, meaning deploys received from clients always undergo account balance checks to assess suitability for execution or not.
+* Remove a temporary chainspec setting `max_stored_value_size` to limit the size of individual values stored in global state.
+* Remove asymmetric key functionality (move to `casper-types` crate behind feature "std").
+* Remove time types (move to `casper-types` with some functionality behind feature "std").
+* Remove `reject_incompatible_versions` option from `config.toml`, meaning now all versions different than the current one are rejected through the `chainspec_hash` check in the network handshake.
+* Remove the `[protocol][last_emergency_restart]` field from the chainspec - fast sync will use the global state directly for recognizing such restarts instead.
+
+### Fixed
+* Limiters for incoming requests and outgoing bandwidth will no longer inadvertently delay some validator traffic when maxed out due to joining nodes.
+* Dropped connections no longer cause the outstanding messages metric to become incorrect.
+* JSON-RPC server is now mostly compliant with the standard. Specifically, correct error values are now returned in responses in many failure cases.
+
+### Security
+* OpenSSL has been bumped to version 1.1.1.n, if compiling with vendored OpenSSL to address [CVE-2022-0778](https://www.openssl.org/news/secadv/20220315.txt).
+
+
+
+## 1.4.8
+
+### Changed
+* Update `casper-execution-engine`.
+
+
+
+## 1.4.7
+
+### Changed
+* Update `casper-execution-engine` and three `openssl` crates to latest versions.
+
+
+
+## 1.4.6
+
+### Changed
+* Update dependencies to make use of scratch global state in the contract runtime.
+
+
+
+## 1.4.5
+
+### Added
+* Add a temporary chainspec setting `max_stored_value_size` to limit the size of individual values stored in global state.
+* Add a chainspec setting `minimum_delegation_amount` to limit the minimal amount of motes that can be delegated by a first time delegator.
+* Add a chainspec setting `block_max_approval_count` to limit the maximum number of approvals across all deploys in a single block.
+* Add a `finalized_approvals` field to the GetDeploy RPC, which if `true` causes the response to include finalized approvals substituted for the originally-received ones.
+
+### Fixed
+* Include deploy approvals in block payloads upon which consensus operates.
+* Fixes a bug where historical auction data was unavailable via `get-auction-info` RPC.
+
+
+
+## 1.4.4 - 2021-12-29
+
+### Added
+* Add `contract_runtime_latest_commit_step` gauge metric indicating the execution duration of the latest `commit_step` call.
+
+### Changed
+* No longer checksum-hex encode various types.
+
+
+
+## 1.4.3 - 2021-12-06
+
+### Added
 * Add new event to the main SSE server stream accessed via `<IP:Port>/events/main` which emits hashes of expired deploys.
+
+### Changed
+* `enable_manual_sync` configuration parameter defaults to `true`.
+* Default behavior of LMDB changed to use [`NO_READAHEAD`](https://docs.rs/lmdb/0.8.0/lmdb/struct.EnvironmentFlags.html#associatedconstant.NO_READAHEAD).
+
+
+
+## [1.4.2] - 2021-11-11
+
+### Changed
+* There are now less false warnings/errors regarding dropped responders or closed channels during a shutdown, where they are expected and harmless.
+* Execution transforms are ordered by insertion order.
+
+### Removed
+* The config option `consensus.highway.unit_hashes_folder` has been removed.
+
+### Fixed
+* The block proposer component now retains pending deploys and transfers across a restart.
+
+
+
+## [1.4.0] - 2021-10-04
+
+### Added
+* Add `enable_manual_sync` boolean option to `[contract_runtime]` in the config.toml which enables manual LMDB sync.
 * Add `contract_runtime_execute_block` histogram tracking execution time of a whole block.
 * Long-running events now log their event type.
 * Individual weights for traffic throttling can now be set through the configuration value `network.estimator_weights`.
@@ -42,7 +187,7 @@ All notable changes to this project will be documented in this file.  The format
   * `[gossip][gossip_request_timeout]`
   * `[gossip][get_remainder_timeout]`
   * `[fetcher][get_from_peer_timeout]`
-  
+
 ### Removed
 * The unofficial support for nix-related derivations and support tooling has been removed.
 * Experimental, nix-based kubernetes testing support has been removed.
@@ -218,7 +363,9 @@ All notable changes to this project will be documented in this file.  The format
 
 
 [Keep a Changelog]: https://keepachangelog.com/en/1.0.0
-[unreleased]: https://github.com/casper-network/casper-node/compare/v1.3.0...dev
+[unreleased]: https://github.com/casper-network/casper-node/compare/37d561634adf73dab40fffa7f1f1ee47e80bf8a1...dev
+[1.4.2]: https://github.com/casper-network/casper-node/compare/v1.4.0...37d561634adf73dab40fffa7f1f1ee47e80bf8a1
+[1.4.0]: https://github.com/casper-network/casper-node/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/casper-network/casper-node/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/casper-network/casper-node/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/casper-network/casper-node/compare/v1.0.1...v1.1.1

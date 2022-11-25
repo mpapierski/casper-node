@@ -23,6 +23,7 @@
 //! Nodes gossip their public listening addresses periodically, and will try to establish and
 //! maintain an outgoing connection to any new address learned.
 
+mod bincode_format;
 mod chain_info;
 mod config;
 mod counting_format;
@@ -32,6 +33,7 @@ mod gossiped_address;
 mod limiter;
 mod message;
 mod message_pack_format;
+mod metrics;
 mod outgoing;
 mod symmetry;
 pub(crate) mod tasks;
@@ -45,17 +47,19 @@ use std::{
     io,
     net::{SocketAddr, TcpListener},
     result,
-    sync::{Arc, Weak},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Weak,
+    },
     time::{Duration, Instant},
 };
 
-use casper_types::{EraId, PublicKey};
 use datasize::DataSize;
 use futures::{future::BoxFuture, FutureExt};
 use openssl::{error::ErrorStack as OpenSslErrorStack, pkey};
 use pkey::{PKey, Private};
 use prometheus::Registry;
-use rand::seq::{IteratorRandom, SliceRandom};
+use rand::{prelude::SliceRandom, seq::IteratorRandom};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
@@ -70,45 +74,51 @@ use tokio_openssl::SslStream;
 use tokio_util::codec::LengthDelimitedCodec;
 use tracing::{debug, error, info, trace, warn, Instrument, Span};
 
+use casper_types::{EraId, PublicKey};
+
+pub(crate) use self::{
+    bincode_format::BincodeFormat,
+    config::Config,
+    error::Error,
+    event::Event,
+    gossiped_address::GossipedAddress,
+    message::{EstimatorWeights, FromIncoming, Message, MessageKind, Payload},
+};
 use self::{
+    chain_info::ChainInfo,
+    config::IdentityConfig,
     counting_format::{ConnectionId, CountingFormat, Role},
     error::{ConnectionError, Result},
     event::{IncomingConnection, OutgoingConnection},
     limiter::Limiter,
     message::ConsensusKeyPair,
-    message_pack_format::MessagePackFormat,
+    metrics::Metrics,
     outgoing::{DialOutcome, DialRequest, OutgoingConfig, OutgoingManager},
     symmetry::ConnectionSymmetry,
-    tasks::NetworkContext,
+    tasks::{MessageQueueItem, NetworkContext},
 };
-pub(crate) use self::{
-    event::Event,
-    gossiped_address::GossipedAddress,
-    message::{Message, MessageKind, Payload, PayloadWeights},
-};
-use super::{consensus, contract_runtime::ContractRuntimeAnnouncement};
+
 use crate::{
-    components::{networking_metrics::NetworkingMetrics, Component},
+    components::{consensus, Component},
     effect::{
-        announcements::{BlocklistAnnouncement, NetworkAnnouncement},
-        requests::{NetworkInfoRequest, NetworkRequest, StorageRequest},
-        EffectBuilder, EffectExt, Effects,
+        announcements::{
+            BlocklistAnnouncement, ChainSynchronizerAnnouncement, ContractRuntimeAnnouncement,
+        },
+        requests::{BeginGossipRequest, NetworkInfoRequest, NetworkRequest, StorageRequest},
+        AutoClosingResponder, EffectBuilder, EffectExt, Effects,
     },
     reactor::{EventQueueHandle, Finalize, ReactorEvent},
-    tls::{self, TlsCert, ValidationError},
+    tls::{
+        self, validate_cert_with_authority, LoadCertError, LoadSecretKeyError, TlsCert,
+        ValidationError,
+    },
     types::NodeId,
-    utils::{self, display_error, WithDir},
+    utils::{self, display_error, Source, WithDir},
     NodeRng,
 };
-use chain_info::ChainInfo;
-pub(crate) use config::Config;
-pub(crate) use error::Error;
 
 const MAX_METRICS_DROP_ATTEMPTS: usize = 25;
 const DROP_RETRY_DELAY: Duration = Duration::from_millis(100);
-
-/// Duration peers are kept on the block list, before being redeemed.
-const BLOCKLIST_RETAIN_DURATION: Duration = Duration::from_secs(60 * 10);
 
 /// How often to keep attempting to reconnect to a node before giving up. Note that reconnection
 /// delays increase exponentially!
@@ -125,7 +135,7 @@ const OUTGOING_MANAGER_SWEEP_INTERVAL: Duration = Duration::from_secs(1);
 #[derive(Clone, DataSize, Debug)]
 pub(crate) struct OutgoingHandle<P> {
     #[data_size(skip)] // Unfortunately, there is no way to inspect an `UnboundedSender`.
-    sender: UnboundedSender<Arc<Message<P>>>,
+    sender: UnboundedSender<MessageQueueItem<P>>,
     peer_addr: SocketAddr,
 }
 
@@ -151,22 +161,32 @@ where
     /// Tracks whether a connection is symmetric or not.
     connection_symmetries: HashMap<NodeId, ConnectionSymmetry>,
 
+    /// Tracks nodes that have announced themselves as nodes that are syncing.
+    syncing_nodes: HashSet<NodeId>,
+
     /// Channel signaling a shutdown of the small network.
     // Note: This channel is closed when `SmallNetwork` is dropped, signalling the receivers that
     // they should cease operation.
     #[data_size(skip)]
     shutdown_sender: Option<watch::Sender<()>>,
-    /// A clone of the receiver is passed to the message reader for all new incoming connections in
-    /// order that they can be gracefully terminated.
-    #[data_size(skip)]
-    shutdown_receiver: watch::Receiver<()>,
     /// Join handle for the server thread.
     #[data_size(skip)]
     server_join_handle: Option<JoinHandle<()>>,
 
+    /// Channel signaling a shutdown of the incoming connections.
+    // Note: This channel is closed when we finished syncing, so the `SmallNetwork` can close all
+    // connections. When they are re-established, the proper value of the now updated `is_syncing`
+    // flag will be exchanged on handshake.
+    #[data_size(skip)]
+    close_incoming_sender: Option<watch::Sender<()>>,
+    /// Handle used by the `message_reader` task to receive a notification that incoming
+    /// connections should be closed.
+    #[data_size(skip)]
+    close_incoming_receiver: watch::Receiver<()>,
+
     /// Networking metrics.
     #[data_size(skip)]
-    net_metrics: Arc<NetworkingMetrics>,
+    net_metrics: Arc<Metrics>,
 
     /// The outgoing bandwidth limiter.
     #[data_size(skip)]
@@ -185,8 +205,11 @@ where
 impl<REv, P> SmallNetwork<REv, P>
 where
     P: Payload + 'static,
-    REv:
-        ReactorEvent + From<Event<P>> + From<NetworkAnnouncement<NodeId, P>> + From<StorageRequest>,
+    REv: ReactorEvent
+        + From<Event<P>>
+        + FromIncoming<P>
+        + From<StorageRequest>
+        + From<NetworkRequest<P>>,
 {
     /// Creates a new small network component instance.
     #[allow(clippy::type_complexity)]
@@ -218,11 +241,14 @@ where
             return Err(Error::EmptyKnownHosts);
         }
 
+        let net_metrics = Arc::new(Metrics::new(registry)?);
+
         let outgoing_limiter: Box<dyn Limiter> = if cfg.max_outgoing_byte_rate_non_validators == 0 {
             Box::new(limiter::Unlimited)
         } else {
             Box::new(limiter::ClassBasedLimiter::new(
                 cfg.max_outgoing_byte_rate_non_validators,
+                net_metrics.accumulated_outgoing_limiter_delay.clone(),
             ))
         };
 
@@ -232,20 +258,22 @@ where
             } else {
                 Box::new(limiter::ClassBasedLimiter::new(
                     cfg.max_incoming_message_rate_non_validators,
+                    net_metrics.accumulated_incoming_limiter_delay.clone(),
                 ))
             };
 
-        let outgoing_manager = OutgoingManager::new(OutgoingConfig {
-            retry_attempts: RECONNECTION_ATTEMPTS,
-            base_timeout: BASE_RECONNECTION_TIMEOUT,
-            unblock_after: BLOCKLIST_RETAIN_DURATION,
-            sweep_timeout: cfg.max_addr_pending_time.into(),
-        });
+        let outgoing_manager = OutgoingManager::with_metrics(
+            OutgoingConfig {
+                retry_attempts: RECONNECTION_ATTEMPTS,
+                base_timeout: BASE_RECONNECTION_TIMEOUT,
+                unblock_after: cfg.blocklist_retain_duration.into(),
+                sweep_timeout: cfg.max_addr_pending_time.into(),
+            },
+            net_metrics.create_outgoing_metrics(),
+        );
 
         let mut public_addr =
             utils::resolve_address(&cfg.public_address).map_err(Error::ResolveAddr)?;
-
-        let net_metrics = Arc::new(NetworkingMetrics::new(registry)?);
 
         // We can now create a listener.
         let bind_address = utils::resolve_address(&cfg.bind_address).map_err(Error::ResolveAddr)?;
@@ -273,25 +301,62 @@ where
             .map_err(Error::LoadConsensusKeys)?
             .map(|(secret_key, public_key)| ConsensusKeyPair::new(secret_key, public_key));
 
+        // Set the demand max from configuration, regarding `0` as "unlimited".
+        let demand_max = if cfg.max_in_flight_demands == 0 {
+            usize::MAX
+        } else {
+            cfg.max_in_flight_demands as usize
+        };
+
+        // Load a ca certificate (if present)
+        let ca_certificate = match &cfg.identity {
+            Some(identity) => {
+                let ca_cert = tls::load_cert(&identity.ca_certificate)?;
+
+                // A quick sanity check for the loaded cert against supplied CA.
+                validate_cert_with_authority(
+                    small_network_identity.tls_certificate.as_x509().clone(),
+                    &ca_cert,
+                )
+                .map_err(|error| {
+                    warn!(%error, "the given node certificate is not signed by the network CA");
+                    Error::CertValidationError(error)
+                })?;
+
+                Some(ca_cert)
+            }
+            None => None,
+        };
+
+        let chain_info = chain_info_source.into();
+        let protocol_version = chain_info.protocol_version;
         let context = Arc::new(NetworkContext {
             event_queue,
             our_id: NodeId::from(&small_network_identity),
             our_cert: small_network_identity.tls_certificate,
+            network_ca: ca_certificate.map(Arc::new),
             secret_key: small_network_identity.secret_key,
             net_metrics: Arc::downgrade(&net_metrics),
-            chain_info: chain_info_source.into(),
+            chain_info,
             public_addr,
             consensus_keys,
+            handshake_timeout: cfg.handshake_timeout,
             payload_weights: cfg.estimator_weights.clone(),
+            tarpit_version_threshold: cfg.tarpit_version_threshold,
+            tarpit_duration: cfg.tarpit_duration,
+            tarpit_chance: cfg.tarpit_chance,
+            max_in_flight_demands: demand_max,
+            is_syncing: AtomicBool::new(true),
         });
 
         // Run the server task.
         // We spawn it ourselves instead of through an effect to get a hold of the join handle,
         // which we need to shutdown cleanly later on.
-        info!(%local_addr, %public_addr, "starting server background task");
+        info!(%local_addr, %public_addr, %protocol_version, "starting server background task");
 
         let (server_shutdown_sender, server_shutdown_receiver) = watch::channel(());
-        let shutdown_receiver = server_shutdown_receiver.clone();
+        let (close_incoming_sender, close_incoming_receiver) = watch::channel(());
+
         let server_join_handle = tokio::spawn(
             tasks::server(
                 context.clone(),
@@ -306,8 +371,10 @@ where
             context,
             outgoing_manager,
             connection_symmetries: HashMap::new(),
+            syncing_nodes: HashSet::new(),
             shutdown_sender: Some(server_shutdown_sender),
-            shutdown_receiver,
+            close_incoming_sender: Some(close_incoming_sender),
+            close_incoming_receiver,
             server_join_handle: Some(server_join_handle),
             net_metrics,
             outgoing_limiter,
@@ -344,10 +411,18 @@ where
         Ok((component, effects))
     }
 
+    fn close_incoming_connections(&mut self) {
+        info!("disconnecting incoming connections");
+        let (close_incoming_sender, close_incoming_receiver) = watch::channel(());
+        self.close_incoming_sender = Some(close_incoming_sender);
+        self.close_incoming_receiver = close_incoming_receiver;
+    }
+
     /// Queues a message to be sent to all nodes.
     fn broadcast_message(&self, msg: Arc<Message<P>>) {
+        self.net_metrics.broadcast_requests.inc();
         for peer_id in self.outgoing_manager.connected_peers() {
-            self.send_message(peer_id, msg.clone());
+            self.send_message(peer_id, msg.clone(), None);
         }
     }
 
@@ -378,17 +453,29 @@ where
         }
 
         for &peer_id in &peer_ids {
-            self.send_message(peer_id, msg.clone());
+            self.send_message(peer_id, msg.clone(), None);
         }
 
         peer_ids.into_iter().collect()
     }
 
     /// Queues a message to be sent to a specific node.
-    fn send_message(&self, dest: NodeId, msg: Arc<Message<P>>) {
+    fn send_message(
+        &self,
+        dest: NodeId,
+        msg: Arc<Message<P>>,
+        opt_responder: Option<AutoClosingResponder<()>>,
+    ) {
         // Try to send the message.
         if let Some(connection) = self.outgoing_manager.get_route(dest) {
-            if let Err(msg) = connection.sender.send(msg) {
+            if msg.payload_is_unsafe_for_syncing_nodes() && self.syncing_nodes.contains(&dest) {
+                // We should never attempt to send an unsafe message to a peer that we know is still
+                // syncing. Since "unsafe" does usually not mean immediately catastrophic, we
+                // attempt to carry on, but warn loudly.
+                error!(kind=%msg.classify(), node_id=%dest, "sending unsafe message to syncing node");
+            }
+
+            if let Err(msg) = connection.sender.send((msg, opt_responder)) {
                 // We lost the connection, but that fact has not reached us yet.
                 warn!(our_id=%self.context.our_id, %dest, ?msg, "dropped outgoing message, lost connection");
             } else {
@@ -400,10 +487,8 @@ where
         }
     }
 
-    #[allow(clippy::redundant_clone)]
     fn handle_incoming_connection(
         &mut self,
-        effect_builder: EffectBuilder<REv>,
         incoming: Box<IncomingConnection<P>>,
         span: Span,
     ) -> Effects<Event<P>> {
@@ -443,6 +528,25 @@ where
                 peer_consensus_public_key,
                 stream,
             } => {
+                if self.cfg.max_incoming_peer_connections != 0 {
+                    if let Some(symmetries) = self.connection_symmetries.get(&peer_id) {
+                        let incoming_count = symmetries
+                            .incoming_addrs()
+                            .map(|addrs| addrs.len())
+                            .unwrap_or_default();
+
+                        if incoming_count >= self.cfg.max_incoming_peer_connections as usize {
+                            info!(%public_addr,
+                                  %peer_id,
+                                  count=incoming_count,
+                                  limit=self.cfg.max_incoming_peer_connections,
+                                  "rejecting new incoming connection, limit for peer exceeded"
+                            );
+                            return Effects::new();
+                        }
+                    }
+                }
+
                 info!(%public_addr, "new incoming connection established");
 
                 // Learn the address the peer gave us.
@@ -458,7 +562,17 @@ where
                     .or_default()
                     .add_incoming(peer_addr, Instant::now())
                 {
-                    effects.extend(self.connection_completed(effect_builder, peer_id));
+                    self.connection_completed(peer_id);
+
+                    // We should NOT update the syncing set when we receive an incoming connection,
+                    // because the `message_sender` which is handling the corresponding outgoing
+                    // connection will not receive the update of the syncing state of the remote
+                    // peer.
+                    //
+                    // Such desync may cause the node to try to send "unsafe" requests to the
+                    // syncing node, because the outgoing connection may outlive the
+                    // incoming one, i.e. it may take some time to drop "our" outgoing
+                    // connection after a peer has closed the corresponding incoming connection.
                 }
 
                 // Now we can start the message reader.
@@ -469,7 +583,7 @@ where
                         stream,
                         self.incoming_limiter
                             .create_handle(peer_id, peer_consensus_public_key),
-                        self.shutdown_receiver.clone(),
+                        self.close_incoming_receiver.clone(),
                         peer_id,
                         span.clone(),
                     )
@@ -519,20 +633,33 @@ where
     fn is_blockable_offense_for_outgoing(&self, error: &ConnectionError) -> bool {
         match error {
             // Potentially transient failures.
+            //
+            // Note that incompatible versions need to be considered transient, since they occur
+            // during regular upgrades.
             ConnectionError::TlsInitialization(_)
             | ConnectionError::TcpConnection(_)
+            | ConnectionError::TcpNoDelay(_)
             | ConnectionError::TlsHandshake(_)
             | ConnectionError::HandshakeSend(_)
-            | ConnectionError::HandshakeRecv(_) => false,
+            | ConnectionError::HandshakeRecv(_)
+            | ConnectionError::IncompatibleVersion(_) => false,
+
+            // These errors are potential bugs on our side.
+            ConnectionError::HandshakeSenderCrashed(_)
+            | ConnectionError::FailedToReuniteHandshakeSinkAndStream
+            | ConnectionError::CouldNotEncodeOurHandshake(_) => false,
 
             // These could be candidates for blocking, but for now we decided not to.
             ConnectionError::NoPeerCertificate
             | ConnectionError::PeerCertificateInvalid(_)
             | ConnectionError::DidNotSendHandshake
+            | ConnectionError::InvalidRemoteHandshakeMessage(_)
             | ConnectionError::InvalidConsensusCertificate(_) => false,
 
             // Definitely something we want to avoid.
-            ConnectionError::WrongNetwork(_) => true,
+            ConnectionError::WrongNetwork(_)
+            | ConnectionError::WrongChainspecHash(_)
+            | ConnectionError::MissingChainspecHash => true,
         }
     }
 
@@ -542,7 +669,6 @@ where
     #[allow(clippy::redundant_clone)]
     fn handle_outgoing_connection(
         &mut self,
-        effect_builder: EffectBuilder<REv>,
         outgoing: OutgoingConnection<P>,
         span: Span,
     ) -> Effects<Event<P>> {
@@ -588,6 +714,7 @@ where
                 peer_id,
                 peer_consensus_public_key,
                 sink,
+                is_syncing,
             } => {
                 info!("new outgoing connection established");
 
@@ -611,7 +738,8 @@ where
                     .or_default()
                     .mark_outgoing(now)
                 {
-                    effects.extend(self.connection_completed(effect_builder, peer_id));
+                    self.connection_completed(peer_id);
+                    self.update_syncing_nodes_set(peer_id, is_syncing);
                 }
 
                 effects.extend(
@@ -649,14 +777,6 @@ where
             .unmark_outgoing(Instant::now());
 
         self.process_dial_requests(requests)
-    }
-
-    /// Gossips our public listening address, and schedules the next such gossip round.
-    fn gossip_our_address(&mut self, effect_builder: EffectBuilder<REv>) -> Effects<Event<P>> {
-        let our_address = GossipedAddress::new(self.context.public_addr);
-        effect_builder
-            .announce_gossip_our_address(our_address)
-            .ignore()
     }
 
     /// Processes a set of `DialRequest`s, updating the component and emitting needed effects.
@@ -698,7 +818,7 @@ where
         span: Span,
     ) -> Effects<Event<P>>
     where
-        REv: From<NetworkAnnouncement<NodeId, P>>,
+        REv: FromIncoming<P>,
     {
         span.in_scope(|| match msg {
             Message::Handshake { .. } => {
@@ -708,21 +828,29 @@ where
                 warn!("received unexpected handshake");
                 Effects::new()
             }
-            Message::Payload(payload) => effect_builder
-                .announce_message_received(peer_id, payload)
-                .ignore(),
+            Message::Payload(payload) => {
+                effect_builder.announce_incoming(peer_id, payload).ignore()
+            }
         })
     }
 
     /// Emits an announcement that a connection has been completed.
-    fn connection_completed(
-        &self,
-        effect_builder: EffectBuilder<REv>,
-        peer_id: NodeId,
-    ) -> Effects<Event<P>> {
+    fn connection_completed(&self, peer_id: NodeId) {
         trace!(num_peers = self.peers().len(), new_peer=%peer_id, "connection complete");
         self.net_metrics.peers.set(self.peers().len() as i64);
-        effect_builder.announce_new_peer(peer_id).ignore()
+    }
+
+    /// Updates a set of known joining nodes.
+    /// If we've just connected to a non-joining node that peer will be removed from the set.
+    fn update_syncing_nodes_set(&mut self, peer_id: NodeId, is_syncing: bool) {
+        // Update set of syncing peers.
+        if is_syncing {
+            debug!(%peer_id, "is syncing");
+            self.syncing_nodes.insert(peer_id);
+        } else {
+            debug!(%peer_id, "is no longer syncing");
+            self.syncing_nodes.remove(&peer_id);
+        }
     }
 
     /// Returns the set of connected nodes.
@@ -764,6 +892,7 @@ where
         async move {
             // Close the shutdown socket, causing the server to exit.
             drop(self.shutdown_sender.take());
+            drop(self.close_incoming_sender.take());
 
             // Wait for the server to exit cleanly.
             if let Some(join_handle) = self.server_join_handle.take() {
@@ -784,8 +913,12 @@ where
 
 impl<REv, P> Component<REv> for SmallNetwork<REv, P>
 where
-    REv:
-        ReactorEvent + From<Event<P>> + From<NetworkAnnouncement<NodeId, P>> + From<StorageRequest>,
+    REv: ReactorEvent
+        + From<Event<P>>
+        + From<BeginGossipRequest<GossipedAddress>>
+        + FromIncoming<P>
+        + From<StorageRequest>
+        + From<NetworkRequest<P>>,
     P: Payload,
 {
     type Event = Event<P>;
@@ -799,7 +932,7 @@ where
     ) -> Effects<Self::Event> {
         match event {
             Event::IncomingConnection { incoming, span } => {
-                self.handle_incoming_connection(effect_builder, incoming, span)
+                self.handle_incoming_connection(incoming, span)
             }
             Event::IncomingMessage { peer_id, msg, span } => {
                 self.handle_incoming_message(effect_builder, *peer_id, *msg, span)
@@ -812,7 +945,7 @@ where
             } => self.handle_incoming_closed(result, peer_id, peer_addr, *span),
 
             Event::OutgoingConnection { outgoing, span } => {
-                self.handle_outgoing_connection(effect_builder, *outgoing, span)
+                self.handle_outgoing_connection(*outgoing, span)
             }
 
             Event::OutgoingDropped { peer_id, peer_addr } => {
@@ -824,24 +957,38 @@ where
                     NetworkRequest::SendMessage {
                         dest,
                         payload,
-                        responder,
+                        respond_after_queueing,
+                        auto_closing_responder,
                     } => {
-                        // We're given a message to send out.
+                        // We're given a message to send. Pass on the responder so that confirmation
+                        // can later be given once the message has actually been buffered.
                         self.net_metrics.direct_message_requests.inc();
-                        self.send_message(*dest, Arc::new(Message::Payload(*payload)));
-                        responder.respond(()).ignore()
+
+                        if respond_after_queueing {
+                            self.send_message(*dest, Arc::new(Message::Payload(*payload)), None);
+                            auto_closing_responder.respond(()).ignore()
+                        } else {
+                            self.send_message(
+                                *dest,
+                                Arc::new(Message::Payload(*payload)),
+                                Some(auto_closing_responder),
+                            );
+                            Effects::new()
+                        }
                     }
-                    NetworkRequest::Broadcast { payload, responder } => {
+                    NetworkRequest::Broadcast {
+                        payload,
+                        auto_closing_responder,
+                    } => {
                         // We're given a message to broadcast.
-                        self.net_metrics.broadcast_requests.inc();
                         self.broadcast_message(Arc::new(Message::Payload(*payload)));
-                        responder.respond(()).ignore()
+                        auto_closing_responder.respond(()).ignore()
                     }
                     NetworkRequest::Gossip {
                         payload,
                         count,
                         exclude,
-                        responder,
+                        auto_closing_responder,
                     } => {
                         // We're given a message to gossip.
                         let sent_to = self.gossip_message(
@@ -850,18 +997,38 @@ where
                             count,
                             exclude,
                         );
-                        responder.respond(sent_to).ignore()
+                        auto_closing_responder.respond(sent_to).ignore()
                     }
                 }
             }
             Event::NetworkInfoRequest { req } => match *req {
-                NetworkInfoRequest::GetPeers { responder } => {
-                    responder.respond(self.peers()).ignore()
+                NetworkInfoRequest::Peers { responder } => responder.respond(self.peers()).ignore(),
+                NetworkInfoRequest::FullyConnectedPeers { responder } => {
+                    let mut symmetric_peers: Vec<NodeId> = self
+                        .connection_symmetries
+                        .iter()
+                        .filter_map(|(node_id, sym)| {
+                            matches!(sym, ConnectionSymmetry::Symmetric { .. }).then(|| *node_id)
+                        })
+                        .collect();
+
+                    symmetric_peers.shuffle(rng);
+
+                    responder.respond(symmetric_peers).ignore()
                 }
-                NetworkInfoRequest::GetPeersInRandomOrder { responder } => {
-                    let mut peers_vec: Vec<NodeId> = self.peers().keys().cloned().collect();
-                    peers_vec.shuffle(rng);
-                    responder.respond(peers_vec).ignore()
+                NetworkInfoRequest::FullyConnectedNonSyncingPeers { responder } => {
+                    let mut symmetric_validator_peers: Vec<NodeId> = self
+                        .connection_symmetries
+                        .iter()
+                        .filter_map(|(node_id, sym)| {
+                            matches!(sym, ConnectionSymmetry::Symmetric { .. }).then(|| *node_id)
+                        })
+                        .filter(|node_id| !self.syncing_nodes.contains(node_id))
+                        .collect();
+
+                    symmetric_validator_peers.shuffle(rng);
+
+                    responder.respond(symmetric_validator_peers).ignore()
                 }
             },
             Event::PeerAddressReceived(gossiped_address) => {
@@ -886,8 +1053,8 @@ where
                 }
             }
             Event::ContractRuntimeAnnouncement(
-                ContractRuntimeAnnouncement::LinearChainBlock(_)
-                | ContractRuntimeAnnouncement::StepSuccess { .. },
+                ContractRuntimeAnnouncement::LinearChainBlock { .. }
+                | ContractRuntimeAnnouncement::CommitStepSuccess { .. },
             ) => Effects::new(),
             Event::ContractRuntimeAnnouncement(
                 ContractRuntimeAnnouncement::UpcomingEraValidators {
@@ -934,7 +1101,11 @@ where
             }
 
             Event::GossipOurAddress => {
-                let mut effects = self.gossip_our_address(effect_builder);
+                let our_address = GossipedAddress::new(self.context.public_addr);
+
+                let mut effects = effect_builder
+                    .begin_gossip(our_address, Source::Ourself)
+                    .ignore();
                 effects.extend(
                     effect_builder
                         .set_timeout(self.cfg.gossip_interval.into())
@@ -945,6 +1116,7 @@ where
             Event::SweepOutgoing => {
                 let now = Instant::now();
                 let requests = self.outgoing_manager.perform_housekeeping(now);
+
                 let mut effects = self.process_dial_requests(requests);
 
                 effects.extend(
@@ -954,6 +1126,11 @@ where
                 );
 
                 effects
+            }
+            Event::ChainSynchronizerAnnouncement(ChainSynchronizerAnnouncement::SyncFinished) => {
+                self.context.is_syncing.store(false, Ordering::SeqCst);
+                self.close_incoming_connections();
+                Effects::new()
             }
         }
     }
@@ -965,6 +1142,10 @@ pub(crate) enum SmallNetworkIdentityError {
     CouldNotGenerateTlsCertificate(OpenSslErrorStack),
     #[error(transparent)]
     ValidationError(#[from] ValidationError),
+    #[error(transparent)]
+    LoadCertError(#[from] LoadCertError),
+    #[error(transparent)]
+    LoadSecretKeyError(#[from] LoadSecretKeyError),
 }
 
 /// An ephemeral [PKey<Private>] and [TlsCert] that identifies this node
@@ -975,14 +1156,37 @@ pub(crate) struct SmallNetworkIdentity {
 }
 
 impl SmallNetworkIdentity {
-    pub(crate) fn new() -> result::Result<Self, SmallNetworkIdentityError> {
-        let (not_yet_validated_x509_cert, secret_key) = tls::generate_node_cert()
-            .map_err(SmallNetworkIdentityError::CouldNotGenerateTlsCertificate)?;
-        let tls_certificate = tls::validate_cert(not_yet_validated_x509_cert)?;
-        Ok(SmallNetworkIdentity {
+    fn new(secret_key: PKey<Private>, tls_certificate: TlsCert) -> Self {
+        Self {
             secret_key: Arc::new(secret_key),
             tls_certificate: Arc::new(tls_certificate),
-        })
+        }
+    }
+
+    pub(crate) fn from_config(
+        config: WithDir<Config>,
+    ) -> result::Result<Self, SmallNetworkIdentityError> {
+        match &config.value().identity {
+            Some(identity) => Self::from_identity_config(identity),
+            None => Self::with_generated_certs(),
+        }
+    }
+
+    fn from_identity_config(
+        identity: &IdentityConfig,
+    ) -> result::Result<Self, SmallNetworkIdentityError> {
+        let not_yet_validated_x509_cert = tls::load_cert(&identity.tls_certificate)?;
+        let secret_key = tls::load_secret_key(&identity.secret_key)?;
+        let x509_cert = tls::tls_cert_from_x509(not_yet_validated_x509_cert)?;
+
+        Ok(SmallNetworkIdentity::new(secret_key, x509_cert))
+    }
+
+    pub(crate) fn with_generated_certs() -> result::Result<Self, SmallNetworkIdentityError> {
+        let (not_yet_validated_x509_cert, secret_key) = tls::generate_node_cert()
+            .map_err(SmallNetworkIdentityError::CouldNotGenerateTlsCertificate)?;
+        let tls_certificate = tls::validate_self_signed_cert(not_yet_validated_x509_cert)?;
+        Ok(SmallNetworkIdentity::new(secret_key, tls_certificate))
     }
 }
 
@@ -1012,35 +1216,41 @@ impl From<&SmallNetworkIdentity> for NodeId {
 type Transport = SslStream<TcpStream>;
 
 /// A framed transport for `Message`s.
-pub(crate) type FramedTransport<P> = tokio_serde::Framed<
-    tokio_util::codec::Framed<Transport, LengthDelimitedCodec>,
+pub(crate) type FullTransport<P> = tokio_serde::Framed<
+    FramedTransport,
     Message<P>,
     Arc<Message<P>>,
-    CountingFormat<MessagePackFormat>,
+    CountingFormat<BincodeFormat>,
 >;
 
-/// Constructs a new framed transport on a stream.
-fn framed<P>(
-    metrics: Weak<NetworkingMetrics>,
+pub(crate) type FramedTransport = tokio_util::codec::Framed<Transport, LengthDelimitedCodec>;
+
+/// Constructs a new full transport on a stream.
+///
+/// A full transport contains the framing as well as the encoding scheme used to send messages.
+fn full_transport<P>(
+    metrics: Weak<Metrics>,
     connection_id: ConnectionId,
-    stream: Transport,
+    framed: FramedTransport,
     role: Role,
-    maximum_net_message_size: u32,
-) -> FramedTransport<P>
+) -> FullTransport<P>
 where
     for<'de> P: Serialize + Deserialize<'de>,
     for<'de> Message<P>: Serialize + Deserialize<'de>,
 {
-    let length_delimited = tokio_util::codec::Framed::new(
-        stream,
+    tokio_serde::Framed::new(
+        framed,
+        CountingFormat::new(metrics, connection_id, role, BincodeFormat::default()),
+    )
+}
+
+/// Constructs a framed transport.
+fn framed_transport(transport: Transport, maximum_net_message_size: u32) -> FramedTransport {
+    tokio_util::codec::Framed::new(
+        transport,
         LengthDelimitedCodec::builder()
             .max_frame_length(maximum_net_message_size as usize)
             .new_codec(),
-    );
-
-    tokio_serde::Framed::new(
-        length_delimited,
-        CountingFormat::new(metrics, connection_id, role, MessagePackFormat),
     )
 }
 

@@ -20,7 +20,7 @@ set -e
 #######################################
 function main() {
     log "------------------------------------------------------------"
-    log "Emergency upgrade test begins"
+    log "Emergency upgrade test balances begins"
     log "------------------------------------------------------------"
 
     do_await_genesis_era_to_complete
@@ -62,19 +62,18 @@ function main() {
         exit 1
     fi
 
-    if [ $SRC_DIFF -lt $TRANSFER_AMOUNT ]; then
-        log "FAILED: source balance changed by less than the transfer amount."
+    if [ $SRC_DIFF -ne $TRANSFER_AMOUNT ]; then
+        log "FAILED: source balance changed by a value different from the transfer amount."
         exit 1
     fi
 
     # 7. Run Closing Health Checks
     # ... restarts=10: due to nodes being stopped and started
-    # ... crashes=5: expected in an emergency restart scenario?
     source "$NCTL"/sh/scenarios/common/health_checks.sh \
             errors=0 \
             equivocators=0 \
             doppels=0 \
-            crashes=5 \
+            crashes=0 \
             restarts=10 \
             ejections=0
 
@@ -121,9 +120,8 @@ function do_prepare_upgrade() {
     local SRC_ACC="account-hash-$(get_account_hash ${ACCOUNT_KEY})"
     local TGT_KEY="010101010101010101010101010101010101010101010101010101010101010101"
     local TGT_ACC="account-hash-$(get_account_hash ${TGT_KEY})"
-    local PROPOSER=$(get_account_key "node" 1)
     for NODE_ID in $(seq 1 "$(get_count_of_nodes)"); do
-        _emergency_upgrade_node_balances "$PROTOCOL_VERSION" "$ACTIVATE_ERA" "$NODE_ID" "$STATE_HASH" 1 "$SRC_ACC" "$TGT_ACC" "$TRANSFER_AMOUNT" "$PROPOSER"
+        _emergency_upgrade_node_balances "$PROTOCOL_VERSION" "$ACTIVATE_ERA" "$NODE_ID" "$STATE_HASH" 1 "$SRC_ACC" "$TGT_ACC" "$TRANSFER_AMOUNT"
     done
 }
 
@@ -152,7 +150,7 @@ function do_await_network_upgrade() {
 function do_await_one_era() {
     # Should be enough to await for one era.
     log_step "awaiting one era…"
-    await_n_eras 1
+    nctl-await-n-eras offset='1' sleep_interval='5.0' timeout='180'
 }
 
 # ----------------------------------------------------------------

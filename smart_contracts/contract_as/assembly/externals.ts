@@ -11,6 +11,9 @@ export declare function write(key_ptr: usize, key_size: usize, value_ptr: usize,
 @external("env", "casper_dictionary_put")
 export declare function dictionary_put(uref_ptr: usize, uref_ptr_size: usize, key_ptr: usize, key_size: usize, value_ptr: usize, value_size: usize): i32;
 /** @hidden */
+@external("env", "casper_dictionary_read")
+export declare function dictionary_read(key_ptr: usize, key_size: usize, value_size: usize): i32;
+/** @hidden */
 @external("env", "casper_add")
 export declare function add(key_ptr: usize, key_size: usize, value_ptr: usize, value_size: usize): void;
 /** @hidden */
@@ -217,6 +220,18 @@ export declare function casper_new_dictionary(output_size_ptr: usize): i32;
 export declare function casper_blake2b(
     in_ptr: usize,
     in_size: usize,
+    out_ptr: usize,
+    out_size: usize,
+): i32;
+/** @hidden */
+@external("env", "casper_load_authorization_keys")
+export declare function load_authorization_keys(
+    total_keys_ptr: usize,
+    result_size_ptr: usize,
+): i32;
+/** @hidden */
+@external("env", "casper_random_bytes")
+export declare function casper_random_bytes(
     out_ptr: usize,
     out_size: usize,
 ): i32;

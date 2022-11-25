@@ -4,6 +4,9 @@ use std::{
     sync::Arc,
 };
 
+use lmdb::DatabaseFlags;
+use tracing::info;
+
 use casper_execution_engine::{
     core::engine_state::{EngineConfig, EngineState},
     storage::{
@@ -17,10 +20,9 @@ use casper_node::{
     types::{Deploy, DeployHash},
     StorageConfig, WithDir,
 };
+use casper_types::ProtocolVersion;
 
 use crate::DEFAULT_MAX_READERS;
-use casper_types::ProtocolVersion;
-use lmdb::DatabaseFlags;
 
 /// Gets many deploys by hash.
 pub fn get_many_deploys_by_hash(
@@ -92,7 +94,7 @@ pub fn create_execution_engine(
     manual_sync_enabled: bool,
 ) -> Result<(Arc<EngineState<LmdbGlobalState>>, Arc<LmdbEnvironment>), anyhow::Error> {
     if !ee_lmdb_path.as_ref().exists() {
-        println!(
+        info!(
             "creating new lmdb data dir {}",
             ee_lmdb_path.as_ref().display()
         );
@@ -133,7 +135,6 @@ pub fn create_storage(chain_download_path: impl AsRef<Path>) -> Result<Storage, 
         &WithDir::new(chain_download_path, storage_config),
         None,
         ProtocolVersion::from_parts(0, 0, 0),
-        false,
         "test",
     )?)
 }
@@ -151,15 +152,16 @@ mod tests {
 
     #[test]
     fn block_with_deploys_round_trip_lmdb() {
-        let dir = tempfile::tempdir().unwrap().into_path();
-        let mut storage = create_storage(dir).expect("should create storage");
-
-        let example_deploy = GetDeployResult::doc_example().deploy.clone();
         let example_block = GetBlockResult::doc_example()
             .block
             .as_ref()
             .unwrap()
             .clone();
+
+        let dir = tempfile::tempdir().unwrap().into_path();
+        let mut storage = create_storage(dir).expect("should create storage");
+
+        let example_deploy = GetDeployResult::doc_example().deploy.clone();
 
         let block_with_deploys = BlockWithDeploys {
             block: example_block.clone(),

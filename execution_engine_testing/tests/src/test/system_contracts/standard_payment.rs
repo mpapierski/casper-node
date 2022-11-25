@@ -1,13 +1,11 @@
-use std::time::Instant;
+use std::collections::HashMap;
 
 use assert_matches::assert_matches;
 
 use casper_engine_test_support::{
-    internal::{
-        utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
-        DEFAULT_ACCOUNT_KEY, DEFAULT_GAS_PRICE, DEFAULT_PAYMENT, DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_ACCOUNT_KEY, DEFAULT_GAS_PRICE, DEFAULT_PAYMENT,
+    MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::{
@@ -16,7 +14,10 @@ use casper_execution_engine::{
     },
     shared::transform::Transform,
 };
-use casper_types::{account::AccountHash, runtime_args, ApiError, Gas, Motes, RuntimeArgs, U512};
+use casper_types::{
+    account::AccountHash, runtime_args, system::handle_payment, ApiError, Gas, Key, Motes,
+    RuntimeArgs, U512,
+};
 
 const ACCOUNT_1_ADDR: AccountHash = AccountHash::new([42u8; 32]);
 const DO_NOTHING_WASM: &str = "do_nothing.wasm";
@@ -40,14 +41,13 @@ fn should_raise_insufficient_payment_when_caller_lacks_minimum_balance() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    let _response = builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
+    builder
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(exec_request)
         .expect_success()
         .commit()
-        .get_exec_result(0)
-        .expect("there should be a response")
-        .to_owned();
+        .get_exec_result_owned(0)
+        .expect("there should be a response");
 
     let account_1_request =
         ExecuteRequestBuilder::standard(ACCOUNT_1_ADDR, REVERT_WASM, RuntimeArgs::default())
@@ -56,7 +56,7 @@ fn should_raise_insufficient_payment_when_caller_lacks_minimum_balance() {
     let account_1_response = builder
         .exec(account_1_request)
         .commit()
-        .get_exec_result(1)
+        .get_exec_result_owned(1)
         .expect("there should be a response");
 
     let error_message = utils::get_error_message(account_1_response);
@@ -68,7 +68,7 @@ fn should_raise_insufficient_payment_when_caller_lacks_minimum_balance() {
     );
 
     let expected_transfers_count = 0;
-    let transforms = builder.get_transforms();
+    let transforms = builder.get_execution_journals();
     let transform = &transforms[1];
 
     assert_eq!(
@@ -101,11 +101,11 @@ fn should_forward_payment_execution_runtime_error() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let proposer_reward_starting_balance = builder.get_proposer_purse_balance();
 
-    builder.exec(exec_request).commit().finish();
+    builder.exec(exec_request).commit();
 
     let transaction_fee = builder.get_proposer_purse_balance() - proposer_reward_starting_balance;
     let initial_balance: U512 = U512::from(DEFAULT_ACCOUNT_INITIAL_BALANCE);
@@ -136,10 +136,10 @@ fn should_forward_payment_execution_runtime_error() {
     );
 
     let response = builder
-        .get_exec_result(0)
+        .get_exec_result_owned(0)
         .expect("there should be a response");
 
-    let execution_result = utils::get_success_result(response);
+    let execution_result = utils::get_success_result(&response);
     let error = execution_result.as_error().expect("should have error");
     assert_matches!(
         error,
@@ -155,7 +155,7 @@ fn should_forward_payment_execution_gas_limit_error() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let exec_request = {
         let deploy = DeployItemBuilder::new()
@@ -174,7 +174,7 @@ fn should_forward_payment_execution_gas_limit_error() {
 
     let proposer_reward_starting_balance = builder.get_proposer_purse_balance();
 
-    builder.exec(exec_request).commit().finish();
+    builder.exec(exec_request).commit();
 
     let transaction_fee = builder.get_proposer_purse_balance() - proposer_reward_starting_balance;
     let initial_balance: U512 = U512::from(DEFAULT_ACCOUNT_INITIAL_BALANCE);
@@ -205,10 +205,10 @@ fn should_forward_payment_execution_gas_limit_error() {
     );
 
     let response = builder
-        .get_exec_result(0)
+        .get_exec_result_owned(0)
         .expect("there should be a response");
 
-    let execution_result = utils::get_success_result(response);
+    let execution_result = utils::get_success_result(&response);
     let error = execution_result.as_error().expect("should have error");
     assert_matches!(error, Error::Exec(execution::Error::GasLimit));
     let payment_gas_limit = Gas::from_motes(Motes::new(*MAX_PAYMENT), DEFAULT_GAS_PRICE)
@@ -244,20 +244,16 @@ fn should_run_out_of_gas_when_session_code_exceeds_gas_limit() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
+        .exec(exec_request)
+        .commit();
 
-    let start = Instant::now();
-    builder.exec(exec_request);
-    let stop = start.elapsed();
-
-    let transfer_result = builder.commit().finish();
-
-    let response = transfer_result
-        .builder()
-        .get_exec_result(0)
+    let response = builder
+        .get_exec_result_owned(0)
         .expect("there should be a response");
 
-    let execution_result = utils::get_success_result(response);
+    let execution_result = utils::get_success_result(&response);
     let error = execution_result.as_error().expect("should have error");
     assert_matches!(error, Error::Exec(execution::Error::GasLimit));
     let session_gas_limit = Gas::from_motes(Motes::new(payment_purse_amount), DEFAULT_GAS_PRICE)
@@ -289,10 +285,9 @@ fn should_correctly_charge_when_session_code_runs_out_of_gas() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
     builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(exec_request)
-        .commit()
-        .finish();
+        .commit();
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -306,10 +301,10 @@ fn should_correctly_charge_when_session_code_runs_out_of_gas() {
     );
 
     let response = builder
-        .get_exec_result(0)
+        .get_exec_result_owned(0)
         .expect("there should be a response");
 
-    let success_result = utils::get_success_result(response);
+    let success_result = utils::get_success_result(&response);
     let gas = success_result.cost();
     let motes = Motes::from_gas(gas, DEFAULT_GAS_PRICE).expect("should have motes");
 
@@ -320,7 +315,7 @@ fn should_correctly_charge_when_session_code_runs_out_of_gas() {
         "no net resources should be gained or lost post-distribution"
     );
 
-    let execution_result = utils::get_success_result(response);
+    let execution_result = utils::get_success_result(&response);
     let error = execution_result.as_error().expect("should have error");
     assert_matches!(error, Error::Exec(execution::Error::GasLimit));
     let session_gas_limit = Gas::from_motes(Motes::new(payment_purse_amount), DEFAULT_GAS_PRICE)
@@ -356,11 +351,11 @@ fn should_correctly_charge_when_session_code_fails() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let proposer_reward_starting_balance = builder.get_proposer_purse_balance();
 
-    builder.exec(exec_request).commit().finish();
+    builder.exec(exec_request).commit();
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -406,15 +401,11 @@ fn should_correctly_charge_when_session_code_succeeds() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let proposer_reward_starting_balance_1 = builder.get_proposer_purse_balance();
 
-    builder
-        .exec(exec_request)
-        .expect_success()
-        .commit()
-        .finish();
+    builder.exec(exec_request).expect_success().commit();
 
     let default_account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
@@ -467,7 +458,7 @@ fn should_finalize_to_rewards_purse() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let proposer_reward_starting_balance = builder.get_proposer_purse_balance();
 
@@ -507,7 +498,7 @@ fn independent_standard_payments_should_not_write_the_same_keys() {
 
     // create another account via transfer
     builder
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(setup_exec_request)
         .expect_success()
         .commit();
@@ -545,19 +536,39 @@ fn independent_standard_payments_should_not_write_the_same_keys() {
         .expect_success()
         .commit();
 
-    let transforms = builder.get_transforms();
+    let transforms = builder.get_execution_journals();
     let transforms_from_genesis = &transforms[1];
     let transforms_from_account_1 = &transforms[2];
 
-    // confirm the two deploys have no overlapping writes
-    let common_write_keys = transforms_from_genesis.keys().filter(|k| {
-        matches!(
-            (
-                transforms_from_genesis.get(k),
-                transforms_from_account_1.get(k),
-            ),
-            (Some(Transform::Write(_)), Some(Transform::Write(_)))
-        )
+    // Retrieve the payment purse.
+    let payment_purse = builder
+        .get_handle_payment_contract()
+        .named_keys()
+        .get(handle_payment::PAYMENT_PURSE_KEY)
+        .unwrap()
+        .into_uref()
+        .unwrap();
+
+    let transforms_from_genesis_map: HashMap<Key, Transform> =
+        transforms_from_genesis.clone().into_iter().collect();
+    let transforms_from_account_1_map: HashMap<Key, Transform> =
+        transforms_from_account_1.clone().into_iter().collect();
+
+    // Confirm the two deploys have no overlapping writes except for the payment purse balance.
+    let common_write_keys = transforms_from_genesis.iter().filter_map(|(k, _)| {
+        if k != &Key::Balance(payment_purse.addr())
+            && matches!(
+                (
+                    transforms_from_genesis_map.get(k),
+                    transforms_from_account_1_map.get(k),
+                ),
+                (Some(Transform::Write(_)), Some(Transform::Write(_)))
+            )
+        {
+            Some(k)
+        } else {
+            None
+        }
     });
 
     assert_eq!(common_write_keys.count(), 0);

@@ -3,18 +3,19 @@
 
 use std::{
     array::TryFromSliceError,
-    collections::HashMap,
+    cmp,
+    collections::{BTreeSet, HashMap},
     error::Error as StdError,
     fmt::{self, Debug, Display, Formatter},
+    hash,
 };
 
 use datasize::DataSize;
 use derive_more::Display;
-use hex::FromHexError;
 use itertools::Itertools;
 use num_traits::Zero;
-use once_cell::sync::Lazy;
-#[cfg(test)]
+use once_cell::sync::{Lazy, OnceCell};
+#[cfg(any(feature = "testing", test))]
 use rand::{Rng, RngCore};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -29,19 +30,22 @@ use casper_execution_engine::core::engine_state::{
 use casper_hashing::Digest;
 #[cfg(test)]
 use casper_types::bytesrepr::Bytes;
+#[cfg(any(feature = "testing", test))]
+use casper_types::testing::TestRng;
 use casper_types::{
     bytesrepr::{self, FromBytes, ToBytes},
-    runtime_args,
+    crypto, runtime_args,
     system::standard_payment::ARG_AMOUNT,
-    AsymmetricType, ExecutionResult, Motes, PublicKey, RuntimeArgs, SecretKey, Signature, U512,
+    ExecutionResult, Motes, PublicKey, RuntimeArgs, SecretKey, Signature, TimeDiff, Timestamp,
+    U512,
 };
 
-use super::{BlockHash, Item, Tag, TimeDiff, Timestamp};
-#[cfg(test)]
-use crate::testing::TestRng;
+use super::{BlockHash, BlockHashAndHeight, Item, Tag};
 use crate::{
-    components::block_proposer::DeployInfo, crypto, crypto::AsymmetricKeyExt,
-    rpcs::docs::DocExample, types::chainspec::DeployConfig, utils::DisplayIter,
+    components::block_proposer::DeployInfo,
+    rpcs::docs::DocExample,
+    types::chainspec::DeployConfig,
+    utils::{ds, DisplayIter},
 };
 
 static DEPLOY: Lazy<Deploy> = Lazy::new(|| {
@@ -73,24 +77,17 @@ static DEPLOY: Lazy<Deploy> = Lazy::new(|| {
     let serialized_header = serialize_header(&header);
     let hash = DeployHash::new(Digest::hash(&serialized_header));
 
-    let signature = Signature::from_hex(
-        "012dbf03817a51794a8e19e0724884075e6d1fbec326b766ecfa6658b41f81290da85e23b24e88b1c8d976\
-            1185c961daee1adab0649912a6477bcd2e69bd91bd08"
-            .as_bytes(),
-    )
-    .unwrap();
-    let approval = Approval {
-        signer: PublicKey::from(secret_key),
-        signature,
-    };
+    let mut approvals = BTreeSet::new();
+    let approval = Approval::create(&hash, secret_key);
+    approvals.insert(approval);
 
     Deploy {
         hash,
         header,
         payment,
         session,
-        approvals: vec![approval],
-        is_valid: None,
+        approvals,
+        is_valid: OnceCell::new(),
     }
 });
 
@@ -237,8 +234,8 @@ pub enum Error {
     InvalidPayment,
 }
 
-impl From<FromHexError> for Error {
-    fn from(error: FromHexError) -> Self {
+impl From<base16::DecodeError> for Error {
+    fn from(error: base16::DecodeError) -> Self {
         Error::DecodeFromJson(Box::new(error))
     }
 }
@@ -280,11 +277,23 @@ impl DeployHash {
         &self.0
     }
 
-    /// Creates a random deploy hash.
-    #[cfg(test)]
+    /// Returns a random `DeployHash`.
+    #[cfg(any(feature = "testing", test))]
     pub fn random(rng: &mut TestRng) -> Self {
         let hash = rng.gen::<[u8; Digest::LENGTH]>().into();
         DeployHash(hash)
+    }
+}
+
+impl From<DeployHash> for casper_types::DeployHash {
+    fn from(deploy_hash: DeployHash) -> casper_types::DeployHash {
+        casper_types::DeployHash::new(deploy_hash.inner().value())
+    }
+}
+
+impl From<casper_types::DeployHash> for DeployHash {
+    fn from(deploy_hash: casper_types::DeployHash) -> DeployHash {
+        DeployHash::new(deploy_hash.value().into())
     }
 }
 
@@ -411,7 +420,7 @@ impl DeployHeader {
 
     /// Has this deploy expired?
     pub fn expired(&self, current_instant: Timestamp) -> bool {
-        let lifespan = self.timestamp + self.ttl;
+        let lifespan = self.timestamp.saturating_add(self.ttl);
         lifespan < current_instant
     }
 
@@ -443,12 +452,10 @@ impl DeployHeader {
         let num_deps_valid = self.dependencies().len() <= deploy_config.max_dependencies as usize;
         ttl_valid && timestamp_valid && not_expired && num_deps_valid
     }
-}
 
-impl DeployHeader {
     /// Returns the timestamp of when the deploy expires, i.e. `self.timestamp + self.ttl`.
     pub fn expires(&self) -> Timestamp {
-        self.timestamp + self.ttl
+        self.timestamp.saturating_add(self.ttl)
     }
 }
 
@@ -525,6 +532,13 @@ pub struct Approval {
 }
 
 impl Approval {
+    /// Creates an approval for the given deploy hash using the given secret key.
+    pub fn create(hash: &DeployHash, secret_key: &SecretKey) -> Self {
+        let signer = PublicKey::from(secret_key);
+        let signature = crypto::sign(hash, secret_key, &signer);
+        Self { signer, signature }
+    }
+
     /// Returns the public key of the approval's signer.
     pub fn signer(&self) -> &PublicKey {
         &self.signer
@@ -533,6 +547,17 @@ impl Approval {
     /// Returns the approval signature.
     pub fn signature(&self) -> &Signature {
         &self.signature
+    }
+}
+
+#[cfg(any(feature = "testing", test))]
+impl Approval {
+    /// Returns a random `Approval`.
+    pub fn random(rng: &mut TestRng) -> Self {
+        Self {
+            signer: PublicKey::random(rng),
+            signature: Signature::ed25519([0; Signature::ED25519_LENGTH]).unwrap(),
+        }
     }
 }
 
@@ -564,19 +589,204 @@ impl FromBytes for Approval {
     }
 }
 
+/// The hash of a deploy (or transfer) together with signatures approving it for execution.
+#[derive(Clone, DataSize, Debug, PartialOrd, Ord, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct DeployWithApprovals {
+    /// The hash of the deploy.
+    deploy_hash: DeployHash,
+    /// The approvals for the deploy.
+    approvals: BTreeSet<Approval>,
+}
+
+impl DeployWithApprovals {
+    /// Creates a new `DeployWithApprovals`.
+    pub fn new(deploy_hash: DeployHash, approvals: BTreeSet<Approval>) -> Self {
+        Self {
+            deploy_hash,
+            approvals,
+        }
+    }
+
+    /// Returns the deploy hash.
+    pub fn deploy_hash(&self) -> &DeployHash {
+        &self.deploy_hash
+    }
+
+    /// Returns the approvals.
+    pub fn approvals(&self) -> &BTreeSet<Approval> {
+        &self.approvals
+    }
+}
+
+impl From<&Deploy> for DeployWithApprovals {
+    fn from(deploy: &Deploy) -> Self {
+        DeployWithApprovals {
+            deploy_hash: *deploy.id(),
+            approvals: deploy.approvals().clone(),
+        }
+    }
+}
+
+/// A set of approvals that has been agreed upon by consensus to approve of a specific deploy.
+#[derive(DataSize, Debug, Deserialize, Eq, PartialEq, Serialize, Clone)]
+pub struct FinalizedApprovals(BTreeSet<Approval>);
+
+impl FinalizedApprovals {
+    /// Creates a new instance of `FinalizedApprovals`.
+    pub fn new(approvals: BTreeSet<Approval>) -> Self {
+        Self(approvals)
+    }
+
+    /// Return the inner set of approvals.
+    pub fn into_inner(self) -> BTreeSet<Approval> {
+        self.0
+    }
+}
+
+impl AsRef<BTreeSet<Approval>> for FinalizedApprovals {
+    /// Returns the approvals as a reference to the set.
+    fn as_ref(&self) -> &BTreeSet<Approval> {
+        &self.0
+    }
+}
+
+/// A set of finalized approvals together with data identifying the deploy.
+#[derive(DataSize, Debug, Deserialize, Eq, PartialEq, Serialize, Clone)]
+pub struct FinalizedApprovalsWithId {
+    id: DeployHash,
+    approvals: FinalizedApprovals,
+}
+
+impl FinalizedApprovalsWithId {
+    /// Creates a new instance of `FinalizedApprovalsWithId`.
+    pub fn new(id: DeployHash, approvals: FinalizedApprovals) -> Self {
+        Self { id, approvals }
+    }
+
+    /// Return the inner set of approvals.
+    pub fn into_inner(self) -> BTreeSet<Approval> {
+        self.approvals.into_inner()
+    }
+}
+
+/// Error type containing the error message passed from `crypto::verify`
+#[derive(Debug, Error)]
+#[error("invalid approval from {signer}: {error}")]
+pub struct FinalizedApprovalsVerificationError {
+    signer: PublicKey,
+    error: String,
+}
+
+impl Item for FinalizedApprovalsWithId {
+    type Id = DeployHash;
+    type ValidationError = FinalizedApprovalsVerificationError;
+
+    const TAG: Tag = Tag::FinalizedApprovals;
+    const ID_IS_COMPLETE_ITEM: bool = false;
+
+    fn validate(&self) -> Result<(), Self::ValidationError> {
+        for approval in &self.approvals.0 {
+            crypto::verify(&self.id, approval.signature(), approval.signer()).map_err(|err| {
+                FinalizedApprovalsVerificationError {
+                    signer: approval.signer().clone(),
+                    error: format!("{}", err),
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn id(&self) -> Self::Id {
+        self.id
+    }
+}
+
+impl Display for FinalizedApprovalsWithId {
+    fn fmt(&self, formatter: &mut Formatter) -> fmt::Result {
+        write!(
+            formatter,
+            "finalized approvals for {}: {}",
+            self.id,
+            DisplayIter::new(self.approvals.0.iter())
+        )
+    }
+}
+
 /// A deploy; an item containing a smart contract along with the requester's signature(s).
-#[derive(
-    Clone, DataSize, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Debug, JsonSchema,
-)]
+#[derive(Clone, DataSize, Eq, Serialize, Deserialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Deploy {
     hash: DeployHash,
     header: DeployHeader,
     payment: ExecutableDeployItem,
     session: ExecutableDeployItem,
-    approvals: Vec<Approval>,
+    approvals: BTreeSet<Approval>,
     #[serde(skip)]
-    is_valid: Option<Result<(), DeployConfigurationFailure>>,
+    #[data_size(with = ds::once_cell)]
+    is_valid: OnceCell<Result<(), DeployConfigurationFailure>>,
+}
+
+impl hash::Hash for Deploy {
+    fn hash<H: hash::Hasher>(&self, state: &mut H) {
+        // Destructure to make sure we don't accidentally omit fields.
+        let Deploy {
+            hash,
+            header,
+            payment,
+            session,
+            approvals,
+            is_valid: _,
+        } = self;
+        hash.hash(state);
+        header.hash(state);
+        payment.hash(state);
+        session.hash(state);
+        approvals.hash(state);
+    }
+}
+
+impl PartialEq for Deploy {
+    fn eq(&self, other: &Deploy) -> bool {
+        // Destructure to make sure we don't accidentally omit fields.
+        let Deploy {
+            hash,
+            header,
+            payment,
+            session,
+            approvals,
+            is_valid: _,
+        } = self;
+        *hash == other.hash
+            && *header == other.header
+            && *payment == other.payment
+            && *session == other.session
+            && *approvals == other.approvals
+    }
+}
+
+impl Ord for Deploy {
+    fn cmp(&self, other: &Deploy) -> cmp::Ordering {
+        // Destructure to make sure we don't accidentally omit fields.
+        let Deploy {
+            hash,
+            header,
+            payment,
+            session,
+            approvals,
+            is_valid: _,
+        } = self;
+        hash.cmp(&other.hash)
+            .then_with(|| header.cmp(&other.header))
+            .then_with(|| payment.cmp(&other.payment))
+            .then_with(|| session.cmp(&other.session))
+            .then_with(|| approvals.cmp(&other.approvals))
+    }
+}
+
+impl PartialOrd for Deploy {
+    fn partial_cmp(&self, other: &Deploy) -> Option<cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl Deploy {
@@ -617,8 +827,8 @@ impl Deploy {
             header,
             payment,
             session,
-            approvals: vec![],
-            is_valid: None,
+            approvals: BTreeSet::new(),
+            is_valid: OnceCell::new(),
         };
 
         deploy.sign(secret_key);
@@ -627,10 +837,8 @@ impl Deploy {
 
     /// Adds a signature of this deploy's hash to its approvals.
     pub fn sign(&mut self, secret_key: &SecretKey) {
-        let signer = PublicKey::from(secret_key);
-        let signature = crypto::sign(&self.hash, secret_key, &signer);
-        let approval = Approval { signer, signature };
-        self.approvals.push(approval);
+        let approval = Approval::create(&self.hash, secret_key);
+        self.approvals.insert(approval);
     }
 
     /// Returns the `DeployHash` identifying this `Deploy`.
@@ -659,8 +867,13 @@ impl Deploy {
     }
 
     /// Returns the `Approval`s for this deploy.
-    pub fn approvals(&self) -> &[Approval] {
+    pub fn approvals(&self) -> &BTreeSet<Approval> {
         &self.approvals
+    }
+
+    /// Replaces the set of approvals attached to this deploy.
+    pub fn replace_approvals(&mut self, approvals: BTreeSet<Approval>) {
+        self.approvals = approvals;
     }
 
     /// Returns the hash of this deploy wrapped in `DeployOrTransferHash`.
@@ -715,20 +928,32 @@ impl Deploy {
         Ok(())
     }
 
+    /// Returns `Ok` if this block's body hashes to the value of `body_hash` in the header, and if
+    /// this block's header hashes to the value claimed as the block hash.  Otherwise returns `Err`.
+    pub(crate) fn has_valid_hash(&self) -> Result<(), DeployConfigurationFailure> {
+        let serialized_body = serialize_body(&self.payment, &self.session);
+        let body_hash = Digest::hash(&serialized_body);
+        if body_hash != self.header.body_hash {
+            warn!(?self, ?body_hash, "invalid deploy body hash");
+            return Err(DeployConfigurationFailure::InvalidBodyHash);
+        }
+
+        let serialized_header = serialize_header(&self.header);
+        let hash = DeployHash::new(Digest::hash(&serialized_header));
+        if hash != self.hash {
+            warn!(?self, ?hash, "invalid deploy hash");
+            return Err(DeployConfigurationFailure::InvalidDeployHash);
+        }
+        Ok(())
+    }
+
     /// Returns true if and only if:
     ///   * the deploy hash is correct (should be the hash of the header), and
     ///   * the body hash is correct (should be the hash of the body), and
     ///   * approvals are non empty, and
     ///   * all approvals are valid signatures of the deploy hash
-    pub fn is_valid(&mut self) -> Result<(), DeployConfigurationFailure> {
-        match self.is_valid.as_ref() {
-            None => {
-                let validity = validate_deploy(self);
-                self.is_valid = Some(validity.clone());
-                validity
-            }
-            Some(validity) => validity.clone(),
-        }
+    pub fn is_valid(&self) -> Result<(), DeployConfigurationFailure> {
+        self.is_valid.get_or_init(|| validate_deploy(self)).clone()
     }
 
     /// Returns true if and only if:
@@ -879,16 +1104,69 @@ impl Deploy {
     }
 }
 
-#[cfg(test)]
+/// A deploy combined with a potential set of finalized approvals.
+///
+/// Represents a deploy, along with a potential set of approvals different from those contained in
+/// the deploy itself. If such a set of approvals is present, it indicates that the set contained
+/// the deploy was not the set  used to validate the execution of the deploy after consensus.
+///
+/// A typical case where these can differ is if a deploy is sent with an original set of approvals
+/// to the local node, while a second set of approvals makes it to the proposing node. The local
+/// node has to adhere to the proposer's approvals to obtain the same outcome.
+#[derive(DataSize, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct DeployWithFinalizedApprovals {
+    /// The deploy that likely has been included in a block.
+    deploy: Deploy,
+    /// Approvals used to verify the deploy during block execution.
+    finalized_approvals: Option<FinalizedApprovals>,
+}
+
+impl DeployWithFinalizedApprovals {
+    /// Creates a new deploy with finalized approvals from parts.
+    pub fn new(deploy: Deploy, finalized_approvals: Option<FinalizedApprovals>) -> Self {
+        Self {
+            deploy,
+            finalized_approvals,
+        }
+    }
+
+    /// Creates a naive deploy by potentially substituting the approvals with the finalized
+    /// approvals.
+    pub fn into_naive(self) -> Deploy {
+        let mut deploy = self.deploy;
+        if let Some(finalized_approvals) = self.finalized_approvals {
+            deploy.approvals = finalized_approvals.0;
+        }
+
+        deploy
+    }
+
+    /// Extracts the original deploy by discarding the finalized approvals.
+    pub fn discard_finalized_approvals(self) -> Deploy {
+        self.deploy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn original_approvals(&self) -> &BTreeSet<Approval> {
+        self.deploy.approvals()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn finalized_approvals(&self) -> Option<&FinalizedApprovals> {
+        self.finalized_approvals.as_ref()
+    }
+}
+
+#[cfg(any(feature = "testing", test))]
 impl Deploy {
-    /// Generates a completely random instance.
+    /// Returns a random deploy.
     pub fn random(rng: &mut TestRng) -> Self {
         let timestamp = Timestamp::random(rng);
         let ttl = TimeDiff::from(rng.gen_range(60_000..3_600_000));
         Deploy::random_with_timestamp_and_ttl(rng, timestamp, ttl)
     }
 
-    /// Generates a random instance but using the specified `timestamp` and `ttl`.
+    /// Returns a random deploy but using the specified `timestamp` and `ttl`.
     pub fn random_with_timestamp_and_ttl(
         rng: &mut TestRng,
         timestamp: Timestamp,
@@ -929,13 +1207,17 @@ impl Deploy {
             None,
         )
     }
+}
 
+#[cfg(test)]
+impl Deploy {
     /// Turns `self` into an invalid deploy by clearing the `chain_name`, invalidating the deploy
     /// hash.
     pub(crate) fn invalidate(&mut self) {
         self.header.chain_name.clear();
     }
 
+    /// Returns a random deploy for a native transfer.
     pub(crate) fn random_valid_native_transfer(rng: &mut TestRng) -> Self {
         let deploy = Self::random(rng);
         let transfer_args = runtime_args! {
@@ -955,7 +1237,7 @@ impl Deploy {
         };
         let secret_key = SecretKey::random(rng);
         Deploy::new(
-            deploy.header.timestamp,
+            Timestamp::now(),
             deploy.header.ttl,
             deploy.header.gas_price,
             deploy.header.dependencies,
@@ -967,6 +1249,39 @@ impl Deploy {
         )
     }
 
+    /// Returns a random deploy for a native transfer with no dependencies.
+    pub(crate) fn random_valid_native_transfer_without_deps(rng: &mut TestRng) -> Self {
+        let deploy = Self::random(rng);
+        let transfer_args = runtime_args! {
+            "amount" => *MAX_PAYMENT,
+            "source" => PublicKey::random(rng).to_account_hash(),
+            "target" => PublicKey::random(rng).to_account_hash(),
+        };
+        let payment_args = runtime_args! {
+            "amount" => U512::from(10),
+        };
+        let session = ExecutableDeployItem::Transfer {
+            args: transfer_args,
+        };
+        let payment = ExecutableDeployItem::ModuleBytes {
+            module_bytes: Bytes::new(),
+            args: payment_args,
+        };
+        let secret_key = SecretKey::random(rng);
+        Deploy::new(
+            Timestamp::now(),
+            deploy.header.ttl,
+            deploy.header.gas_price,
+            vec![],
+            deploy.header.chain_name,
+            payment,
+            session,
+            &secret_key,
+            None,
+        )
+    }
+
+    /// Returns a random invalid deploy without a payment amount specified.
     pub(crate) fn random_without_payment_amount(rng: &mut TestRng) -> Self {
         let payment = ExecutableDeployItem::ModuleBytes {
             module_bytes: Bytes::new(),
@@ -975,6 +1290,7 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random invalid deploy with an invalid value for the payment amount.
     pub(crate) fn random_with_mangled_payment_amount(rng: &mut TestRng) -> Self {
         let payment_args = runtime_args! {
             "amount" => "invalid-argument"
@@ -986,6 +1302,7 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random deploy with custom payment specified as a stored contract by name.
     pub(crate) fn random_with_valid_custom_payment_contract_by_name(rng: &mut TestRng) -> Self {
         let payment = ExecutableDeployItem::StoredContractByName {
             name: "Test".to_string(),
@@ -995,7 +1312,20 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random invalid deploy with custom payment specified as a stored contract by hash,
+    /// but missing the runtime args.
     pub(crate) fn random_with_missing_payment_contract_by_hash(rng: &mut TestRng) -> Self {
+        let payment = ExecutableDeployItem::StoredContractByHash {
+            hash: [19; 32].into(),
+            entry_point: "call".to_string(),
+            args: Default::default(),
+        };
+        Self::random_transfer_with_payment(rng, payment)
+    }
+
+    /// Returns a random invalid deploy with custom payment specified as a stored contract by hash,
+    /// but calling an invalid entry point.
+    pub(crate) fn random_with_missing_entry_point_in_payment_contract(rng: &mut TestRng) -> Self {
         let payment = ExecutableDeployItem::StoredContractByHash {
             hash: [19; 32].into(),
             entry_point: "non-existent-entry-point".to_string(),
@@ -1004,15 +1334,8 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
-    pub(crate) fn random_with_missing_entry_point_in_payment_contract(rng: &mut TestRng) -> Self {
-        let payment = ExecutableDeployItem::StoredContractByName {
-            name: "Test".to_string(),
-            entry_point: "non-existent-entry-point".to_string(),
-            args: Default::default(),
-        };
-        Self::random_transfer_with_payment(rng, payment)
-    }
-
+    /// Returns a random deploy with custom payment specified as a stored versioned contract by
+    /// name.
     pub(crate) fn random_with_valid_custom_payment_package_by_name(rng: &mut TestRng) -> Self {
         let payment = ExecutableDeployItem::StoredVersionedContractByName {
             name: "Test".to_string(),
@@ -1023,6 +1346,8 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random invalid deploy with custom payment specified as a stored versioned contract
+    /// by hash, but missing the runtime args.
     pub(crate) fn random_with_missing_payment_package_by_hash(rng: &mut TestRng) -> Self {
         let payment = ExecutableDeployItem::StoredVersionedContractByHash {
             hash: Default::default(),
@@ -1033,11 +1358,13 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random invalid deploy with custom payment specified as a stored versioned contract
+    /// by hash, but calling an invalid entry point.
     pub(crate) fn random_with_nonexistent_contract_version_in_payment_package(
         rng: &mut TestRng,
     ) -> Self {
-        let payment = ExecutableDeployItem::StoredVersionedContractByName {
-            name: "Test".to_string(),
+        let payment = ExecutableDeployItem::StoredVersionedContractByHash {
+            hash: [19; 32].into(),
             version: Some(6u32),
             entry_point: "non-existent-entry-point".to_string(),
             args: Default::default(),
@@ -1045,6 +1372,7 @@ impl Deploy {
         Self::random_transfer_with_payment(rng, payment)
     }
 
+    /// Returns a random deploy with custom session specified as a stored contract by name.
     pub(crate) fn random_with_valid_session_contract_by_name(rng: &mut TestRng) -> Self {
         let session = ExecutableDeployItem::StoredContractByName {
             name: "Test".to_string(),
@@ -1054,6 +1382,8 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid deploy with custom session specified as a stored contract by hash,
+    /// but missing the runtime args.
     pub(crate) fn random_with_missing_session_contract_by_hash(rng: &mut TestRng) -> Self {
         let session = ExecutableDeployItem::StoredContractByHash {
             hash: Default::default(),
@@ -1063,15 +1393,19 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid deploy with custom session specified as a stored contract by hash,
+    /// but calling an invalid entry point.
     pub(crate) fn random_with_missing_entry_point_in_session_contract(rng: &mut TestRng) -> Self {
-        let session = ExecutableDeployItem::StoredContractByName {
-            name: "Test".to_string(),
+        let session = ExecutableDeployItem::StoredContractByHash {
+            hash: [19; 32].into(),
             entry_point: "non-existent-entry-point".to_string(),
             args: Default::default(),
         };
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random deploy with custom session specified as a stored versioned contract by
+    /// name.
     pub(crate) fn random_with_valid_session_package_by_name(rng: &mut TestRng) -> Self {
         let session = ExecutableDeployItem::StoredVersionedContractByName {
             name: "Test".to_string(),
@@ -1082,6 +1416,8 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid deploy with custom session specified as a stored versioned contract
+    /// by hash, but missing the runtime args.
     pub(crate) fn random_with_missing_session_package_by_hash(rng: &mut TestRng) -> Self {
         let session = ExecutableDeployItem::StoredVersionedContractByHash {
             hash: Default::default(),
@@ -1092,11 +1428,13 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid deploy with custom session specified as a stored versioned contract
+    /// by hash, but calling an invalid entry point.
     pub(crate) fn random_with_nonexistent_contract_version_in_session_package(
         rng: &mut TestRng,
     ) -> Self {
-        let session = ExecutableDeployItem::StoredVersionedContractByName {
-            name: "Test".to_string(),
+        let session = ExecutableDeployItem::StoredVersionedContractByHash {
+            hash: [19; 32].into(),
             version: Some(6u32),
             entry_point: "non-existent-entry-point".to_string(),
             args: Default::default(),
@@ -1104,6 +1442,7 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid transfer deploy with the "target" runtime arg missing.
     pub(crate) fn random_without_transfer_target(rng: &mut TestRng) -> Self {
         let transfer_args = runtime_args! {
             "amount" => *MAX_PAYMENT,
@@ -1115,6 +1454,7 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid transfer deploy with the "amount" runtime arg missing.
     pub(crate) fn random_without_transfer_amount(rng: &mut TestRng) -> Self {
         let transfer_args = runtime_args! {
             "source" => PublicKey::random(rng).to_account_hash(),
@@ -1126,6 +1466,7 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid transfer deploy with an invalid "amount" runtime arg.
     pub(crate) fn random_with_mangled_transfer_amount(rng: &mut TestRng) -> Self {
         let transfer_args = runtime_args! {
             "amount" => "mangled-transfer-amount",
@@ -1138,6 +1479,7 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
+    /// Returns a random invalid deploy with empty session bytes.
     pub(crate) fn random_with_empty_session_module_bytes(rng: &mut TestRng) -> Self {
         let session = ExecutableDeployItem::ModuleBytes {
             module_bytes: Bytes::new(),
@@ -1146,7 +1488,25 @@ impl Deploy {
         Self::random_transfer_with_session(rng, session)
     }
 
-    /// Creates a deploy with native transfer as payment code.
+    /// Returns a random invalid deploy with an expired TTL.
+    pub(crate) fn random_expired_deploy(rng: &mut TestRng) -> Self {
+        let deploy = Self::random_valid_native_transfer(rng);
+        let secret_key = SecretKey::random(rng);
+
+        Deploy::new(
+            Timestamp::zero(),
+            TimeDiff::from_seconds(1u32),
+            deploy.header.gas_price,
+            deploy.header.dependencies,
+            deploy.header.chain_name,
+            deploy.payment,
+            deploy.session,
+            &secret_key,
+            None,
+        )
+    }
+
+    /// Returns a random deploy with native transfer as payment code.
     pub(crate) fn random_with_native_transfer_in_payment_logic(rng: &mut TestRng) -> Self {
         let transfer_args = runtime_args! {
             "amount" => *MAX_PAYMENT,
@@ -1225,19 +1585,8 @@ fn validate_deploy(deploy: &Deploy) -> Result<(), DeployConfigurationFailure> {
         warn!(?deploy, "deploy has no approvals");
         return Err(DeployConfigurationFailure::EmptyApprovals);
     }
-    let serialized_body = serialize_body(&deploy.payment, &deploy.session);
-    let body_hash = Digest::hash(&serialized_body);
-    if body_hash != deploy.header.body_hash {
-        warn!(?deploy, ?body_hash, "invalid deploy body hash");
-        return Err(DeployConfigurationFailure::InvalidBodyHash);
-    }
 
-    let serialized_header = serialize_header(&deploy.header);
-    let hash = DeployHash::new(Digest::hash(&serialized_header));
-    if hash != deploy.hash {
-        warn!(?deploy, ?hash, "invalid deploy hash");
-        return Err(DeployConfigurationFailure::InvalidDeployHash);
-    }
+    deploy.has_valid_hash()?;
 
     for (index, approval) in deploy.approvals.iter().enumerate() {
         if let Err(error) = crypto::verify(&deploy.hash, &approval.signature, &approval.signer) {
@@ -1254,9 +1603,15 @@ fn validate_deploy(deploy: &Deploy) -> Result<(), DeployConfigurationFailure> {
 
 impl Item for Deploy {
     type Id = DeployHash;
+    type ValidationError = DeployConfigurationFailure;
 
     const TAG: Tag = Tag::Deploy;
     const ID_IS_COMPLETE_ITEM: bool = false;
+
+    fn validate(&self) -> Result<(), Self::ValidationError> {
+        // TODO: Validate approvals later, and only if the approvers are actually authorized!
+        validate_deploy(self)
+    }
 
     fn id(&self) -> Self::Id {
         *self.id()
@@ -1301,11 +1656,58 @@ impl From<Deploy> for DeployItem {
 ///
 /// Currently a stop-gap measure to associate an immutable deploy with additional metadata. Holds
 /// execution results.
-#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Clone, Default, Serialize, Deserialize, Debug, PartialEq, Eq)]
 pub struct DeployMetadata {
     /// The block hashes of blocks containing the related deploy, along with the results of
     /// executing the related deploy in the context of one or more blocks.
     pub execution_results: HashMap<BlockHash, ExecutionResult>,
+}
+
+/// Additional information describing a deploy.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+pub enum DeployMetadataExt {
+    /// Holds the execution results of a deploy.
+    Metadata(DeployMetadata),
+    /// Holds the hash and height of the block this deploy was included in.
+    BlockInfo(BlockHashAndHeight),
+    /// No execution results or block information available.
+    Empty,
+}
+
+impl Default for DeployMetadataExt {
+    fn default() -> Self {
+        Self::Empty
+    }
+}
+
+impl From<DeployMetadata> for DeployMetadataExt {
+    fn from(deploy_metadata: DeployMetadata) -> Self {
+        Self::Metadata(deploy_metadata)
+    }
+}
+
+impl From<BlockHashAndHeight> for DeployMetadataExt {
+    fn from(deploy_block_info: BlockHashAndHeight) -> Self {
+        Self::BlockInfo(deploy_block_info)
+    }
+}
+
+impl PartialEq<DeployMetadata> for DeployMetadataExt {
+    fn eq(&self, other: &DeployMetadata) -> bool {
+        match self {
+            Self::Metadata(metadata) => *metadata == *other,
+            _ => false,
+        }
+    }
+}
+
+impl PartialEq<BlockHashAndHeight> for DeployMetadataExt {
+    fn eq(&self, other: &BlockHashAndHeight) -> bool {
+        match self {
+            Self::BlockInfo(block_hash_and_height) => *block_hash_and_height == *other,
+            _ => false,
+        }
+    }
 }
 
 impl ToBytes for Deploy {
@@ -1334,14 +1736,14 @@ impl FromBytes for Deploy {
         let (hash, remainder) = DeployHash::from_bytes(remainder)?;
         let (payment, remainder) = ExecutableDeployItem::from_bytes(remainder)?;
         let (session, remainder) = ExecutableDeployItem::from_bytes(remainder)?;
-        let (approvals, remainder) = Vec::<Approval>::from_bytes(remainder)?;
+        let (approvals, remainder) = BTreeSet::<Approval>::from_bytes(remainder)?;
         let maybe_valid_deploy = Deploy {
             header,
             hash,
             payment,
             session,
             approvals,
-            is_valid: None,
+            is_valid: OnceCell::new(),
         };
         Ok((maybe_valid_deploy, remainder))
     }
@@ -1355,7 +1757,6 @@ mod tests {
     use casper_types::{bytesrepr::Bytes, CLValue};
 
     use super::*;
-    use crate::crypto::AsymmetricKeyExt;
 
     const DEFAULT_MAX_ASSOCIATED_KEYS: u32 = 100;
 
@@ -1426,15 +1827,23 @@ mod tests {
     #[test]
     fn is_valid() {
         let mut rng = crate::new_rng();
-        let mut deploy = create_deploy(&mut rng, DeployConfig::default().max_ttl, 0, "net-1");
-        assert_eq!(deploy.is_valid, None, "is valid should initially be None");
+        let deploy = create_deploy(&mut rng, DeployConfig::default().max_ttl, 0, "net-1");
+        assert_eq!(
+            deploy.is_valid.get(),
+            None,
+            "is valid should initially be None"
+        );
         deploy.is_valid().expect("should be valid");
-        assert_eq!(deploy.is_valid, Some(Ok(())), "is valid should be true");
+        assert_eq!(
+            deploy.is_valid.get(),
+            Some(&Ok(())),
+            "is valid should be true"
+        );
     }
 
-    fn check_is_not_valid(mut invalid_deploy: Deploy, expected_error: DeployConfigurationFailure) {
+    fn check_is_not_valid(invalid_deploy: Deploy, expected_error: DeployConfigurationFailure) {
         assert!(
-            invalid_deploy.is_valid.is_none(),
+            invalid_deploy.is_valid.get().is_none(),
             "is valid should initially be None"
         );
         let actual_error = invalid_deploy.is_valid().unwrap_err();
@@ -1462,8 +1871,8 @@ mod tests {
 
         // The actual error should have been lazily initialized correctly.
         assert_eq!(
-            invalid_deploy.is_valid,
-            Some(Err(actual_error)),
+            invalid_deploy.is_valid.get(),
+            Some(&Err(actual_error)),
             "is valid should now be Some"
         );
     }
@@ -1494,7 +1903,7 @@ mod tests {
     fn not_valid_due_to_empty_approvals() {
         let mut rng = crate::new_rng();
         let mut deploy = create_deploy(&mut rng, DeployConfig::default().max_ttl, 0, "net-1");
-        deploy.approvals = vec![];
+        deploy.approvals = BTreeSet::new();
         assert!(deploy.approvals.is_empty());
         check_is_not_valid(deploy, DeployConfigurationFailure::EmptyApprovals)
     }
@@ -1506,11 +1915,20 @@ mod tests {
 
         let deploy2 = Deploy::random(&mut rng);
 
-        deploy.approvals.extend(deploy2.approvals);
+        deploy.approvals.extend(deploy2.approvals.clone());
+        // the expected index for the invalid approval will be the first index at which there is an
+        // approval coming from deploy2
+        let expected_index = deploy
+            .approvals
+            .iter()
+            .enumerate()
+            .find(|(_, approval)| deploy2.approvals.contains(approval))
+            .map(|(index, _)| index)
+            .unwrap();
         check_is_not_valid(
             deploy,
             DeployConfigurationFailure::InvalidApproval {
-                index: 1,
+                index: expected_index,
                 error_msg: String::new(), // This field is ignored in the check.
             },
         );
@@ -1561,7 +1979,7 @@ mod tests {
             Err(expected_error)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }
@@ -1591,7 +2009,7 @@ mod tests {
             Err(expected_error)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }
@@ -1621,7 +2039,7 @@ mod tests {
             Err(expected_error)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }
@@ -1660,7 +2078,7 @@ mod tests {
             Err(DeployConfigurationFailure::MissingPaymentAmount)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }
@@ -1701,7 +2119,7 @@ mod tests {
             Err(DeployConfigurationFailure::FailedToParsePaymentAmount)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }
@@ -1748,7 +2166,7 @@ mod tests {
             Err(expected_error)
         );
         assert!(
-            deploy.is_valid.is_none(),
+            deploy.is_valid.get().is_none(),
             "deploy should not have run expensive `is_valid` call"
         );
     }

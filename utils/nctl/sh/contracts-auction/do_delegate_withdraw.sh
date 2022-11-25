@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 
 source "$NCTL"/sh/utils/main.sh
-
 #######################################
 # Submits an auction delegate withdrawal.
 # Arguments:
@@ -15,7 +14,6 @@ function main()
     local DELEGATOR_ID=${2}
     local VALIDATOR_ID=${3}
     local CHAIN_NAME
-    local GAS_PRICE
     local GAS_PAYMENT
     local NODE_ADDRESS
     local PATH_TO_CLIENT
@@ -26,16 +24,15 @@ function main()
     local VALIDATOR_ACCOUNT_KEY
 
     CHAIN_NAME=$(get_chain_name)
-    GAS_PRICE=${GAS_PRICE:-$NCTL_DEFAULT_GAS_PRICE}
     GAS_PAYMENT=${GAS_PAYMENT:-$NCTL_DEFAULT_GAS_PAYMENT}
     NODE_ADDRESS=$(get_node_address_rpc)
     PATH_TO_CLIENT=$(get_path_to_client)
     PATH_TO_CONTRACT=$(get_path_to_contract "auction/undelegate.wasm")
 
-    DELEGATOR_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_USER" "$DELEGATOR_ID")
+    DELEGATOR_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_USER" "$DELEGATOR_ID" | tr '[:upper:]' '[:lower:]')
     DELEGATOR_SECRET_KEY=$(get_path_to_secret_key "$NCTL_ACCOUNT_TYPE_USER" "$DELEGATOR_ID")
-    DELEGATOR_MAIN_PURSE_UREF=$(get_main_purse_uref "$DELEGATOR_ACCOUNT_KEY")
-    VALIDATOR_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_NODE" "$VALIDATOR_ID")
+    DELEGATOR_MAIN_PURSE_UREF=$(get_main_purse_uref "$DELEGATOR_ACCOUNT_KEY" | tr '[:upper:]' '[:lower:]')
+    VALIDATOR_ACCOUNT_KEY=$(get_account_key "$NCTL_ACCOUNT_TYPE_NODE" "$VALIDATOR_ID" | tr '[:upper:]' '[:lower:]')
 
     log "dispatching deploy -> undelegate.wasm"
     log "... chain = $CHAIN_NAME"
@@ -50,7 +47,6 @@ function main()
     DEPLOY_HASH=$(
         $PATH_TO_CLIENT put-deploy \
             --chain-name "$CHAIN_NAME" \
-            --gas-price "$GAS_PRICE" \
             --node-address "$NODE_ADDRESS" \
             --payment-amount "$GAS_PAYMENT" \
             --ttl "1day" \
@@ -91,4 +87,4 @@ done
 main \
     "${AMOUNT:-$NCTL_DEFAULT_AUCTION_DELEGATE_AMOUNT}" \
     "${DELEGATOR_ID:-1}" \
-    "${VALIDATOR_ID:-1}" 
+    "${VALIDATOR_ID:-1}"

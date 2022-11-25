@@ -3,21 +3,20 @@ use std::time::Instant;
 use num_traits::Zero;
 
 use casper_engine_test_support::{
-    internal::{
-        DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
-        DEFAULT_RUN_GENESIS_REQUEST,
-    },
-    DEFAULT_ACCOUNT_ADDR,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::engine_state::{Error as CoreError, MAX_PAYMENT},
-    shared::{opcode_costs::DEFAULT_NOP_COST, wasm},
+    shared::opcode_costs::DEFAULT_NOP_COST,
 };
 use casper_types::{contracts::DEFAULT_ENTRY_POINT_NAME, runtime_args, Gas, RuntimeArgs, U512};
 use parity_wasm::{
     builder,
     elements::{Instruction, Instructions},
 };
+
+use crate::wasm_utils;
 
 const ARG_AMOUNT: &str = "amount";
 
@@ -55,7 +54,7 @@ fn should_charge_minimum_for_do_nothing_session() {
 
         let deploy = DeployItemBuilder::new()
             .with_address(account_hash)
-            .with_session_bytes(wasm::do_nothing_bytes(), session_args)
+            .with_session_bytes(wasm_utils::do_nothing_bytes(), session_args)
             .with_empty_payment_bytes(runtime_args! {
                 ARG_AMOUNT => minimum_deploy_payment,
             })
@@ -69,7 +68,7 @@ fn should_charge_minimum_for_do_nothing_session() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
 
@@ -125,7 +124,7 @@ fn should_execute_do_minimum_session() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
 
@@ -165,9 +164,9 @@ fn should_charge_minimum_for_do_nothing_payment() {
 
         let deploy = DeployItemBuilder::new()
             .with_address(account_hash)
-            .with_session_bytes(wasm::do_nothing_bytes(), session_args)
+            .with_session_bytes(wasm_utils::do_nothing_bytes(), session_args)
             .with_payment_bytes(
-                wasm::do_nothing_bytes(),
+                wasm_utils::do_nothing_bytes(),
                 runtime_args! {
                     ARG_AMOUNT => minimum_deploy_payment,
                 },
@@ -182,7 +181,7 @@ fn should_charge_minimum_for_do_nothing_payment() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
 

@@ -2,20 +2,18 @@ use num_traits::Zero;
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        InMemoryWasmTestBuilder, DEFAULT_AUCTION_DELAY, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
-        DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG,
-        DEFAULT_UNBONDING_DELAY, DEFAULT_VALIDATOR_SLOTS, DEFAULT_WASM_CONFIG,
-    },
-    AccountHash,
+    ChainspecConfig, InMemoryWasmTestBuilder, DEFAULT_AUCTION_DELAY, DEFAULT_CHAINSPEC_REGISTRY,
+    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
+    DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY,
+    DEFAULT_VALIDATOR_SLOTS, DEFAULT_WASM_CONFIG,
 };
 use casper_execution_engine::core::engine_state::{
     genesis::{ExecConfig, GenesisAccount, GenesisValidator},
     run_genesis_request::RunGenesisRequest,
 };
 use casper_types::{
-    system::auction::DelegationRate, Motes, ProtocolVersion, PublicKey, SecretKey, StoredValue,
-    U512,
+    account::AccountHash, system::auction::DelegationRate, Motes, ProtocolVersion, PublicKey,
+    SecretKey, StoredValue, U512,
 };
 
 const GENESIS_CONFIG_HASH: [u8; 32] = [127; 32];
@@ -67,28 +65,12 @@ static GENESIS_CUSTOM_ACCOUNTS: Lazy<Vec<GenesisAccount>> = Lazy::new(|| {
 #[test]
 fn should_run_genesis() {
     let protocol_version = ProtocolVersion::V1_0_0;
-    let wasm_config = *DEFAULT_WASM_CONFIG;
-    let system_config = *DEFAULT_SYSTEM_CONFIG;
-    let validator_slots = DEFAULT_VALIDATOR_SLOTS;
-    let auction_delay = DEFAULT_AUCTION_DELAY;
-    let locked_funds_period = DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS;
-    let round_seigniorage_rate = DEFAULT_ROUND_SEIGNIORAGE_RATE;
-    let unbonding_delay = DEFAULT_UNBONDING_DELAY;
-    let genesis_timestamp = DEFAULT_GENESIS_TIMESTAMP_MILLIS;
 
-    let exec_config = ExecConfig::new(
+    let run_genesis_request = ChainspecConfig::create_genesis_request_from_production_chainspec(
         GENESIS_CUSTOM_ACCOUNTS.clone(),
-        wasm_config,
-        system_config,
-        validator_slots,
-        auction_delay,
-        locked_funds_period,
-        round_seigniorage_rate,
-        unbonding_delay,
-        genesis_timestamp,
-    );
-    let run_genesis_request =
-        RunGenesisRequest::new(GENESIS_CONFIG_HASH.into(), protocol_version, exec_config);
+        protocol_version,
+    )
+    .expect("must create genesis request");
 
     let mut builder = InMemoryWasmTestBuilder::default();
 
@@ -157,8 +139,12 @@ fn should_track_total_token_supply_in_mint() {
         unbonding_delay,
         genesis_timestamp,
     );
-    let run_genesis_request =
-        RunGenesisRequest::new(GENESIS_CONFIG_HASH.into(), protocol_version, ee_config);
+    let run_genesis_request = RunGenesisRequest::new(
+        GENESIS_CONFIG_HASH.into(),
+        protocol_version,
+        ee_config,
+        DEFAULT_CHAINSPEC_REGISTRY.clone(),
+    );
 
     let mut builder = InMemoryWasmTestBuilder::default();
 

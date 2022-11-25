@@ -9,6 +9,7 @@ use std::{
     sync::Arc,
 };
 
+use casper_types::crypto;
 use datasize::DataSize;
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -19,10 +20,12 @@ use openssl::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use casper_types::SecretKey;
+use casper_types::{
+    file_utils::{read_file, ReadFileError},
+    SecretKey,
+};
 
-use super::{read_file, ReadFileError};
-use crate::{crypto, crypto::AsymmetricKeyExt, tls};
+use crate::tls::{self, LoadCertError, LoadSecretKeyError};
 
 /// Path to bundled resources.
 #[cfg(test)]
@@ -134,7 +137,16 @@ impl Loadable for X509 {
     type Error = anyhow::Error;
 
     fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Self::Error> {
-        tls::load_cert(path)
+        let error = match tls::load_cert(path) {
+            Ok(cert) => return Ok(cert),
+            Err(LoadCertError::ReadFile(error)) => {
+                anyhow::Error::new(error).context("failed to load certificate")
+            }
+            Err(LoadCertError::X509CertFromPem(error)) => {
+                anyhow::Error::new(error).context("parsing certificate")
+            }
+        };
+        Err(error)
     }
 }
 
@@ -142,15 +154,25 @@ impl Loadable for PKey<Private> {
     type Error = anyhow::Error;
 
     fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Self::Error> {
-        tls::load_private_key(path)
+        let error = match tls::load_secret_key(path) {
+            Ok(secret_key) => return Ok(secret_key),
+            Err(LoadSecretKeyError::ReadFile(error)) => {
+                anyhow::Error::new(error).context("failed to load private key")
+            }
+            Err(LoadSecretKeyError::PrivateKeyFromPem(error)) => {
+                anyhow::Error::new(error).context("parsing private key")
+            }
+        };
+
+        Err(error)
     }
 }
 
 impl Loadable for Arc<SecretKey> {
-    type Error = crypto::Error;
+    type Error = crypto::ErrorExt;
 
     fn from_path<P: AsRef<Path>>(path: P) -> Result<Self, Self::Error> {
-        Ok(Arc::new(AsymmetricKeyExt::from_file(path)?))
+        Ok(Arc::new(SecretKey::from_file(path)?))
     }
 }
 

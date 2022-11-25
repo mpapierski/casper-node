@@ -1,5 +1,5 @@
-use casper_engine_test_support::internal::{
-    ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_RUN_GENESIS_REQUEST,
+use casper_engine_test_support::{
+    ExecuteRequestBuilder, InMemoryWasmTestBuilder, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::core::engine_state::Error;
 use casper_types::{account::AccountHash, RuntimeArgs};
@@ -20,17 +20,17 @@ fn should_run_ee_532_get_uref_regression_test() {
     )
     .build();
 
-    let result = InMemoryWasmTestBuilder::default()
-        .run_genesis(&DEFAULT_RUN_GENESIS_REQUEST)
+    let mut builder = InMemoryWasmTestBuilder::default();
+    builder
+        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(exec_request)
-        .commit()
-        .finish();
+        .commit();
 
-    let deploy_result = result
-        .builder()
-        .get_exec_result(0)
+    let deploy_result = builder
+        .get_exec_result_owned(0)
         .expect("should have exec response")
         .get(0)
+        .cloned()
         .expect("should have at least one deploy result");
 
     assert!(

@@ -21,6 +21,9 @@ export NCTL_BASE_PORT_SSE=18000
 # Base network server port number.
 export NCTL_BASE_PORT_NETWORK=22000
 
+# Base speculative execution RPC server port number.
+export NCTL_BASE_PORT_SPEC_EXEC=25000
+
 # Set of client side auction contracts.
 export NCTL_CONTRACTS_CLIENT_AUCTION=(
     "activate_bid.wasm"
@@ -48,9 +51,6 @@ export NCTL_DEFAULT_ERA_ACTIVATION_OFFSET=2
 
 # Default motes to pay for consumed gas.
 export NCTL_DEFAULT_GAS_PAYMENT=100000000000   # (1e11)
-
-# Default gas price multiplier.
-export NCTL_DEFAULT_GAS_PRICE=10
 
 # Default amount used when making transfers.
 export NCTL_DEFAULT_TRANSFER_AMOUNT=2500000000   # (1e9)

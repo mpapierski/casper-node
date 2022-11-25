@@ -3,7 +3,9 @@
 use std::{
     convert::TryInto,
     fmt::{self, Debug, Display, Formatter},
+    iter::Flatten,
     mem::MaybeUninit,
+    slice,
 };
 
 use serde::{
@@ -12,8 +14,9 @@ use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
 };
 
-use casper_hashing::Digest;
+use casper_hashing::{ChunkWithProof, Digest};
 use casper_types::bytesrepr::{self, Bytes, FromBytes, ToBytes, U8_SERIALIZED_LENGTH};
+use datasize::DataSize;
 
 #[cfg(test)]
 pub mod gens;
@@ -75,14 +78,20 @@ impl Pointer {
 impl ToBytes for Pointer {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut ret = bytesrepr::unchecked_allocate_buffer(self);
-        ret.push(self.tag());
-        ret.extend_from_slice(self.hash().as_ref());
+        self.write_bytes(&mut ret)?;
         Ok(ret)
     }
 
     #[inline(always)]
     fn serialized_length(&self) -> usize {
         U8_SERIALIZED_LENGTH + Digest::LENGTH
+    }
+
+    #[inline]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.tag());
+        writer.extend_from_slice(self.hash().as_ref());
+        Ok(())
     }
 }
 
@@ -235,6 +244,13 @@ impl ToBytes for PointerBlock {
     fn serialized_length(&self) -> usize {
         self.0.iter().map(ToBytes::serialized_length).sum()
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        for pointer in self.0.iter() {
+            pointer.write_bytes(writer)?;
+        }
+        Ok(())
+    }
 }
 
 impl FromBytes for PointerBlock {
@@ -333,6 +349,127 @@ impl ::std::fmt::Debug for PointerBlock {
     }
 }
 
+/// Represents a Merkle Tree or a chunk of data with attached proof.
+/// Chunk with attached proof is used when the requested
+/// trie is larger than [ChunkWithProof::CHUNK_SIZE_BYTES].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum TrieOrChunk {
+    /// Represents a Merkle Trie.
+    Trie(Bytes),
+    /// Represents a chunk of data with attached proof.
+    ChunkWithProof(ChunkWithProof),
+}
+
+impl Display for TrieOrChunk {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            TrieOrChunk::Trie(trie) => f.debug_tuple("Trie").field(trie).finish(),
+            TrieOrChunk::ChunkWithProof(chunk) => f
+                .debug_struct("ChunkWithProof")
+                .field("index", &chunk.proof().index())
+                .field("hash", &chunk.proof().root_hash())
+                .finish(),
+        }
+    }
+}
+
+impl TrieOrChunk {
+    const TRIE_TAG: u8 = 0;
+    const CHUNK_TAG: u8 = 1;
+
+    fn tag(&self) -> u8 {
+        match self {
+            TrieOrChunk::Trie(_) => Self::TRIE_TAG,
+            TrieOrChunk::ChunkWithProof(_) => Self::CHUNK_TAG,
+        }
+    }
+}
+
+impl ToBytes for TrieOrChunk {
+    fn write_bytes(&self, buf: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        buf.push(self.tag());
+
+        match self {
+            TrieOrChunk::Trie(trie) => {
+                buf.append(&mut trie.to_bytes()?);
+            }
+            TrieOrChunk::ChunkWithProof(chunk) => {
+                buf.append(&mut chunk.to_bytes()?);
+            }
+        }
+
+        Ok(())
+    }
+
+    fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
+        let mut ret = bytesrepr::allocate_buffer(self)?;
+        self.write_bytes(&mut ret)?;
+        Ok(ret)
+    }
+
+    fn serialized_length(&self) -> usize {
+        U8_SERIALIZED_LENGTH
+            + match self {
+                TrieOrChunk::Trie(trie) => trie.serialized_length(),
+                TrieOrChunk::ChunkWithProof(chunk) => chunk.serialized_length(),
+            }
+    }
+}
+
+impl FromBytes for TrieOrChunk {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
+        let (tag, rem) = u8::from_bytes(bytes)?;
+        match tag {
+            Self::TRIE_TAG => {
+                let (trie_bytes, rem) = Bytes::from_bytes(rem)?;
+                Ok((TrieOrChunk::Trie(trie_bytes), rem))
+            }
+            Self::CHUNK_TAG => {
+                let (chunk, rem) = ChunkWithProof::from_bytes(rem)?;
+                Ok((TrieOrChunk::ChunkWithProof(chunk), rem))
+            }
+            _ => Err(bytesrepr::Error::Formatting),
+        }
+    }
+}
+
+/// Represents the ID of a `TrieOrChunk` - containing the index and the root hash.
+/// The root hash is the hash of the trie node as a whole.
+/// The index is the index of a chunk if the node's size is too large and requires chunking. For
+/// small nodes, it's always 0.
+#[derive(DataSize, Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct TrieOrChunkId(pub u64, pub Digest);
+
+impl TrieOrChunkId {
+    /// Returns the trie key part of the ID.
+    pub fn digest(&self) -> &Digest {
+        &self.1
+    }
+
+    /// Given a serialized ID, deserializes it for display purposes.
+    pub fn fmt_serialized(f: &mut Formatter, serialized_id: &[u8]) -> fmt::Result {
+        match bincode::deserialize::<Self>(serialized_id) {
+            Ok(ref trie_or_chunk_id) => Display::fmt(trie_or_chunk_id, f),
+            Err(_) => f.write_str("<invalid>"),
+        }
+    }
+}
+
+/// Helper struct to on-demand deserialize a trie or chunk ID for display purposes.
+pub struct TrieOrChunkIdDisplay<'a>(pub &'a [u8]);
+
+impl<'a> Display for TrieOrChunkIdDisplay<'a> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        TrieOrChunkId::fmt_serialized(f, self.0)
+    }
+}
+
+impl Display for TrieOrChunkId {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        write!(f, "({}, {})", self.0, self.1)
+    }
+}
+
 /// Represents a Merkle Trie.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Trie<K, V> {
@@ -368,11 +505,15 @@ where
 }
 
 impl<K, V> Trie<K, V> {
+    pub(crate) const LEAF_TAG: u8 = 0;
+    const NODE_TAG: u8 = 1;
+    const EXTENSION_TAG: u8 = 2;
+
     fn tag(&self) -> u8 {
         match self {
-            Trie::Leaf { .. } => 0,
-            Trie::Node { .. } => 1,
-            Trie::Extension { .. } => 2,
+            Trie::Leaf { .. } => Self::LEAF_TAG,
+            Trie::Node { .. } => Self::NODE_TAG,
+            Trie::Extension { .. } => Self::EXTENSION_TAG,
         }
     }
 
@@ -403,6 +544,61 @@ impl<K, V> Trie<K, V> {
             _ => None,
         }
     }
+
+    /// Returns the hash of this Trie.
+    pub fn trie_hash(&self) -> Result<Digest, bytesrepr::Error>
+    where
+        Self: ToBytes,
+    {
+        self.to_bytes()
+            .map(|bytes| Digest::hash_bytes_into_chunks_if_necessary(&bytes))
+    }
+
+    /// Returns a pointer block, if possible.
+    pub fn as_pointer_block(&self) -> Option<&PointerBlock> {
+        if let Self::Node { pointer_block } = self {
+            Some(pointer_block.as_ref())
+        } else {
+            None
+        }
+    }
+
+    /// Returns an iterator over descendants of the trie.
+    pub fn iter_descendants(&self) -> DescendantsIterator {
+        match self {
+            Trie::<K, V>::Leaf { .. } => DescendantsIterator::ZeroOrOne(None),
+            Trie::Node { pointer_block } => DescendantsIterator::PointerBlock {
+                iter: pointer_block.0.iter().flatten(),
+            },
+            Trie::Extension { pointer, .. } => {
+                DescendantsIterator::ZeroOrOne(Some(pointer.into_hash()))
+            }
+        }
+    }
+}
+
+/// An iterator over the descendants of a trie node.
+pub enum DescendantsIterator<'a> {
+    /// A leaf (zero descendants) or extension (one descendant) being iterated.
+    ZeroOrOne(Option<Digest>),
+    /// A pointer block being iterated.
+    PointerBlock {
+        /// An iterator over the non-None entries of the `PointerBlock`.
+        iter: Flatten<slice::Iter<'a, Option<Pointer>>>,
+    },
+}
+
+impl<'a> Iterator for DescendantsIterator<'a> {
+    type Item = Digest;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match *self {
+            DescendantsIterator::ZeroOrOne(ref mut maybe_digest) => maybe_digest.take(),
+            DescendantsIterator::PointerBlock { ref mut iter } => {
+                iter.next().map(|pointer| *pointer.hash())
+            }
+        }
+    }
 }
 
 impl<K, V> ToBytes for Trie<K, V>
@@ -412,21 +608,7 @@ where
 {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         let mut ret = bytesrepr::allocate_buffer(self)?;
-        ret.push(self.tag());
-
-        match self {
-            Trie::Leaf { key, value } => {
-                ret.append(&mut key.to_bytes()?);
-                ret.append(&mut value.to_bytes()?);
-            }
-            Trie::Node { pointer_block } => {
-                ret.append(&mut pointer_block.to_bytes()?);
-            }
-            Trie::Extension { affix, pointer } => {
-                ret.append(&mut affix.to_bytes()?);
-                ret.append(&mut pointer.to_bytes()?);
-            }
-        }
+        self.write_bytes(&mut ret)?;
         Ok(ret)
     }
 
@@ -440,18 +622,34 @@ where
                 }
             }
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
+        writer.push(self.tag());
+        match self {
+            Trie::Leaf { key, value } => {
+                key.write_bytes(writer)?;
+                value.write_bytes(writer)?;
+            }
+            Trie::Node { pointer_block } => pointer_block.write_bytes(writer)?,
+            Trie::Extension { affix, pointer } => {
+                affix.write_bytes(writer)?;
+                pointer.write_bytes(writer)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl<K: FromBytes, V: FromBytes> FromBytes for Trie<K, V> {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (tag, rem) = u8::from_bytes(bytes)?;
         match tag {
-            0 => {
+            Self::LEAF_TAG => {
                 let (key, rem) = K::from_bytes(rem)?;
                 let (value, rem) = V::from_bytes(rem)?;
                 Ok((Trie::Leaf { key, value }, rem))
             }
-            1 => {
+            Self::NODE_TAG => {
                 let (pointer_block, rem) = PointerBlock::from_bytes(rem)?;
                 Ok((
                     Trie::Node {
@@ -460,7 +658,7 @@ impl<K: FromBytes, V: FromBytes> FromBytes for Trie<K, V> {
                     rem,
                 ))
             }
-            2 => {
+            Self::EXTENSION_TAG => {
                 let (affix, rem) = FromBytes::from_bytes(rem)?;
                 let (pointer, rem) = Pointer::from_bytes(rem)?;
                 Ok((Trie::Extension { affix, pointer }, rem))

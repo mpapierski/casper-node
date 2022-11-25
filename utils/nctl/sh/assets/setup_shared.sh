@@ -112,7 +112,7 @@ EOM
 #######################################
 function setup_asset_accounts_from_template()
 {
-    log "... setting accounts.toml (from template)"    
+    log "... setting accounts.toml (from template)"
 
     local COUNT_NODES=${1}
     local COUNT_USERS=${2}
@@ -123,12 +123,12 @@ function setup_asset_accounts_from_template()
     local PBK_KEY
     local IDX
 
-    # Copy across template.    
+    # Copy across template.
     cp "$PATH_TO_TEMPLATE" "$PATH_TO_ACCOUNTS"
 
     # Set faucet.
     PBK_KEY="PBK_FAUCET"
-    ACCOUNT_KEY="$(get_account_key "$NCTL_ACCOUNT_TYPE_FAUCET")"    
+    ACCOUNT_KEY="$(get_account_key "$NCTL_ACCOUNT_TYPE_FAUCET")"
     sed -i "s/""$PBK_KEY""/""$ACCOUNT_KEY""/" "$PATH_TO_ACCOUNTS"
 
     # Set validators.
@@ -138,7 +138,7 @@ function setup_asset_accounts_from_template()
         ACCOUNT_KEY="$(get_account_key "$NCTL_ACCOUNT_TYPE_NODE" "$IDX")"
         sed -i "s/""$PBK_KEY""/""$ACCOUNT_KEY""/" "$PATH_TO_ACCOUNTS"
     done
-    
+
     # Set users.
     for IDX in $(seq "$COUNT_USERS" -1 1)
     do
@@ -194,7 +194,7 @@ function setup_asset_binaries()
             cp "$PATH_TO_WASM/$CONTRACT" \
                "$PATH_TO_BIN/auction"
         fi
-    done  
+    done
 
     # Set client-side shared contracts;
     for CONTRACT in "${NCTL_CONTRACTS_CLIENT_SHARED[@]}"
@@ -203,7 +203,7 @@ function setup_asset_binaries()
             cp "$PATH_TO_WASM/$CONTRACT" \
             "$PATH_TO_BIN/shared"
         fi
-    done  
+    done
 
     # Set client-side transfer contracts;
     for CONTRACT in "${NCTL_CONTRACTS_CLIENT_TRANSFERS[@]}"
@@ -248,7 +248,6 @@ function setup_asset_chainspec()
             "cfg['protocol']['activation_point']='$ACTIVATION_POINT';"
             "cfg['protocol']['version']='$PROTOCOL_VERSION';"
             "cfg['network']['name']='$(get_chain_name)';"
-            "cfg['core']['validator_slots']=$COUNT_NODES;"
             "toml.dump(cfg, open('$PATH_TO_CHAINSPEC', 'w'));"
         )
     else
@@ -258,7 +257,6 @@ function setup_asset_chainspec()
             "cfg['protocol']['activation_point']=$ACTIVATION_POINT;"
             "cfg['protocol']['version']='$PROTOCOL_VERSION';"
             "cfg['network']['name']='$(get_chain_name)';"
-            "cfg['core']['validator_slots']=$COUNT_NODES;"
             "toml.dump(cfg, open('$PATH_TO_CHAINSPEC', 'w'));"
         )
     fi
@@ -311,7 +309,7 @@ function setup_asset_directories()
     mkdir "$PATH_TO_NET/daemon/config"
     mkdir "$PATH_TO_NET/daemon/logs"
     mkdir "$PATH_TO_NET/daemon/socket"
-    mkdir "$PATH_TO_NET/faucet" 
+    mkdir "$PATH_TO_NET/faucet"
     mkdir "$PATH_TO_NET/nodes"
     mkdir "$PATH_TO_NET/users"
 
@@ -326,9 +324,8 @@ function setup_asset_directories()
         mkdir "$PATH_TO_NODE/keys"
         mkdir "$PATH_TO_NODE/logs"
         mkdir "$PATH_TO_NODE/storage"
-        mkdir "$PATH_TO_NODE/storage-consensus"
     done
-     
+
     for IDX in $(seq 1 "$COUNT_USERS")
     do
         mkdir "$PATH_TO_NET"/users/user-"$IDX"
@@ -360,7 +357,7 @@ function setup_asset_keys()
     do
         "$PATH_TO_CLIENT" keygen -f "$PATH_TO_NET/nodes/node-$IDX/keys" > /dev/null 2>&1
     done
-     
+
     for IDX in $(seq 1 "$COUNT_USERS")
     do
         "$PATH_TO_CLIENT" keygen -f "$PATH_TO_NET/users/user-$IDX" > /dev/null 2>&1
@@ -378,7 +375,7 @@ function setup_asset_keys()
 function setup_asset_node_configs()
 {
     log "... setting node configs"
-    
+
     local COUNT_NODES=${1}
     local PROTOCOL_VERSION=${2}
     local PATH_TO_TEMPLATE=${3}
@@ -389,6 +386,7 @@ function setup_asset_node_configs()
     local PATH_TO_CONFIG
     local PATH_TO_CONFIG_FILE
     local SCRIPT
+    local SPECULATIVE_EXEC_ADDR
 
     PATH_TO_NET="$(get_path_to_net)"
 
@@ -405,6 +403,8 @@ function setup_asset_node_configs()
         cp "$PATH_TO_NET/chainspec/chainspec.toml" "$PATH_TO_CONFIG"
         cp "$PATH_TO_TEMPLATE" "$PATH_TO_CONFIG_FILE"
 
+        SPECULATIVE_EXEC_ADDR=$(grep 'speculative_execution_address' $PATH_TO_CONFIG_FILE || true)
+
         # Set node configuration settings.
         SCRIPT=(
             "import toml;"
@@ -417,14 +417,18 @@ function setup_asset_node_configs()
             "cfg['rest_server']['address']='0.0.0.0:$(get_node_port_rest "$IDX")';"
             "cfg['rpc_server']['address']='0.0.0.0:$(get_node_port_rpc "$IDX")';"
             "cfg['event_stream_server']['address']='0.0.0.0:$(get_node_port_sse "$IDX")';"
+        )
+
+        if [ ! -z "$SPECULATIVE_EXEC_ADDR" ]; then
+            SCRIPT+=(
+                "cfg['rpc_server']['speculative_execution_address']='0.0.0.0:$(get_node_port_speculative_exec "$IDX")';"
+            )
+        fi
+
+        SCRIPT+=(
             "toml.dump(cfg, open('$PATH_TO_CONFIG_FILE', 'w'));"
         )
         python3 -c "${SCRIPT[*]}"
-
-        # Do workarounds.
-        # N.B. - these are temporary & come into scope when testing against protocol versions 
-        #        that have conflicting node configuration schemas.
-        setup_asset_node_config_workaround_1 "$IDX" "$PATH_TO_CONFIG_FILE"
     done
 }
 
@@ -436,23 +440,28 @@ function setup_asset_global_state_toml() {
     local IDX
     local GLOBAL_STATE_OUTPUT
     local PATH_TO_NET
+    local PRE_1_4_0
 
     PATH_TO_NET="$(get_path_to_net)"
+
+    #Checks stages dir for lowest protocol version
+    pushd "$(get_path_to_stages)/stage-1/"
+    PRE_1_4_0=$(find ./* -maxdepth 0 -type d | awk -F'/' '{ print $2 }' | tr -d '_' | sort | head -n 1)
+    popd
 
     for IDX in $(seq 1 "$COUNT_NODES")
     do
         # if the combined integers from the PROTOCOL_VERISON >= 140 ( 1_4_0 )
-        if [ "$(echo $PROTOCOL_VERSION | tr -d '_')" -ge "140" ]; then
+        if [ "$PRE_1_4_0" -ge "140" ]; then
             # Check new data.lmdb path under ..storage/<chain_name>/
             if [ -f "$PATH_TO_NET/nodes/node-$IDX/storage/$(get_chain_name)/data.lmdb" ]; then
                 GLOBAL_STATE_OUTPUT=$("$NCTL_CASPER_HOME"/target/"$NCTL_COMPILE_TARGET"/global-state-update-gen \
-                        system-contract-registry -d "$PATH_TO_NET"/nodes/node-"$IDX"/storage/"$(get_chain_name)" -s "$(nctl-view-chain-state-root-hash node=$IDX | awk '{ print $12 }')")
+                        system-contract-registry -d "$PATH_TO_NET"/nodes/node-"$IDX"/storage/"$(get_chain_name)" -s "$(nctl-view-chain-state-root-hash node=$IDX | awk '{ print $12 }' | tr '[:upper:]' '[:lower:]')")
             else
                 GLOBAL_STATE_OUTPUT=$("$NCTL_CASPER_HOME"/target/"$NCTL_COMPILE_TARGET"/global-state-update-gen \
-                        system-contract-registry -d "$PATH_TO_NET"/nodes/node-1/storage/"$(get_chain_name)" -s "$(nctl-view-chain-state-root-hash node=1 | awk '{ print $12 }')")
+                        system-contract-registry -d "$PATH_TO_NET"/nodes/node-1/storage/"$(get_chain_name)" -s "$(nctl-view-chain-state-root-hash node=1 | awk '{ print $12 }' | tr '[:upper:]' '[:lower:]')")
             fi
         else
-
             if [ -f "$PATH_TO_NET/nodes/node-$IDX/storage/data.lmdb" ]; then
                 GLOBAL_STATE_OUTPUT=$("$NCTL_CASPER_HOME"/target/"$NCTL_COMPILE_TARGET"/global-state-update-gen \
                         system-contract-registry -d "$PATH_TO_NET"/nodes/node-"$IDX"/storage)
@@ -464,37 +473,4 @@ function setup_asset_global_state_toml() {
 
         echo "$GLOBAL_STATE_OUTPUT" > "$PATH_TO_NET/nodes/node-$IDX/config/$PROTOCOL_VERSION/global_state.toml"
     done
-}
-
-#######################################
-# Sets node configuration file workaround related to 'unit_hashes_folder' setting change.
-# Arguments:
-#   Node ordinal identifier.
-#   Path to folder containing staged config files.
-#######################################
-function setup_asset_node_config_workaround_1()
-{
-    local NODE_ID=${1}
-    local PATH_TO_CONFIG_FILE=${2}
-    local HAS_HIGHWAY
-    local SCRIPT
-
-    HAS_HIGHWAY=$(grep -R "consensus.highway" "$PATH_TO_CONFIG_FILE" || true)
-    if [ "$HAS_HIGHWAY" != "" ]; then
-        SCRIPT=(
-            "import toml;"
-            "cfg=toml.load('$PATH_TO_CONFIG_FILE');"
-            "cfg['consensus']['highway']['unit_hashes_folder']='../../storage-consensus';"
-            "toml.dump(cfg, open('$PATH_TO_CONFIG_FILE', 'w'));"
-        )
-    else
-        SCRIPT=(
-            "import toml;"
-            "cfg=toml.load('$PATH_TO_CONFIG_FILE');"
-            "cfg['consensus']['unit_hashes_folder']='../../storage-consensus';"
-            "toml.dump(cfg, open('$PATH_TO_CONFIG_FILE', 'w'));"
-        )
-    fi
-
-    python3 -c "${SCRIPT[*]}"
 }

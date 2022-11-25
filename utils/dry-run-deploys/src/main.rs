@@ -39,6 +39,12 @@ struct Opts {
 
     #[structopt(short, long, about = "Enable manual syncing after each block to LMDB")]
     manual_sync_enabled: bool,
+
+    #[structopt(
+        long = "max-db-size",
+        about = "Max LMDB database size, may be useful to set this when running under valgrind."
+    )]
+    max_db_size: Option<usize>,
 }
 
 #[tokio::main]
@@ -51,20 +57,25 @@ async fn main() -> Result<(), anyhow::Error> {
     // Create a separate lmdb for block/deploy storage at chain_download_path.
     let storage = create_storage(&chain_download_path).expect("should create storage");
 
+    let max_db_size = opts
+        .max_db_size
+        .unwrap_or(retrieve_state::DEFAULT_MAX_DB_SIZE);
+
+    let load_height = opts.starting_block_height.saturating_sub(1);
     // Grab the block previous
     let previous_block = storage
-        .read_block_by_height(opts.starting_block_height.saturating_sub(1))?
-        .unwrap();
+        .read_block_by_height(load_height)?
+        .unwrap_or_else(|| panic!("no block at height {}", load_height));
 
     let previous_block_header = previous_block.take_header();
     let (engine_state, _env) = storage::load_execution_engine(
         lmdb_path,
-        retrieve_state::DEFAULT_MAX_DB_SIZE,
+        max_db_size,
         *previous_block_header.state_root_hash(),
         opts.manual_sync_enabled,
     )?;
 
-    let mut execution_pre_state = ExecutionPreState::from(&previous_block_header);
+    let mut execution_pre_state = ExecutionPreState::from_block_header(&previous_block_header);
     let mut execute_count = 0;
 
     let highest_height_in_chain = storage.read_highest_block()?;
@@ -89,6 +100,7 @@ async fn main() -> Result<(), anyhow::Error> {
         progress.set_style(
             ProgressStyle::default_bar()
                 .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+                .unwrap()
                 .progress_chars("##-"),
         );
         Some(progress)
@@ -129,7 +141,13 @@ async fn main() -> Result<(), anyhow::Error> {
             .map_err(anyhow::Error::msg)?;
 
         let header = block_and_execution_effects.block.take_header();
-        execution_pre_state = ExecutionPreState::from(&header);
+        let expected = block.take_header();
+        assert_eq!(
+            header.state_root_hash(),
+            expected.state_root_hash(),
+            "state root hash mismatch"
+        );
+        execution_pre_state = ExecutionPreState::from_block_header(&header);
         execute_count += 1;
         if opts.verbose {
             eprintln!(

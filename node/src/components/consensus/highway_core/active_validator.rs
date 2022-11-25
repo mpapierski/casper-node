@@ -9,21 +9,21 @@ use std::{
 use datasize::DataSize;
 use tracing::{error, info, trace, warn};
 
+use casper_types::{TimeDiff, Timestamp};
+
 use super::{
     endorsement::{Endorsement, SignedEndorsement},
     evidence::Evidence,
     highway::{Ping, ValidVertex, Vertex, WireUnit},
     state::{self, Panorama, State, Unit, Weight},
     validators::ValidatorIndex,
+    ENABLE_ENDORSEMENTS,
 };
 
-use crate::{
-    components::consensus::{
-        consensus_protocol::BlockContext,
-        highway_core::{highway::SignedWireUnit, state::Fault},
-        traits::{Context, ValidatorSecret},
-    },
-    types::{TimeDiff, Timestamp},
+use crate::components::consensus::{
+    consensus_protocol::BlockContext,
+    highway_core::{highway::SignedWireUnit, state::Fault},
+    traits::{Context, ValidatorSecret},
 };
 
 /// An action taken by a validator.
@@ -281,6 +281,9 @@ impl<C: Context> ActiveValidator<C> {
         evidence: &Evidence<C>,
         state: &State<C>,
     ) -> Vec<Effect<C>> {
+        if !ENABLE_ENDORSEMENTS {
+            return Vec::new();
+        }
         let vidx = evidence.perpetrator();
         state
             .iter_correct_hashes()
@@ -545,6 +548,9 @@ impl<C: Context> ActiveValidator<C> {
     /// We should endorse unit from honest validator that cites _an_ equivocator
     /// as honest and it cites some new message by that validator.
     fn should_endorse(&self, vhash: &C::Hash, state: &State<C>) -> bool {
+        if !ENABLE_ENDORSEMENTS {
+            return false;
+        }
         let unit = state.unit(vhash);
         !state.is_faulty(unit.creator)
             && unit
@@ -859,7 +865,7 @@ mod tests {
             match *new_units {
                 [] => (),
                 [unit] => {
-                    let _ = self.state.add_unit(unit.clone()).unwrap();
+                    self.state.add_unit(unit.clone()).unwrap();
                 }
                 _ => panic!(
                     "Expected at most one timer to be scheduled: {:?}",
@@ -1014,8 +1020,8 @@ mod tests {
 
         let unit_file = {
             let tmp_dir = tempdir().unwrap();
-            let unit_hashes_folder = tmp_dir.path().to_path_buf();
-            Some(unit_hashes_folder.join(format!("unit_hash_{:?}.dat", instance_id)))
+            let unit_files_folder = tmp_dir.path().to_path_buf();
+            Some(unit_files_folder.join(format!("unit_{:?}.dat", instance_id)))
         };
 
         // Store `a2` unit as the Alice's last unit.

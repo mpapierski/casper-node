@@ -1,5 +1,5 @@
 //! A Rust library for writing smart contracts on the
-//! [Casper Platform](https://techspec.casperlabs.io).
+//! [Casper Platform](https://docs.casperlabs.io/dapp-dev-guide).
 //!
 //! # `no_std`
 //!
@@ -50,13 +50,14 @@
     all(not(test), feature = "no-std-helpers"),
     feature(alloc_error_handler, core_intrinsics, lang_items)
 )]
-#![doc(html_root_url = "https://docs.rs/casper-contract/1.0.0")]
+#![doc(html_root_url = "https://docs.rs/casper-contract/1.4.4")]
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Favicon_RGB_50px.png",
     html_logo_url = "https://raw.githubusercontent.com/CasperLabs/casper-node/master/images/CasperLabs_Logo_Symbol_RGB.png",
     test(attr(forbid(warnings)))
 )]
 #![warn(missing_docs)]
+
 extern crate alloc;
 
 pub mod contract_api;

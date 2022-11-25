@@ -8,25 +8,23 @@ use casper_types::{
 
 use crate::{
     core::{engine_state::SystemContractRegistry, execution, tracking_copy::TrackingCopy},
-    shared::{
-        newtypes::CorrelationId,
-        wasm,
-        wasm_engine::{Module, WasmEngine},
-    },
+    shared::newtypes::CorrelationId,
     storage::{global_state::StateReader, trie::merkle_proof::TrieMerkleProof},
 };
 
+/// Higher-level operations on the state via a `TrackingCopy`.
 pub trait TrackingCopyExt<R> {
+    /// The type for the returned errors.
     type Error;
 
-    /// Gets the account at a given account address
+    /// Gets the account at a given account address.
     fn get_account(
         &mut self,
         correlation_id: CorrelationId,
         account_hash: AccountHash,
     ) -> Result<Account, Self::Error>;
 
-    /// Reads the account at a given account address
+    /// Reads the account at a given account address.
     fn read_account(
         &mut self,
         correlation_id: CorrelationId,
@@ -34,57 +32,56 @@ pub trait TrackingCopyExt<R> {
     ) -> Result<Account, Self::Error>;
 
     // TODO: make this a static method
-    /// Gets the purse balance key for a given purse id
+    /// Gets the purse balance key for a given purse id.
     fn get_purse_balance_key(
         &self,
         correlation_id: CorrelationId,
         purse_key: Key,
     ) -> Result<Key, Self::Error>;
 
-    /// Gets the balance at a given balance key
+    /// Gets the balance at a given balance key.
     fn get_purse_balance(
         &self,
         correlation_id: CorrelationId,
         balance_key: Key,
     ) -> Result<Motes, Self::Error>;
 
-    /// Gets the purse balance key for a given purse id and provides a Merkle proof
+    /// Gets the purse balance key for a given purse id and provides a Merkle proof.
     fn get_purse_balance_key_with_proof(
         &self,
         correlation_id: CorrelationId,
         purse_key: Key,
     ) -> Result<(Key, TrieMerkleProof<Key, StoredValue>), Self::Error>;
 
-    /// Gets the balance at a given balance key and provides a Merkle proof
+    /// Gets the balance at a given balance key and provides a Merkle proof.
     fn get_purse_balance_with_proof(
         &self,
         correlation_id: CorrelationId,
         balance_key: Key,
     ) -> Result<(Motes, TrieMerkleProof<Key, StoredValue>), Self::Error>;
 
-    /// Gets a contract by Key
+    /// Gets a contract by Key.
     fn get_contract_wasm(
         &mut self,
         correlation_id: CorrelationId,
         contract_wasm_hash: ContractWasmHash,
     ) -> Result<ContractWasm, Self::Error>;
 
-    /// Gets a contract header by Key
+    /// Gets a contract header by Key.
     fn get_contract(
         &mut self,
         correlation_id: CorrelationId,
         contract_hash: ContractHash,
     ) -> Result<Contract, Self::Error>;
 
-    /// Gets a contract package by Key
+    /// Gets a contract package by Key.
     fn get_contract_package(
         &mut self,
         correlation_id: CorrelationId,
         contract_package_hash: ContractPackageHash,
     ) -> Result<ContractPackage, Self::Error>;
 
-    fn get_system_module(&mut self, preprocessor: &WasmEngine) -> Result<Module, Self::Error>;
-
+    /// Gets the system contract registry.
     fn get_system_contracts(
         &mut self,
         correlation_id: CorrelationId,
@@ -207,7 +204,7 @@ where
         match self.get(correlation_id, &key).map_err(Into::into)? {
             Some(StoredValue::ContractWasm(contract_wasm)) => Ok(contract_wasm),
             Some(other) => Err(execution::Error::TypeMismatch(
-                StoredValueTypeMismatch::new("ContractHeader".to_string(), other.type_name()),
+                StoredValueTypeMismatch::new("ContractWasm".to_string(), other.type_name()),
             )),
             None => Err(execution::Error::KeyNotFound(key)),
         }
@@ -220,7 +217,7 @@ where
         contract_hash: ContractHash,
     ) -> Result<Contract, Self::Error> {
         let key = contract_hash.into();
-        match self.get(correlation_id, &key).map_err(Into::into)? {
+        match self.read(correlation_id, &key).map_err(Into::into)? {
             Some(StoredValue::Contract(contract)) => Ok(contract),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("Contract".to_string(), other.type_name()),
@@ -235,17 +232,13 @@ where
         contract_package_hash: ContractPackageHash,
     ) -> Result<ContractPackage, Self::Error> {
         let key = contract_package_hash.into();
-        match self.get(correlation_id, &key).map_err(Into::into)? {
+        match self.read(correlation_id, &key).map_err(Into::into)? {
             Some(StoredValue::ContractPackage(contract_package)) => Ok(contract_package),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("ContractPackage".to_string(), other.type_name()),
             )),
             None => Err(execution::Error::KeyNotFound(key)),
         }
-    }
-
-    fn get_system_module(&mut self, preprocessor: &WasmEngine) -> Result<Module, Self::Error> {
-        Ok(Module::Noop)
     }
 
     fn get_system_contracts(

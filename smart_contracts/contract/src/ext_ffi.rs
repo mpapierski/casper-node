@@ -63,6 +63,15 @@ extern "C" {
     /// * `value_ptr` - pointer to bytes representing the value to write under the new `URef`
     /// * `value_size` - size of the value (in bytes)
     pub fn casper_new_uref(uref_ptr: *mut u8, value_ptr: *const u8, value_size: usize);
+    /// This function loads a set of authorized keys used to sign this deploy from the host.
+    /// The data will be available through the host buffer and can be copied to Wasm memory through
+    /// [`casper_read_host_buffer`].
+    ///
+    /// # Arguments
+    ///
+    /// * `total_keys`: number of authorization keys used to sign this deploy
+    /// * `result_size`: size of the data loaded in the host
+    pub fn casper_load_authorization_keys(total_keys: *mut usize, result_size: *mut usize) -> i32;
     ///
     pub fn casper_load_named_keys(total_keys: *mut usize, result_size: *mut usize) -> i32;
     /// This function causes a `Trap`, terminating the currently running module,
@@ -242,7 +251,6 @@ extern "C" {
     ///
     /// * `purse_ptr` - pointer to position in wasm memory where to write the created `URef`
     /// * `purse_size` - allocated size for the `URef`
-    #[doc(hidden)]
     pub fn casper_create_purse(purse_ptr: *const u8, purse_size: usize) -> i32;
     /// This function uses the mint contract’s transfer function to transfer
     /// tokens from the current account’s main purse to the main purse of the
@@ -313,7 +321,6 @@ extern "C" {
     /// * `id_size` - size of the id (in bytes)
     /// * `result_ptr` - pointer in wasm memory to a value where `TransferredTo` value would be set
     ///   on successful transfer.
-    #[doc(hidden)]
     pub fn casper_transfer_from_purse_to_account(
         source_ptr: *const u8,
         source_size: usize,
@@ -351,7 +358,6 @@ extern "C" {
     /// * `amount_size` - size of the amount (in bytes)
     /// * `id_ptr` - pointer in wasm memory to bytes representing the user-defined transaction id
     /// * `id_size` - size of the id (in bytes)
-    #[doc(hidden)]
     pub fn casper_transfer_from_purse_to_purse(
         source_ptr: *const u8,
         source_size: usize,
@@ -447,7 +453,6 @@ extern "C" {
         dest_size: usize,
     ) -> i32;
     ///
-    #[doc(hidden)]
     pub fn casper_get_main_purse(dest_ptr: *mut u8);
     /// This function copies the contents of the current runtime buffer into the
     /// wasm memory, beginning at the provided offset. It is intended that this
@@ -739,6 +744,23 @@ extern "C" {
         key_bytes_size: usize,
         output_size: *mut usize,
     ) -> i32;
+    /// The bytes in the span of wasm memory from `key_ptr` to `key_ptr + key_size` must correspond
+    /// to a valid global state dictionary key, otherwise the function will fail.
+    /// If the Key::Dictionary is de-serialized successfully, then the result of the read is
+    /// serialized and buffered in the runtime. This result can be obtained via the
+    /// [`casper_read_host_buffer`] function. Returns standard error code.
+    ///
+    /// # Arguments
+    ///
+    /// * `key_ptr` - pointer (offset in wasm linear memory) to serialized form of the
+    ///   Key::Dictionary to read
+    /// * `key_size` - size of the serialized Key::Dictionary (in bytes)
+    /// * `output_size` - pointer to a value where host will write size of bytes read from given key
+    pub fn casper_dictionary_read(
+        key_ptr: *const u8,
+        key_size: usize,
+        output_size: *mut usize,
+    ) -> i32;
     /// The bytes in wasm memory from offset `key_ptr` to `key_ptr + key_size`
     /// will be used together with the passed URef's seed to form a dictionary.
     /// This function writes the provided value (read via de-serializing the bytes
@@ -762,4 +784,10 @@ extern "C" {
         value_ptr: *const u8,
         value_size: usize,
     ) -> i32;
+    /// Returns 32 pseudo random bytes.
+    ///
+    /// # Arguments
+    /// * `out_ptr` - pointer to the location where argument bytes will be copied from the host side
+    /// * `out_size` - size of output pointer
+    pub fn casper_random_bytes(out_ptr: *mut u8, out_size: usize) -> i32;
 }

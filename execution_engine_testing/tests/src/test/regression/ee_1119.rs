@@ -2,14 +2,14 @@ use num_traits::Zero;
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    internal::{
-        utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS,
-        DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
-        DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, SYSTEM_ADDR,
-    },
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
+    DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, MINIMUM_ACCOUNT_CREATION_BALANCE, SYSTEM_ADDR,
 };
-use casper_execution_engine::core::engine_state::genesis::{GenesisAccount, GenesisValidator};
+use casper_execution_engine::core::engine_state::{
+    engine_config::DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+    genesis::{GenesisAccount, GenesisValidator},
+};
 use casper_types::{
     account::AccountHash,
     runtime_args,
@@ -28,7 +28,7 @@ const CONTRACT_WITHDRAW_BID: &str = "withdraw_bid.wasm";
 const CONTRACT_DELEGATE: &str = "delegate.wasm";
 const CONTRACT_UNDELEGATE: &str = "undelegate.wasm";
 
-const DELEGATE_AMOUNT_1: u64 = 95_000;
+const DELEGATE_AMOUNT_1: u64 = 95_000 + DEFAULT_MINIMUM_DELEGATION_AMOUNT;
 const UNDELEGATE_AMOUNT_1: u64 = 17_000;
 
 const TRANSFER_AMOUNT: u64 = MINIMUM_ACCOUNT_CREATION_BALANCE;
@@ -112,7 +112,7 @@ fn should_run_ee_1119_dont_slash_delegated_validators() {
         U512::from(VALIDATOR_1_STAKE),
     );
 
-    let unbond_purses: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses: UnbondingPurses = builder.get_unbonds();
     assert_eq!(unbond_purses.len(), 0);
 
     //
@@ -160,7 +160,7 @@ fn should_run_ee_1119_dont_slash_delegated_validators() {
 
     builder.exec(withdraw_bid_request).expect_success().commit();
 
-    let unbond_purses: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses: UnbondingPurses = builder.get_unbonds();
     assert_eq!(unbond_purses.len(), 1);
 
     let unbond_list = unbond_purses
@@ -204,7 +204,7 @@ fn should_run_ee_1119_dont_slash_delegated_validators() {
 
     builder.exec(slash_request_1).expect_success().commit();
 
-    let unbond_purses_noop: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses_noop: UnbondingPurses = builder.get_unbonds();
     assert_eq!(
         unbond_purses, unbond_purses_noop,
         "slashing default validator should be noop because no unbonding was done"
@@ -232,7 +232,7 @@ fn should_run_ee_1119_dont_slash_delegated_validators() {
 
     builder.exec(slash_request_2).expect_success().commit();
 
-    let unbond_purses: UnbondingPurses = builder.get_withdraws();
+    let unbond_purses: UnbondingPurses = builder.get_unbonds();
     assert_eq!(unbond_purses.len(), 1);
 
     assert!(!unbond_purses.contains_key(&*DEFAULT_ACCOUNT_ADDR));

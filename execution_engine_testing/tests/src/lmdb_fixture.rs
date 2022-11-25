@@ -4,22 +4,31 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use casper_engine_test_support::internal::{LmdbWasmTestBuilder, DEFAULT_ENGINE_CONFIG};
-use casper_types::ProtocolVersion;
 use fs_extra::dir;
 use serde::{Deserialize, Serialize};
+use tempfile::TempDir;
 
+use casper_engine_test_support::LmdbWasmTestBuilder;
 use casper_execution_engine::core::engine_state::{
     run_genesis_request::RunGenesisRequest, EngineConfig,
 };
 use casper_hashing::Digest;
-use tempfile::TempDir;
+use casper_types::ProtocolVersion;
+#[cfg(test)]
+use casper_types::{AccessRights, Key, URef};
 
 pub const RELEASE_1_2_0: &str = "release_1_2_0";
 pub const RELEASE_1_3_1: &str = "release_1_3_1";
+pub const RELEASE_1_4_2: &str = "release_1_4_2";
+pub const RELEASE_1_4_3: &str = "release_1_4_3";
+pub const RELEASE_1_4_4: &str = "release_1_4_4";
 const STATE_JSON_FILE: &str = "state.json";
 const FIXTURES_DIRECTORY: &str = "fixtures";
 const GENESIS_PROTOCOL_VERSION_FIELD: &str = "protocol_version";
+/// This is a special place in the global state where fixture contains a registry.
+#[cfg(test)]
+pub(crate) const CONTRACT_REGISTRY_SPECIAL_ADDRESS: Key =
+    Key::URef(URef::new([0u8; 32], AccessRights::all()));
 
 fn path_to_lmdb_fixtures() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join(FIXTURES_DIRECTORY)
@@ -31,10 +40,6 @@ pub struct LmdbFixtureState {
     /// Serializes as unstructured JSON value because [`RunGenesisRequest`] might change over time
     /// and likely old fixture might not deserialize cleanly in the future.
     pub genesis_request: serde_json::Value,
-    #[serde(
-        serialize_with = "hex::serialize",
-        deserialize_with = "hex::deserialize"
-    )]
     pub post_state_hash: Digest,
 }
 
@@ -69,10 +74,11 @@ pub fn builder_from_global_state_fixture(
     let lmdb_fixture_state: LmdbFixtureState =
         serde_json::from_reader(File::open(&path_to_state).unwrap()).unwrap();
     let path_to_gs = to.path().join(fixture_name);
+
     (
         LmdbWasmTestBuilder::open(
             &path_to_gs,
-            *DEFAULT_ENGINE_CONFIG,
+            EngineConfig::default(),
             lmdb_fixture_state.post_state_hash,
         ),
         lmdb_fixture_state,
@@ -93,7 +99,13 @@ pub fn generate_fixture(
     let lmdb_fixtures_root = path_to_lmdb_fixtures();
     let fixture_root = lmdb_fixtures_root.join(name);
 
-    let engine_config = *DEFAULT_ENGINE_CONFIG;
+    let path_to_data_lmdb = fixture_root.join("global_state").join("data.lmdb");
+    if path_to_data_lmdb.exists() {
+        eprintln!("Lmdb fixture located at {} already exists. If you need to re-generate a fixture to ensure a serialization changes are backwards compatible please make sure you are running a specific version, or a past commit. Skipping.", path_to_data_lmdb.display());
+        return Ok(());
+    }
+
+    let engine_config = EngineConfig::default();
     let mut builder = LmdbWasmTestBuilder::new_with_config(&fixture_root, engine_config);
 
     builder.run_genesis(&genesis_request);
@@ -108,7 +120,10 @@ pub fn generate_fixture(
         post_state_hash,
     };
     let serialized_state = serde_json::to_string_pretty(&state)?;
-    let mut f = File::create(&fixture_root.join(STATE_JSON_FILE))?;
+
+    let path_to_state_file = fixture_root.join(STATE_JSON_FILE);
+
+    let mut f = File::create(&path_to_state_file)?;
     f.write_all(serialized_state.as_bytes())?;
     Ok(())
 }

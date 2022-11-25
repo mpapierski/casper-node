@@ -1,23 +1,23 @@
 use std::collections::BTreeSet;
 
 use datasize::DataSize;
+use serde::Serialize;
 
-use crate::{
-    components::consensus::{
-        highway_core::{
-            highway::SignedWireUnit,
-            state::{self, Panorama, State},
-            validators::ValidatorIndex,
-        },
-        traits::Context,
+use casper_types::{TimeDiff, Timestamp};
+
+use crate::components::consensus::{
+    highway_core::{
+        highway::SignedWireUnit,
+        state::{self, Panorama, State},
+        validators::ValidatorIndex,
     },
-    types::{TimeDiff, Timestamp},
+    traits::Context,
 };
 
 /// A unit sent to or received from the network.
 ///
 /// This is only instantiated when it gets added to a `State`, and only once it has been validated.
-#[derive(Clone, DataSize, Debug, Eq, PartialEq)]
+#[derive(Clone, DataSize, Debug, Eq, PartialEq, Serialize)]
 pub(crate) struct Unit<C>
 where
     C: Context,

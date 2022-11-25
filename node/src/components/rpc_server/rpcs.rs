@@ -4,66 +4,44 @@
 
 pub mod account;
 pub mod chain;
+mod common;
 pub mod docs;
+mod error_code;
 pub mod info;
+pub mod speculative_exec;
 pub mod state;
 
-use std::str;
+use std::{convert::Infallible, str, sync::Arc, time::Duration};
 
-use futures::{future::BoxFuture, TryFutureExt};
-use http::Response;
-use hyper::Body;
+use async_trait::async_trait;
+use http::header::ACCEPT_ENCODING;
+use hyper::server::{conn::AddrIncoming, Builder};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use warp::{
-    filters::BoxedFilter,
-    reject::{self, Reject},
-    Filter,
-};
-use warp_json_rpc::{filters, Builder};
+use tokio::sync::oneshot;
+use tower::ServiceBuilder;
+use tracing::info;
+use warp::Filter;
 
+use casper_json_rpc::{Error, Params, RequestHandlers, RequestHandlersBuilder, ReservedErrorCode};
 use casper_types::ProtocolVersion;
 
 use super::{ReactorEventT, RpcRequest};
 use crate::effect::EffectBuilder;
+pub use common::ErrorData;
 use docs::DocExample;
+pub use error_code::ErrorCode;
 
-/// The URL path.
-pub const RPC_API_PATH: &str = "rpc";
-
-/// Error code returned if the JSON-RPC response indicates failure.
+/// This setting causes the server to ignore extra fields in JSON-RPC requests other than the
+/// standard 'id', 'jsonrpc', 'method', and 'params' fields.
 ///
-/// See <https://www.jsonrpc.org/specification#error_object> for details.
-#[repr(i64)]
-enum ErrorCode {
-    NoSuchDeploy = -32000,
-    NoSuchBlock = -32001,
-    ParseQueryKey = -32002,
-    QueryFailed = -32003,
-    QueryFailedToExecute = -32004,
-    ParseGetBalanceURef = -32005,
-    GetBalanceFailed = -32006,
-    GetBalanceFailedToExecute = -32007,
-    InvalidDeploy = -32008,
-    NoSuchAccount = -32009,
-    FailedToGetDictionaryURef = -32010,
-    FailedToGetTrie = -32011,
-}
-
-#[derive(Debug)]
-pub(super) struct Error(String);
-
-impl Reject for Error {}
-
-impl From<anyhow::Error> for Error {
-    fn from(error: anyhow::Error) -> Self {
-        Error(error.to_string())
-    }
-}
+/// It will be changed to `false` for casper-node v2.0.0.
+const ALLOW_UNKNOWN_FIELDS_IN_JSON_RPC_REQUEST: bool = true;
 
 /// A JSON-RPC requiring the "params" field to be present.
-pub trait RpcWithParams {
+#[async_trait]
+pub(super) trait RpcWithParams {
     /// The JSON-RPC "method" name.
     const METHOD: &'static str;
 
@@ -78,117 +56,126 @@ pub trait RpcWithParams {
     /// The JSON-RPC response's "result" type.
     type ResponseResult: Serialize
         + for<'de> Deserialize<'de>
+        + PartialEq
         + JsonSchema
         + DocExample
         + Send
         + 'static;
-}
 
-/// A trait for creating a JSON-RPC filter where the request is required to have "params".
-pub(super) trait RpcWithParamsExt: RpcWithParams {
-    /// Creates the warp filter for this particular RPC.
-    fn create_filter<REv: ReactorEventT>(
-        effect_builder: EffectBuilder<REv>,
-        api_version: ProtocolVersion,
-    ) -> BoxedFilter<(Response<Body>,)> {
-        let with_valid_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and(filters::params::<Self::RequestParams>())
-            .and_then(
-                move |response_builder: Builder, params: Self::RequestParams| {
-                    Self::handle_request(effect_builder, response_builder, params, api_version)
-                        .map_err(reject::custom)
-                },
-            );
-        let with_invalid_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and(filters::params::<Value>())
-            .and_then(
-                move |response_builder: Builder, _params: Value| async move {
-                    response_builder
-                        .error(warp_json_rpc::Error::INVALID_PARAMS)
-                        .map_err(|_| reject::reject())
-                },
-            );
-        let with_missing_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and_then(move |response_builder: Builder| async move {
-                response_builder
-                    .error(warp_json_rpc::Error::INVALID_PARAMS)
-                    .map_err(|_| reject::reject())
-            });
-        with_valid_params
-            .or(with_invalid_params)
-            .unify()
-            .or(with_missing_params)
-            .unify()
-            .boxed()
+    /// Tries to parse the incoming JSON-RPC request's "params" field as `RequestParams`.
+    fn try_parse_params(maybe_params: Option<Params>) -> Result<Self::RequestParams, Error> {
+        let params = match maybe_params {
+            Some(params) => Value::from(params),
+            None => {
+                return Err(Error::new(
+                    ReservedErrorCode::InvalidParams,
+                    "Missing 'params' field",
+                ))
+            }
+        };
+        serde_json::from_value::<Self::RequestParams>(params).map_err(|error| {
+            Error::new(
+                ReservedErrorCode::InvalidParams,
+                format!("Failed to parse 'params' field: {}", error),
+            )
+        })
     }
 
-    /// Handles the incoming RPC request.
-    fn handle_request<REv: ReactorEventT>(
+    /// Registers this RPC as the handler for JSON-RPC requests whose "method" field is the same as
+    /// `Self::METHOD`.
+    fn register_as_handler<REv: ReactorEventT>(
         effect_builder: EffectBuilder<REv>,
-        response_builder: Builder,
-        params: Self::RequestParams,
         api_version: ProtocolVersion,
-    ) -> BoxFuture<'static, Result<Response<Body>, Error>>;
+        handlers_builder: &mut RequestHandlersBuilder,
+    ) {
+        let handler = move |maybe_params| async move {
+            let params = Self::try_parse_params(maybe_params)?;
+            Self::do_handle_request(effect_builder, api_version, params).await
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    /// Tries to parse the params, and on success, returns the doc example, regardless of the value
+    /// of the parsed params.
+    #[cfg(test)]
+    fn register_as_test_handler(handlers_builder: &mut RequestHandlersBuilder) {
+        let handler = move |maybe_params| async move {
+            let _params = Self::try_parse_params(maybe_params)?;
+            Ok(Self::ResponseResult::doc_example())
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    async fn do_handle_request<REv: ReactorEventT>(
+        effect_builder: EffectBuilder<REv>,
+        api_version: ProtocolVersion,
+        params: Self::RequestParams,
+    ) -> Result<Self::ResponseResult, Error>;
 }
 
 /// A JSON-RPC requiring the "params" field to be absent.
-pub trait RpcWithoutParams {
+#[async_trait]
+pub(super) trait RpcWithoutParams {
     /// The JSON-RPC "method" name.
     const METHOD: &'static str;
 
     /// The JSON-RPC response's "result" type.
     type ResponseResult: Serialize
         + for<'de> Deserialize<'de>
+        + PartialEq
         + JsonSchema
         + DocExample
         + Send
         + 'static;
-}
 
-/// A trait for creating a JSON-RPC filter where the request is not required to have "params".
-pub(super) trait RpcWithoutParamsExt: RpcWithoutParams {
-    /// Creates the warp filter for this particular RPC.
-    fn create_filter<REv: ReactorEventT>(
-        effect_builder: EffectBuilder<REv>,
-        api_version: ProtocolVersion,
-    ) -> BoxedFilter<(Response<Body>,)> {
-        let with_no_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and_then(move |response_builder: Builder| {
-                Self::handle_request(effect_builder, response_builder, api_version)
-                    .map_err(reject::custom)
-            });
-        let with_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and(filters::params::<Value>())
-            .and_then(
-                move |response_builder: Builder, _params: Value| async move {
-                    response_builder
-                        .error(warp_json_rpc::Error::INVALID_PARAMS)
-                        .map_err(|_| reject::reject())
-                },
-            );
-        with_no_params.or(with_params).unify().boxed()
+    /// Returns an error if the incoming JSON-RPC request's "params" field is not `None` or an empty
+    /// Array or Object.
+    fn check_no_params(maybe_params: Option<Params>) -> Result<(), Error> {
+        if !maybe_params.unwrap_or_default().is_empty() {
+            return Err(Error::new(
+                ReservedErrorCode::InvalidParams,
+                "'params' field should be an empty Array '[]', an empty Object '{}' or absent",
+            ));
+        }
+        Ok(())
     }
 
-    /// Handles the incoming RPC request.
-    fn handle_request<REv: ReactorEventT>(
+    /// Registers this RPC as the handler for JSON-RPC requests whose "method" field is the same as
+    /// `Self::METHOD`.
+    fn register_as_handler<REv: ReactorEventT>(
         effect_builder: EffectBuilder<REv>,
-        response_builder: Builder,
         api_version: ProtocolVersion,
-    ) -> BoxFuture<'static, Result<Response<Body>, Error>>;
+        handlers_builder: &mut RequestHandlersBuilder,
+    ) {
+        let handler = move |maybe_params| async move {
+            Self::check_no_params(maybe_params)?;
+            Self::do_handle_request(effect_builder, api_version).await
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    /// Checks the params, and on success, returns the doc example.
+    #[cfg(test)]
+    fn register_as_test_handler(handlers_builder: &mut RequestHandlersBuilder) {
+        let handler = move |maybe_params| async move {
+            Self::check_no_params(maybe_params)?;
+            Ok(Self::ResponseResult::doc_example())
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    async fn do_handle_request<REv: ReactorEventT>(
+        effect_builder: EffectBuilder<REv>,
+        api_version: ProtocolVersion,
+    ) -> Result<Self::ResponseResult, Error>;
 }
 
-/// A JSON-RPC with the "params" field optional.
-pub trait RpcWithOptionalParams {
+/// A JSON-RPC where the "params" field is optional.
+///
+/// Note that "params" being an empty JSON Array or empty JSON Object is treated the same as if
+/// the "params" field is absent - i.e. it represents the `None` case.
+#[async_trait]
+pub(super) trait RpcWithOptionalParams {
     /// The JSON-RPC "method" name.
     const METHOD: &'static str;
 
@@ -204,127 +191,338 @@ pub trait RpcWithOptionalParams {
     /// The JSON-RPC response's "result" type.
     type ResponseResult: Serialize
         + for<'de> Deserialize<'de>
+        + PartialEq
         + JsonSchema
         + DocExample
         + Send
         + 'static;
-}
 
-/// A trait for creating a JSON-RPC filter where the request may optionally have "params".
-pub(super) trait RpcWithOptionalParamsExt: RpcWithOptionalParams {
-    /// Creates the warp filter for this particular RPC.
-    fn create_filter<REv: ReactorEventT>(
-        effect_builder: EffectBuilder<REv>,
-        api_version: ProtocolVersion,
-    ) -> BoxedFilter<(Response<Body>,)> {
-        let with_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and(filters::params::<Self::OptionalRequestParams>())
-            .and_then(
-                move |response_builder: Builder, params: Self::OptionalRequestParams| {
-                    Self::handle_request(
-                        effect_builder,
-                        response_builder,
-                        Some(params),
-                        api_version,
-                    )
-                    .map_err(reject::custom)
-                },
-            );
-        let with_invalid_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and(filters::params::<Value>())
-            .and_then(
-                move |response_builder: Builder, _params: Value| async move {
-                    response_builder
-                        .error(warp_json_rpc::Error::INVALID_PARAMS)
-                        .map_err(|_| reject::reject())
-                },
-            );
-        let without_params = warp::path(RPC_API_PATH)
-            .and(filters::json_rpc())
-            .and(filters::method(Self::METHOD))
-            .and_then(move |response_builder: Builder| {
-                Self::handle_request(effect_builder, response_builder, None, api_version)
-                    .map_err(reject::custom)
-            });
-        with_params
-            .or(without_params)
-            .unify()
-            .or(with_invalid_params)
-            .unify()
-            .boxed()
+    /// Tries to parse the incoming JSON-RPC request's "params" field as
+    /// `Option<OptionalRequestParams>`.
+    fn try_parse_params(
+        maybe_params: Option<Params>,
+    ) -> Result<Option<Self::OptionalRequestParams>, Error> {
+        let params = match maybe_params {
+            Some(params) => {
+                if params.is_empty() {
+                    Value::Null
+                } else {
+                    Value::from(params)
+                }
+            }
+            None => Value::Null,
+        };
+        serde_json::from_value::<Option<Self::OptionalRequestParams>>(params).map_err(|error| {
+            Error::new(
+                ReservedErrorCode::InvalidParams,
+                format!("Failed to parse 'params' field: {}", error),
+            )
+        })
     }
 
-    /// Handles the incoming RPC request.
-    fn handle_request<REv: ReactorEventT>(
+    /// Registers this RPC as the handler for JSON-RPC requests whose "method" field is the same as
+    /// `Self::METHOD`.
+    fn register_as_handler<REv: ReactorEventT>(
         effect_builder: EffectBuilder<REv>,
-        response_builder: Builder,
-        maybe_params: Option<Self::OptionalRequestParams>,
         api_version: ProtocolVersion,
-    ) -> BoxFuture<'static, Result<Response<Body>, Error>>;
+        handlers_builder: &mut RequestHandlersBuilder,
+    ) {
+        let handler = move |maybe_params| async move {
+            let params = Self::try_parse_params(maybe_params)?;
+            Self::do_handle_request(effect_builder, api_version, params).await
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    /// Tries to parse the params, and on success, returns the doc example, regardless of the value
+    /// of the parsed params.
+    #[cfg(test)]
+    fn register_as_test_handler(handlers_builder: &mut RequestHandlersBuilder) {
+        let handler = move |maybe_params| async move {
+            let _params = Self::try_parse_params(maybe_params)?;
+            Ok(Self::ResponseResult::doc_example())
+        };
+        handlers_builder.register_handler(Self::METHOD, Arc::new(handler))
+    }
+
+    async fn do_handle_request<REv: ReactorEventT>(
+        effect_builder: EffectBuilder<REv>,
+        api_version: ProtocolVersion,
+        params: Option<Self::OptionalRequestParams>,
+    ) -> Result<Self::ResponseResult, Error>;
 }
 
-mod common {
-    use std::convert::TryFrom;
+/// Start JSON RPC server in a background.
+pub(super) async fn run(
+    builder: Builder<AddrIncoming>,
+    handlers: RequestHandlers,
+    qps_limit: u64,
+    max_body_bytes: u32,
+    api_path: &'static str,
+    server_name: &'static str,
+) {
+    let make_svc = hyper::service::make_service_fn(move |_| {
+        let service_routes = casper_json_rpc::route(
+            api_path,
+            max_body_bytes,
+            handlers.clone(),
+            ALLOW_UNKNOWN_FIELDS_IN_JSON_RPC_REQUEST,
+        );
 
-    use once_cell::sync::Lazy;
+        // Supports content negotiation for gzip responses. This is an interim fix until
+        // https://github.com/seanmonstar/warp/pull/513 moves forward.
+        let service_routes_gzip = warp::header::exact(ACCEPT_ENCODING.as_str(), "gzip")
+            .and(service_routes.clone())
+            .with(warp::compression::gzip());
 
-    use casper_execution_engine::core::engine_state::{self, QueryResult};
-    use casper_types::bytesrepr::ToBytes;
-
-    use super::ErrorCode;
-    use crate::types::json_compatibility::StoredValue;
-
-    pub(super) static MERKLE_PROOF: Lazy<String> = Lazy::new(|| {
-        String::from(
-            "01000000006ef2e0949ac76e55812421f755abe129b6244fe7168b77f47a72536147614625016ef2e0949ac76e\
-        55812421f755abe129b6244fe7168b77f47a72536147614625000000003529cde5c621f857f75f3810611eb4af3\
-        f998caaa9d4a3413cf799f99c67db0307010000006ef2e0949ac76e55812421f755abe129b6244fe7168b77f47a\
-        7253614761462501010102000000006e06000000000074769d28aac597a36a03a932d4b43e4f10bf0403ee5c41d\
-        d035102553f5773631200b9e173e8f05361b681513c14e25e3138639eb03232581db7557c9e8dbbc83ce9450022\
-        6a9a7fe4f2b7b88d5103a4fc7400f02bf89c860c9ccdd56951a2afe9be0e0267006d820fb5676eb2960e15722f7\
-        725f3f8f41030078f8b2e44bf0dc03f71b176d6e800dc5ae9805068c5be6da1a90b2528ee85db0609cc0fb4bd60\
-        bbd559f497a98b67f500e1e3e846592f4918234647fca39830b7e1e6ad6f5b7a99b39af823d82ba1873d0000030\
-        00000010186ff500f287e9b53f823ae1582b1fa429dfede28015125fd233a31ca04d5012002015cc42669a55467\
-        a1fdf49750772bfc1aed59b9b085558eb81510e9b015a7c83b0301e3cf4a34b1db6bfa58808b686cb8fe21ebe0c\
-        1bcbcee522649d2b135fe510fe3")
+        let service = warp::service(service_routes_gzip.or(service_routes));
+        async move { Ok::<_, Infallible>(service.clone()) }
     });
 
-    // Extract the EE `(StoredValue, Vec<TrieMerkleProof<Key, StoredValue>>)` from the result.
-    pub(super) fn extract_query_result(
-        query_result: Result<QueryResult, engine_state::Error>,
-    ) -> Result<(StoredValue, Vec<u8>), (ErrorCode, String)> {
-        let (value, proof) = match query_result {
-            Ok(QueryResult::Success { value, proofs }) => (value, proofs),
-            Ok(query_result) => {
-                let error_msg = format!("state query failed: {:?}", query_result);
-                return Err((ErrorCode::QueryFailed, error_msg));
-            }
-            Err(error) => {
-                let error_msg = format!("state query failed to execute: {:?}", error);
-                return Err((ErrorCode::QueryFailedToExecute, error_msg));
-            }
+    let make_svc = ServiceBuilder::new()
+        .rate_limit(qps_limit, Duration::from_secs(1))
+        .service(make_svc);
+
+    let server = builder.serve(make_svc);
+    info!(address = %server.local_addr(), "started {} server", server_name);
+
+    let (shutdown_sender, shutdown_receiver) = oneshot::channel::<()>();
+    let server_with_shutdown = server.with_graceful_shutdown(async {
+        shutdown_receiver.await.ok();
+    });
+
+    let _ = tokio::spawn(server_with_shutdown).await;
+    let _ = shutdown_sender.send(());
+    info!("{} server shut down", server_name);
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fmt::Write;
+
+    use http::StatusCode;
+    use warp::{filters::BoxedFilter, Filter, Reply};
+
+    use casper_json_rpc::{filters, Response};
+
+    use super::*;
+    use crate::types::DeployHash;
+
+    async fn send_request(
+        method: &str,
+        maybe_params: Option<&str>,
+        filter: &BoxedFilter<(impl Reply + 'static,)>,
+    ) -> Response {
+        let mut body = format!(r#"{{"jsonrpc":"2.0","id":"a","method":"{}""#, method);
+        match maybe_params {
+            Some(params) => write!(body, r#","params":{}}}"#, params).unwrap(),
+            None => body += "}",
+        }
+
+        let http_response = warp::test::request()
+            .body(body)
+            .filter(filter)
+            .await
+            .unwrap()
+            .into_response();
+
+        assert_eq!(http_response.status(), StatusCode::OK);
+        let body_bytes = hyper::body::to_bytes(http_response.into_body())
+            .await
+            .unwrap();
+        serde_json::from_slice(&body_bytes).unwrap()
+    }
+
+    mod rpc_with_params {
+        use super::*;
+        use crate::components::rpc_server::rpcs::info::{
+            GetDeploy, GetDeployParams, GetDeployResult,
         };
 
-        let value_compat = match StoredValue::try_from(*value) {
-            Ok(value_compat) => value_compat,
-            Err(error) => {
-                let error_msg = format!("failed to encode stored value: {:?}", error);
-                return Err((ErrorCode::QueryFailed, error_msg));
-            }
+        fn main_filter_with_recovery() -> BoxedFilter<(impl Reply,)> {
+            let mut handlers = RequestHandlersBuilder::new();
+            GetDeploy::register_as_test_handler(&mut handlers);
+            let handlers = handlers.build();
+
+            filters::main_filter(handlers, ALLOW_UNKNOWN_FIELDS_IN_JSON_RPC_REQUEST)
+                .recover(filters::handle_rejection)
+                .boxed()
+        }
+
+        #[tokio::test]
+        async fn should_parse_params() {
+            let filter = main_filter_with_recovery();
+
+            let params = serde_json::to_string(&GetDeployParams {
+                deploy_hash: DeployHash::default(),
+                finalized_approvals: false,
+            })
+            .unwrap();
+            let params = Some(params.as_str());
+            let rpc_response = send_request(GetDeploy::METHOD, params, &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetDeployResult::doc_example())
+            );
+        }
+
+        #[tokio::test]
+        async fn should_return_error_if_missing_params() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetDeploy::METHOD, None, &filter).await;
+            assert_eq!(
+                rpc_response.error().unwrap(),
+                &Error::new(ReservedErrorCode::InvalidParams, "Missing 'params' field")
+            );
+
+            let rpc_response = send_request(GetDeploy::METHOD, Some("[]"), &filter).await;
+            assert_eq!(
+                rpc_response.error().unwrap(),
+                &Error::new(
+                    ReservedErrorCode::InvalidParams,
+                    "Failed to parse 'params' field: invalid length 0, expected struct \
+                    GetDeployParams with 2 elements"
+                )
+            );
+        }
+
+        #[tokio::test]
+        async fn should_return_error_on_failure_to_parse_params() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetDeploy::METHOD, Some("[3]"), &filter).await;
+            assert_eq!(
+                rpc_response.error().unwrap(),
+                &Error::new(
+                    ReservedErrorCode::InvalidParams,
+                    "Failed to parse 'params' field: invalid type: integer `3`, expected a string"
+                )
+            );
+        }
+    }
+
+    mod rpc_without_params {
+        use super::*;
+        use crate::components::rpc_server::rpcs::info::{GetPeers, GetPeersResult};
+
+        fn main_filter_with_recovery() -> BoxedFilter<(impl Reply,)> {
+            let mut handlers = RequestHandlersBuilder::new();
+            GetPeers::register_as_test_handler(&mut handlers);
+            let handlers = handlers.build();
+
+            filters::main_filter(handlers, ALLOW_UNKNOWN_FIELDS_IN_JSON_RPC_REQUEST)
+                .recover(filters::handle_rejection)
+                .boxed()
+        }
+
+        #[tokio::test]
+        async fn should_check_no_params() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetPeers::METHOD, None, &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetPeersResult::doc_example())
+            );
+
+            let rpc_response = send_request(GetPeers::METHOD, Some("[]"), &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetPeersResult::doc_example())
+            );
+
+            let rpc_response = send_request(GetPeers::METHOD, Some("{}"), &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetPeersResult::doc_example())
+            );
+        }
+
+        #[tokio::test]
+        async fn should_return_error_if_params_not_empty() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetPeers::METHOD, Some("[3]"), &filter).await;
+            assert_eq!(
+                rpc_response.error().unwrap(),
+                &Error::new(
+                    ReservedErrorCode::InvalidParams,
+                    "'params' field should be an empty Array '[]', an empty Object '{}' or absent"
+                )
+            );
+        }
+    }
+
+    mod rpc_with_optional_params {
+        use super::*;
+        use crate::components::rpc_server::rpcs::chain::{
+            BlockIdentifier, GetBlock, GetBlockParams, GetBlockResult,
         };
 
-        let proof_bytes = match proof.to_bytes() {
-            Ok(proof_bytes) => proof_bytes,
-            Err(error) => {
-                let error_msg = format!("failed to encode stored value: {:?}", error);
-                return Err((ErrorCode::QueryFailed, error_msg));
-            }
-        };
+        fn main_filter_with_recovery() -> BoxedFilter<(impl Reply,)> {
+            let mut handlers = RequestHandlersBuilder::new();
+            GetBlock::register_as_test_handler(&mut handlers);
+            let handlers = handlers.build();
 
-        Ok((value_compat, proof_bytes))
+            filters::main_filter(handlers, ALLOW_UNKNOWN_FIELDS_IN_JSON_RPC_REQUEST)
+                .recover(filters::handle_rejection)
+                .boxed()
+        }
+
+        #[tokio::test]
+        async fn should_parse_without_params() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetBlock::METHOD, None, &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetBlockResult::doc_example())
+            );
+
+            let rpc_response = send_request(GetBlock::METHOD, Some("[]"), &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetBlockResult::doc_example())
+            );
+
+            let rpc_response = send_request(GetBlock::METHOD, Some("{}"), &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetBlockResult::doc_example())
+            );
+        }
+
+        #[tokio::test]
+        async fn should_parse_with_params() {
+            let filter = main_filter_with_recovery();
+
+            let params = serde_json::to_string(&GetBlockParams {
+                block_identifier: BlockIdentifier::Height(1),
+            })
+            .unwrap();
+            let params = Some(params.as_str());
+
+            let rpc_response = send_request(GetBlock::METHOD, params, &filter).await;
+            assert_eq!(
+                rpc_response.result().as_ref(),
+                Some(GetBlockResult::doc_example())
+            );
+        }
+
+        #[tokio::test]
+        async fn should_return_error_on_failure_to_parse_params() {
+            let filter = main_filter_with_recovery();
+
+            let rpc_response = send_request(GetBlock::METHOD, Some(r#"["a"]"#), &filter).await;
+            assert_eq!(
+                rpc_response.error().unwrap(),
+                &Error::new(
+                    ReservedErrorCode::InvalidParams,
+                    "Failed to parse 'params' field: unknown variant `a`, expected `Hash` or \
+                    `Height`"
+                )
+            );
+        }
     }
 }

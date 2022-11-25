@@ -12,11 +12,14 @@ use alloc::{
 #[cfg(debug_assertions)]
 use core::any;
 use core::{
+    convert::TryInto,
     fmt::{self, Display, Formatter},
     mem,
     ptr::NonNull,
 };
 
+#[cfg(feature = "datasize")]
+use datasize::DataSize;
 use num_integer::Integer;
 use num_rational::Ratio;
 use serde::{Deserialize, Serialize};
@@ -69,6 +72,12 @@ pub trait ToBytes {
     /// `to_bytes()` or `into_bytes()`.  The data is not actually serialized, so this call is
     /// relatively cheap.
     fn serialized_length(&self) -> usize;
+
+    /// Writes `&self` into a mutable `writer`.
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend(self.to_bytes()?);
+        Ok(())
+    }
 }
 
 /// A type which can be deserialized from a `Vec<u8>`.
@@ -100,8 +109,9 @@ pub fn allocate_buffer<T: ToBytes>(to_be_serialized: &T) -> Result<Vec<u8>, Erro
 
 /// Serialization and deserialization errors.
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "std", derive(thiserror::Error))]
+#[cfg_attr(feature = "datasize", derive(DataSize))]
 #[repr(u8)]
+#[non_exhaustive]
 pub enum Error {
     /// Early end of stream while deserializing.
     EarlyEndOfStream = 0,
@@ -111,6 +121,10 @@ pub enum Error {
     LeftOverBytes,
     /// Out of memory error.
     OutOfMemory,
+    /// No serialized representation is available for a value.
+    NotRepresentable,
+    /// Exceeded a recursion depth limit.
+    ExceededRecursionDepth,
 }
 
 impl Display for Error {
@@ -122,6 +136,10 @@ impl Display for Error {
             Error::Formatting => formatter.write_str("Deserialization error: formatting"),
             Error::LeftOverBytes => formatter.write_str("Deserialization error: left-over bytes"),
             Error::OutOfMemory => formatter.write_str("Serialization error: out of memory"),
+            Error::NotRepresentable => {
+                formatter.write_str("Serialization error: value is not representable.")
+            }
+            Error::ExceededRecursionDepth => formatter.write_str("exceeded recursion depth"),
         }
     }
 }
@@ -139,11 +157,25 @@ pub fn deserialize<T: FromBytes>(bytes: Vec<u8>) -> Result<T, Error> {
     }
 }
 
+/// Deserializes a slice of bytes into an instance of `T`.
+///
+/// Returns an error if the bytes cannot be deserialized into `T` or if not all of the input bytes
+/// are consumed in the operation.
+pub fn deserialize_from_slice<I: AsRef<[u8]>, O: FromBytes>(bytes: I) -> Result<O, Error> {
+    let (t, remainder) = O::from_bytes(bytes.as_ref())?;
+    if remainder.is_empty() {
+        Ok(t)
+    } else {
+        Err(Error::LeftOverBytes)
+    }
+}
+
 /// Serializes `t` into a `Vec<u8>`.
 pub fn serialize(t: impl ToBytes) -> Result<Vec<u8>, Error> {
     t.into_bytes()
 }
 
+/// Safely splits the slice at the given point.
 pub(crate) fn safe_split_at(bytes: &[u8], n: usize) -> Result<(&[u8], &[u8]), Error> {
     if n > bytes.len() {
         Err(Error::EarlyEndOfStream)
@@ -176,6 +208,11 @@ impl ToBytes for bool {
     fn serialized_length(&self) -> usize {
         BOOL_SERIALIZED_LENGTH
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.push(*self as u8);
+        Ok(())
+    }
 }
 
 impl FromBytes for bool {
@@ -199,6 +236,11 @@ impl ToBytes for u8 {
     fn serialized_length(&self) -> usize {
         U8_SERIALIZED_LENGTH
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.push(*self);
+        Ok(())
+    }
 }
 
 impl FromBytes for u8 {
@@ -217,6 +259,11 @@ impl ToBytes for i32 {
 
     fn serialized_length(&self) -> usize {
         I32_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.to_le_bytes());
+        Ok(())
     }
 }
 
@@ -237,6 +284,11 @@ impl ToBytes for i64 {
     fn serialized_length(&self) -> usize {
         I64_SERIALIZED_LENGTH
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.to_le_bytes());
+        Ok(())
+    }
 }
 
 impl FromBytes for i64 {
@@ -255,6 +307,11 @@ impl ToBytes for u16 {
 
     fn serialized_length(&self) -> usize {
         U16_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.to_le_bytes());
+        Ok(())
     }
 }
 
@@ -275,6 +332,11 @@ impl ToBytes for u32 {
     fn serialized_length(&self) -> usize {
         U32_SERIALIZED_LENGTH
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.to_le_bytes());
+        Ok(())
+    }
 }
 
 impl FromBytes for u32 {
@@ -293,6 +355,11 @@ impl ToBytes for u64 {
 
     fn serialized_length(&self) -> usize {
         U64_SERIALIZED_LENGTH
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(&self.to_le_bytes());
+        Ok(())
     }
 }
 
@@ -313,6 +380,11 @@ impl ToBytes for String {
 
     fn serialized_length(&self) -> usize {
         u8_slice_serialized_length(self.as_bytes())
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        write_u8_slice(self.as_bytes(), writer)?;
+        Ok(())
     }
 }
 
@@ -343,7 +415,8 @@ impl<T: ToBytes> ToBytes for Vec<T> {
         ensure_efficient_serialization::<T>();
 
         let mut result = try_vec_with_capacity(self.serialized_length())?;
-        result.append(&mut (self.len() as u32).to_bytes()?);
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        result.append(&mut length_32.to_bytes()?);
 
         for item in self.iter() {
             result.append(&mut item.to_bytes()?);
@@ -356,7 +429,8 @@ impl<T: ToBytes> ToBytes for Vec<T> {
         ensure_efficient_serialization::<T>();
 
         let mut result = allocate_buffer(&self)?;
-        result.append(&mut (self.len() as u32).to_bytes()?);
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        result.append(&mut length_32.to_bytes()?);
 
         for item in self {
             result.append(&mut item.into_bytes()?);
@@ -367,6 +441,15 @@ impl<T: ToBytes> ToBytes for Vec<T> {
 
     fn serialized_length(&self) -> usize {
         iterator_serialized_length(self.iter())
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        writer.extend_from_slice(&length_32.to_le_bytes());
+        for item in self.iter() {
+            item.write_bytes(writer)?;
+        }
+        Ok(())
     }
 }
 
@@ -419,7 +502,8 @@ impl<T: ToBytes> ToBytes for VecDeque<T> {
     fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         let (slice1, slice2) = self.as_slices();
         let mut result = allocate_buffer(self)?;
-        result.append(&mut (self.len() as u32).to_bytes()?);
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        result.append(&mut length_32.to_bytes()?);
         for item in slice1.iter().chain(slice2.iter()) {
             result.append(&mut item.to_bytes()?);
         }
@@ -449,46 +533,39 @@ impl<T: FromBytes> FromBytes for VecDeque<T> {
     }
 }
 
-macro_rules! impl_to_from_bytes_for_array {
-    ($($N:literal)+) => {
-        $(
-            impl ToBytes for [u8; $N] {
-                #[inline(always)]
-                fn to_bytes(&self) -> Result<Vec<u8>, Error> {
-                    Ok(self.to_vec())
-                }
+impl<const COUNT: usize> ToBytes for [u8; COUNT] {
+    #[inline(always)]
+    fn to_bytes(&self) -> Result<Vec<u8>, Error> {
+        Ok(self.to_vec())
+    }
 
-                #[inline(always)]
-                fn serialized_length(&self) -> usize { $N }
-            }
+    #[inline(always)]
+    fn serialized_length(&self) -> usize {
+        COUNT
+    }
 
-            impl FromBytes for [u8; $N] {
-                fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
-                    let (bytes, rem) = safe_split_at(bytes, $N)?;
-                    // SAFETY: safe_split_at makes sure `bytes` is exactly $N bytes.
-                    let ptr = bytes.as_ptr() as *const [u8; $N];
-                    let result = unsafe { *ptr };
-                    Ok((result, rem))
-                }
-            }
-        )+
+    #[inline(always)]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        writer.extend_from_slice(self);
+        Ok(())
     }
 }
 
-impl_to_from_bytes_for_array! {
-     0  1  2  3  4  5  6  7  8  9
-    10 11 12 13 14 15 16 17 18 19
-    20 21 22 23 24 25 26 27 28 29
-    30 31 32
-    33
-    64 128 256 512
+impl<const COUNT: usize> FromBytes for [u8; COUNT] {
+    fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), Error> {
+        let (bytes, rem) = safe_split_at(bytes, COUNT)?;
+        // SAFETY: safe_split_at makes sure `bytes` is exactly `COUNT` bytes.
+        let ptr = bytes.as_ptr() as *const [u8; COUNT];
+        let result = unsafe { *ptr };
+        Ok((result, rem))
+    }
 }
 
 impl<V: ToBytes> ToBytes for BTreeSet<V> {
     fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut result = allocate_buffer(self)?;
 
-        let num_keys = self.len() as u32;
+        let num_keys: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
         result.append(&mut num_keys.to_bytes()?);
 
         for value in self.iter() {
@@ -500,6 +577,15 @@ impl<V: ToBytes> ToBytes for BTreeSet<V> {
 
     fn serialized_length(&self) -> usize {
         U32_SERIALIZED_LENGTH + self.iter().map(|v| v.serialized_length()).sum::<usize>()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        writer.extend_from_slice(&length_32.to_le_bytes());
+        for value in self.iter() {
+            value.write_bytes(writer)?;
+        }
+        Ok(())
     }
 }
 
@@ -524,7 +610,7 @@ where
     fn to_bytes(&self) -> Result<Vec<u8>, Error> {
         let mut result = allocate_buffer(self)?;
 
-        let num_keys = self.len() as u32;
+        let num_keys: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
         result.append(&mut num_keys.to_bytes()?);
 
         for (key, value) in self.iter() {
@@ -541,6 +627,16 @@ where
                 .iter()
                 .map(|(key, value)| key.serialized_length() + value.serialized_length())
                 .sum::<usize>()
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        let length_32: u32 = self.len().try_into().map_err(|_| Error::NotRepresentable)?;
+        writer.extend_from_slice(&length_32.to_le_bytes());
+        for (key, value) in self.iter() {
+            key.write_bytes(writer)?;
+            value.write_bytes(writer)?;
+        }
+        Ok(())
     }
 }
 
@@ -585,6 +681,17 @@ impl<T: ToBytes> ToBytes for Option<T> {
                 None => 0,
             }
     }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        match self {
+            None => writer.push(OPTION_NONE_TAG),
+            Some(v) => {
+                writer.push(OPTION_SOME_TAG);
+                v.write_bytes(writer)?;
+            }
+        };
+        Ok(())
+    }
 }
 
 impl<T: FromBytes> FromBytes for Option<T> {
@@ -619,6 +726,20 @@ impl<T: ToBytes, E: ToBytes> ToBytes for Result<T, E> {
                 Ok(ok) => ok.serialized_length(),
                 Err(error) => error.serialized_length(),
             }
+    }
+
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        match self {
+            Err(error) => {
+                writer.push(RESULT_ERR_TAG);
+                error.write_bytes(writer)?;
+            }
+            Ok(result) => {
+                writer.push(RESULT_OK_TAG);
+                result.write_bytes(writer)?;
+            }
+        };
+        Ok(())
     }
 }
 
@@ -1054,6 +1175,12 @@ impl ToBytes for str {
     fn serialized_length(&self) -> usize {
         u8_slice_serialized_length(self.as_bytes())
     }
+
+    #[inline]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        write_u8_slice(self.as_bytes(), writer)?;
+        Ok(())
+    }
 }
 
 impl ToBytes for &str {
@@ -1065,6 +1192,12 @@ impl ToBytes for &str {
     #[inline(always)]
     fn serialized_length(&self) -> usize {
         (*self).serialized_length()
+    }
+
+    #[inline]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        write_u8_slice(self.as_bytes(), writer)?;
+        Ok(())
     }
 }
 
@@ -1106,11 +1239,24 @@ where
 fn u8_slice_to_bytes(bytes: &[u8]) -> Result<Vec<u8>, Error> {
     let serialized_length = u8_slice_serialized_length(bytes);
     let mut vec = try_vec_with_capacity(serialized_length)?;
-    let length_prefix = bytes.len() as u32;
+    let length_prefix: u32 = bytes
+        .len()
+        .try_into()
+        .map_err(|_| Error::NotRepresentable)?;
     let length_prefix_bytes = length_prefix.to_le_bytes();
     vec.extend_from_slice(&length_prefix_bytes);
     vec.extend_from_slice(bytes);
     Ok(vec)
+}
+
+fn write_u8_slice(bytes: &[u8], writer: &mut Vec<u8>) -> Result<(), Error> {
+    let length_32: u32 = bytes
+        .len()
+        .try_into()
+        .map_err(|_| Error::NotRepresentable)?;
+    writer.extend_from_slice(&length_32.to_le_bytes());
+    writer.extend_from_slice(bytes);
+    Ok(())
 }
 
 /// Serializes a vector of bytes with a length prefix.
@@ -1153,10 +1299,19 @@ where
         serialized,
         t
     );
-    let deserialized = deserialize::<T>(serialized).expect("Unable to deserialize data");
-    assert!(*t == deserialized)
-}
+    let mut written_bytes = vec![];
+    t.write_bytes(&mut written_bytes)
+        .expect("Unable to serialize data via write_bytes");
+    assert_eq!(serialized, written_bytes);
 
+    let deserialized_from_slice =
+        deserialize_from_slice(&serialized).expect("Unable to deserialize data");
+    // assert!(*t == deserialized);
+    assert_eq!(*t, deserialized_from_slice);
+
+    let deserialized = deserialize::<T>(serialized).expect("Unable to deserialize data");
+    assert_eq!(*t, deserialized);
+}
 #[cfg(test)]
 mod tests {
     use super::*;

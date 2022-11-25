@@ -11,6 +11,14 @@ function clean_up() {
     local EXIT_CODE=$?
     local STDOUT
     local STDERR
+    local TMP_CLIENT_DIR
+
+    TMP_CLIENT_DIR='/tmp/client'
+
+    if [ -d "$TMP_CLIENT_DIR" ]; then
+        log "Removing client tmp dir..."
+        rm -rf "$TMP_CLIENT_DIR"
+    fi
 
     # Removes DEPLOY_LOG for ITST06/07
     if [ -f "$DEPLOY_LOG" ]; then
@@ -18,27 +26,23 @@ function clean_up() {
         rm -f "$DEPLOY_LOG"
     fi
 
-    # Prints stderr of nodes on failures
-    for i in $(seq 1 $(get_count_of_nodes)); do
-        STDOUT=$(tail "$NCTL"/assets/net-1/nodes/node-"$i"/logs/stdout.log 2>/dev/null) || true
-        STDERR=$(cat "$NCTL"/assets/net-1/nodes/node-"$i"/logs/stderr.log 2>/dev/null) || true
-        if [ ! -z "$STDERR" ]; then
-            echo ""
-            log "##############################################"
-            log " Node-$i Error Outputs "
-            log "##############################################"
-            # true to ignore "No such file" error from cat
-            echo ""
-            log "STDERR:"
-            echo "$STDERR"
-            echo ""
-            log "Tailed STDOUT:"
-            echo "$STDOUT"
-            echo ""
-        fi
-    done
-
     log "Test exited with exit code $EXIT_CODE"
+
+    # On failure dump the logs
+    if [ "$EXIT_CODE" == '1' ]; then
+        log "Dumping logs..."
+        nctl-assets-dump
+        # If CI, upload to s3
+        if [ ! -z "$AWS_ACCESS_KEY_ID" ] && [ ! -z "$AWS_SECRET_ACCESS_KEY" ] && [ "$DRONE" == 'true' ]; then
+            log "Uploading dump to s3..."
+            pushd $(get_path_to_net_dump)
+            tar -cvzf "${DRONE_BUILD_NUMBER}"_nctl_dump.tar.gz * > /dev/null 2>&1
+            aws s3 cp ./"${DRONE_BUILD_NUMBER}"_nctl_dump.tar.gz s3://nctl.casperlabs.io/nightly-logs/ > /dev/null 2>&1
+            log "Download the dump file: curl -O https://s3.us-east-2.amazonaws.com/nctl.casperlabs.io/nightly-logs/${DRONE_BUILD_NUMBER}_nctl_dump.tar.gz"
+            popd
+        fi
+    fi
+
     exit $EXIT_CODE
 }
 
@@ -50,9 +54,43 @@ function log_step() {
 }
 
 function do_await_genesis_era_to_complete() {
-    log_step "awaiting genesis era to complete"
-    while [ "$(get_chain_era)" != "1" ]; do
+    local LOG_STEP=${1:-'true'}
+    local TIMEOUT=${2:-'120'}
+
+    if [ "$LOG_STEP" = "true" ]; then
+        log_step "awaiting genesis era to complete: timeout=$TIMEOUT"
+    fi
+
+    while [ "$(get_chain_era)" -lt "1" ]; do
         sleep 1.0
+        TIMEOUT=$((TIMEOUT-1))
+        if [ "$TIMEOUT" = '0' ]; then
+            log "ERROR: Timed out before genesis era completed"
+            exit 1
+        else
+            log "... waiting for genesis era to complete: timeout=$TIMEOUT"
+        fi
+    done
+}
+
+function do_wait_until_era() {
+    local WAIT_FOR_ERA=${1}
+    local LOG_STEP=${2:-'true'}
+    local TIMEOUT=${3:-'120'}
+
+    if [ "$LOG_STEP" = "true" ]; then
+        log_step "waiting until era $WAIT_FOR_ERA: timeout=$TIMEOUT"
+    fi
+
+    while [ "$(get_chain_era)" -lt "$WAIT_FOR_ERA" ]; do
+        sleep 1.0
+        TIMEOUT=$((TIMEOUT-1))
+        if [ "$TIMEOUT" = '0' ]; then
+            log "ERROR: Timed out before reaching era $WAIT_FOR_ERA"
+            exit 1
+        else
+            log "... waiting for era $WAIT_FOR_ERA to complete: timeout=$TIMEOUT"
+        fi
     done
 }
 
@@ -102,18 +140,42 @@ function do_stop_node() {
 
 function check_network_sync() {
     local WAIT_TIME_SEC=0
-    log_step "check all node's LFBs are in sync"
+    local FIRST_NODE=${1:-1}
+    local LAST_NODE=${2:-10}
+
+    log_step "checking nodes' $FIRST_NODE to $LAST_NODE LFBs are in sync"
     while [ "$WAIT_TIME_SEC" != "$SYNC_TIMEOUT_SEC" ]; do
-        if [ "$(do_read_lfb_hash '5')" = "$(do_read_lfb_hash '1')" ] && \
-        [ "$(do_read_lfb_hash '4')" = "$(do_read_lfb_hash '1')" ] && \
-        [ "$(do_read_lfb_hash '3')" = "$(do_read_lfb_hash '1')" ] && \
-        [ "$(do_read_lfb_hash '2')" = "$(do_read_lfb_hash '1')" ]; then
-        log "all nodes in sync, proceeding..."
-        break
+
+        declare -a ALL_LFBS
+
+        index=0
+        for i in $(eval echo "{$FIRST_NODE..$LAST_NODE}")
+        do
+            ALL_LFBS[$index]=$(do_read_lfb_hash $i)
+            index=$((index + 1))
+        done
+
+        LFB_COUNT=${#ALL_LFBS[@]}
+        BASE_LFB=${ALL_LFBS[0]}
+        ALL_EQUAL=1
+        for i in $(eval echo "{0..$((LFB_COUNT - 1))}")
+        do
+            if [[ "$BASE_LFB" != "${ALL_LFBS[$i]}" ]]; then
+                ALL_EQUAL=0
+                break
+            fi
+        done
+
+        if [ "$ALL_EQUAL" -eq 1 ]; then
+            log "nodes $FIRST_NODE to $LAST_NODE in sync, proceeding..."
+            break
         fi
+
         WAIT_TIME_SEC=$((WAIT_TIME_SEC + 1))
         if [ "$WAIT_TIME_SEC" = "$SYNC_TIMEOUT_SEC" ]; then
             log "ERROR: Failed to confirm network sync"
+            nctl-status
+            nctl-view-chain-height
             exit 1
         fi
         sleep 1
@@ -324,6 +386,10 @@ function assert_no_proposal_walkback() {
     local JSON_OUT
     local PROPOSER
 
+    # normalize hashes
+    WALKBACK_HASH=$(echo $WALKBACK_HASH |  tr '[:upper:]' '[:lower:]')
+    CHECK_HASH=$(echo $CHECK_HASH | tr '[:upper:]' '[:lower:]')
+
     log_step "Checking proposers: Walking back to hash $WALKBACK_HASH..."
 
     while [ "$CHECK_HASH" != "$WALKBACK_HASH" ]; do
@@ -338,9 +404,13 @@ function assert_no_proposal_walkback() {
             log "BLOCK HASH $CHECK_HASH: PROPOSER=$PROPOSER, NODE_KEY_HEX=$PUBLIC_KEY_HEX"
             unset CHECK_HASH
             CHECK_HASH=$(echo $JSON_OUT | jq -r '.result.block.header.parent_hash')
+            # normalize
+            CHECK_HASH=$(echo $CHECK_HASH | tr '[:upper:]' '[:lower:]')
             log "Checking next hash: $CHECK_HASH"
         fi
     done
+    log "Walkback Completed!"
+    log "CHECK_HASH: $CHECK_HASH = WALKBACK_HASH: $WALKBACK_HASH"
     log "Node $NODE_ID didn't propose! [expected]"
 }
 
@@ -434,4 +504,13 @@ function assert_eviction() {
         fi
         sleep 1
     done
+}
+
+function assert_new_bonded_validator() {
+    local NODE_ID=${1}
+    local HEX=$(get_node_public_key_hex "$NODE_ID")
+    if ! $(nctl-view-chain-auction-info | grep -q "$HEX"); then
+      echo "Could not find key in bids"
+      exit 1
+    fi
 }

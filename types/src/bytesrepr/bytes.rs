@@ -19,7 +19,7 @@ use serde::{
 };
 
 use super::{Error, FromBytes, ToBytes};
-use crate::{CLType, CLTyped};
+use crate::{checksummed_hex, CLType, CLTyped};
 
 /// A newtype wrapper for bytes that has efficient serialization routines.
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Debug, Default, Hash)]
@@ -95,6 +95,11 @@ impl ToBytes for Bytes {
     #[inline(always)]
     fn serialized_length(&self) -> usize {
         super::vec_u8_serialized_length(&self.0)
+    }
+
+    #[inline(always)]
+    fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), Error> {
+        super::write_u8_slice(self.as_slice(), writer)
     }
 }
 
@@ -273,7 +278,7 @@ impl<'de> Deserialize<'de> for Bytes {
     {
         if deserializer.is_human_readable() {
             let hex_string = String::deserialize(deserializer)?;
-            base16::decode(&hex_string)
+            checksummed_hex::decode(&hex_string)
                 .map(Bytes)
                 .map_err(SerdeError::custom)
         } else {

@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use crate::{
     logging::LoggingConfig, types::NodeConfig, BlockProposerConfig, ConsensusConfig,
-    ContractRuntimeConfig, DeployAcceptorConfig, EventStreamServerConfig, FetcherConfig,
-    GossipConfig, LinearChainSyncConfig, RestServerConfig, RpcServerConfig, SmallNetworkConfig,
+    ContractRuntimeConfig, DiagnosticsPortConfig, EventStreamServerConfig, FetcherConfig,
+    GossipConfig, RestServerConfig, RpcServerConfig, SmallNetworkConfig, SpeculativeExecConfig,
     StorageConfig,
 };
 
@@ -13,7 +13,7 @@ use crate::{
 // Disallow unknown fields to ensure config files and command-line overrides contain valid keys.
 #[serde(deny_unknown_fields)]
 pub(crate) struct Config {
-    /// Node configuration.
+    /// Node fast-sync configuration.
     pub(crate) node: NodeConfig,
     /// Logging configuration.
     pub(crate) logging: LoggingConfig,
@@ -27,6 +27,8 @@ pub(crate) struct Config {
     pub(crate) rest_server: RestServerConfig,
     /// RPC API server configuration.
     pub(crate) rpc_server: RpcServerConfig,
+    /// Speculative execution server configuration.
+    pub(crate) speculative_exec_server: SpeculativeExecConfig,
     /// On-disk storage configuration.
     pub(crate) storage: StorageConfig,
     /// Gossip protocol configuration.
@@ -35,11 +37,9 @@ pub(crate) struct Config {
     pub(crate) fetcher: FetcherConfig,
     /// Contract runtime configuration.
     pub(crate) contract_runtime: ContractRuntimeConfig,
-    /// Deploy acceptor configuration.
-    pub(crate) deploy_acceptor: DeployAcceptorConfig,
-    /// Linear chain sync configuration.
-    pub(crate) linear_chain_sync: LinearChainSyncConfig,
     /// Block proposer configuration.
     #[serde(default)]
     pub(crate) block_proposer: BlockProposerConfig,
+    /// Diagnostics port configuration.
+    pub(crate) diagnostics_port: DiagnosticsPortConfig,
 }

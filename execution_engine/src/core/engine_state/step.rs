@@ -5,17 +5,15 @@
 use std::{collections::BTreeMap, vec::Vec};
 
 use casper_hashing::Digest;
-use casper_types::{
-    bytesrepr, bytesrepr::ToBytes, CLValueError, EraId, ProtocolVersion, PublicKey,
-};
+use casper_types::{bytesrepr, CLValueError, EraId, ProtocolVersion, PublicKey};
 
-use crate::core::{
-    engine_state::{execution_effect::ExecutionEffect, Error},
-    execution,
+use crate::{
+    core::{engine_state::Error, execution, runtime::stack::RuntimeStackOverflow},
+    shared::execution_journal::ExecutionJournal,
 };
 
 /// The definition of a slash item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SlashItem {
     /// The public key of the validator that will be slashed.
     pub validator_id: PublicKey,
@@ -29,7 +27,7 @@ impl SlashItem {
 }
 
 /// The definition of a reward item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RewardItem {
     /// The public key of the validator that will be rewarded.
     pub validator_id: PublicKey,
@@ -48,7 +46,7 @@ impl RewardItem {
 }
 
 /// The definition of an evict item.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EvictItem {
     /// The public key of the validator that will be evicted.
     pub validator_id: PublicKey,
@@ -79,8 +77,6 @@ pub struct StepRequest {
     /// Compared to a slashing, evictions are deactivating a given validator, but his stake is
     /// unchanged. A further re-activation is possible.
     pub evict_items: Vec<EvictItem>,
-    /// If true an auction contract will be executed to compute new era validators.
-    pub run_auction: bool,
     /// Specifies which era validators will be returned based on `next_era_id`.
     ///
     /// Intended use is to always specify the current era id + 1 which will return computed era at
@@ -99,7 +95,6 @@ impl StepRequest {
         slash_items: Vec<SlashItem>,
         reward_items: Vec<RewardItem>,
         evict_items: Vec<EvictItem>,
-        run_auction: bool,
         next_era_id: EraId,
         era_end_timestamp_millis: u64,
     ) -> Self {
@@ -109,21 +104,17 @@ impl StepRequest {
             slash_items,
             reward_items,
             evict_items,
-            run_auction,
             next_era_id,
             era_end_timestamp_millis,
         }
     }
 
     /// Returns list of slashed validators.
-    pub fn slashed_validators(&self) -> Result<Vec<PublicKey>, bytesrepr::Error> {
-        let mut ret = vec![];
-        for slash_item in &self.slash_items {
-            let public_key: PublicKey =
-                bytesrepr::deserialize(slash_item.validator_id.clone().to_bytes()?)?;
-            ret.push(public_key);
-        }
-        Ok(ret)
+    pub fn slashed_validators(&self) -> Vec<PublicKey> {
+        self.slash_items
+            .iter()
+            .map(|si| si.validator_id.clone())
+            .collect()
     }
 
     /// Returns all reward factors.
@@ -189,11 +180,17 @@ impl From<CLValueError> for StepError {
     }
 }
 
+impl From<RuntimeStackOverflow> for StepError {
+    fn from(overflow: RuntimeStackOverflow) -> Self {
+        StepError::OtherEngineStateError(Error::from(overflow))
+    }
+}
+
 /// Represents a successfully executed step request.
 #[derive(Debug)]
 pub struct StepSuccess {
     /// New state root hash generated after effects were applied.
     pub post_state_hash: Digest,
     /// Effects of executing a step request.
-    pub execution_effect: ExecutionEffect,
+    pub execution_journal: ExecutionJournal,
 }

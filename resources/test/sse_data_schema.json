@@ -4,6 +4,12 @@
   "description": "The \"data\" field of the events sent on the event stream to clients.",
   "anyOf": [
     {
+      "type": "string",
+      "enum": [
+        "Shutdown"
+      ]
+    },
+    {
       "description": "The version of this node's API server.  This event will always be the first sent to a new client, and will have no associated event ID provided.",
       "type": "object",
       "required": [
@@ -179,6 +185,7 @@
       "additionalProperties": false
     },
     {
+      "description": "The execution effects produced by a `StepRequest`.",
       "type": "object",
       "required": [
         "Step"
@@ -545,7 +552,8 @@
           "type": "array",
           "items": {
             "$ref": "#/definitions/Approval"
-          }
+          },
+          "uniqueItems": true
         }
       },
       "additionalProperties": false
@@ -836,7 +844,7 @@
       }
     },
     "NamedArg": {
-      "description": "Named arguments to a contract",
+      "description": "Named arguments to a contract.",
       "type": "array",
       "items": [
         {
@@ -1155,7 +1163,7 @@
       ]
     },
     "ExecutionEffect": {
-      "description": "The effect of executing a single deploy.",
+      "description": "The journal of execution transforms from a single deploy.",
       "type": "object",
       "required": [
         "operations",
@@ -1170,7 +1178,7 @@
           }
         },
         "transforms": {
-          "description": "The resulting transformations.",
+          "description": "The journal of execution transforms.",
           "type": "array",
           "items": {
             "$ref": "#/definitions/TransformEntry"
@@ -1775,9 +1783,7 @@
           ],
           "items": {
             "$ref": "#/definitions/U512"
-          },
-          "maxItems": 14,
-          "minItems": 14
+          }
         }
       },
       "additionalProperties": false
@@ -1865,6 +1871,17 @@
           "allOf": [
             {
               "$ref": "#/definitions/U512"
+            }
+          ]
+        },
+        "new_validator": {
+          "description": "The validator public key to re-delegate to.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PublicKey"
+            },
+            {
+              "type": "null"
             }
           ]
         }

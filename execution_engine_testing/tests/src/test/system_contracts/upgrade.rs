@@ -3,16 +3,19 @@ use std::collections::BTreeMap;
 use num_rational::Ratio;
 
 use casper_engine_test_support::{
-    internal::{
-        ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
-        DEFAULT_EXECUTION_MODE, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_RUN_GENESIS_REQUEST,
-        DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG,
-    },
-    AccountHash, DEFAULT_ACCOUNT_ADDR,
+    ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG,
+    PRODUCTION_CHAINSPEC, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 
 use casper_execution_engine::{
-    core::engine_state::{EngineConfig, DEFAULT_MAX_QUERY_DEPTH},
+    core::engine_state::{
+        engine_config::{
+            DEFAULT_MINIMUM_DELEGATION_AMOUNT, DEFAULT_STRICT_ARGUMENT_CHECKING,
+            DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
+        },
+        EngineConfig, DEFAULT_MAX_QUERY_DEPTH, DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
+    },
     shared::{
         host_function_costs::HostFunctionCosts,
         opcode_costs::{
@@ -33,7 +36,7 @@ use casper_execution_engine::{
     },
 };
 use casper_types::{
-    account::ACCOUNT_HASH_LENGTH,
+    account::{AccountHash, ACCOUNT_HASH_LENGTH},
     runtime_args,
     system::{
         auction::{
@@ -73,7 +76,7 @@ fn get_upgraded_wasm_config() -> WasmConfig {
     WasmConfig::new(
         DEFAULT_WASM_MAX_MEMORY,
         DEFAULT_MAX_STACK_HEIGHT * 2,
-        *DEFAULT_EXECUTION_MODE,
+        PRODUCTION_CHAINSPEC.wasm_config.execution_mode,
         opcode_cost,
         storage_costs,
         host_function_costs,
@@ -85,7 +88,9 @@ fn get_upgraded_wasm_config() -> WasmConfig {
 fn should_upgrade_only_protocol_version() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+    let old_wasm_config = *builder.get_engine_state().config().wasm_config();
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -106,7 +111,7 @@ fn should_upgrade_only_protocol_version() {
     let upgraded_engine_config = builder.get_engine_state().config();
 
     assert_eq!(
-        *DEFAULT_WASM_CONFIG,
+        old_wasm_config,
         *upgraded_engine_config.wasm_config(),
         "upgraded costs should equal original costs"
     );
@@ -117,7 +122,7 @@ fn should_upgrade_only_protocol_version() {
 fn should_allow_only_wasm_costs_patch_version() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -136,6 +141,10 @@ fn should_allow_only_wasm_costs_patch_version() {
     let engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         DEFAULT_MAX_ASSOCIATED_KEYS,
+        DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
+        DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+        DEFAULT_STRICT_ARGUMENT_CHECKING,
+        DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
         new_wasm_config,
         SystemConfig::default(),
     );
@@ -158,7 +167,7 @@ fn should_allow_only_wasm_costs_patch_version() {
 fn should_allow_only_wasm_costs_minor_version() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -177,6 +186,10 @@ fn should_allow_only_wasm_costs_minor_version() {
     let engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         DEFAULT_MAX_ASSOCIATED_KEYS,
+        DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
+        DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+        DEFAULT_STRICT_ARGUMENT_CHECKING,
+        DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
         new_wasm_config,
         SystemConfig::default(),
     );
@@ -199,7 +212,9 @@ fn should_allow_only_wasm_costs_minor_version() {
 fn should_not_downgrade() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+    let old_wasm_config = *builder.get_engine_state().config().wasm_config();
 
     let new_protocol_version = ProtocolVersion::from_parts(2, 0, 0);
 
@@ -218,7 +233,7 @@ fn should_not_downgrade() {
     let upgraded_engine_config = builder.get_engine_state().config();
 
     assert_eq!(
-        *DEFAULT_WASM_CONFIG,
+        old_wasm_config,
         *upgraded_engine_config.wasm_config(),
         "upgraded costs should equal original costs"
     );
@@ -248,7 +263,7 @@ fn should_not_downgrade() {
 fn should_not_skip_major_versions() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
 
@@ -276,7 +291,7 @@ fn should_not_skip_major_versions() {
 fn should_allow_skip_minor_versions() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
 
@@ -305,7 +320,7 @@ fn should_allow_skip_minor_versions() {
 fn should_upgrade_only_validator_slots() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -360,7 +375,7 @@ fn should_upgrade_only_validator_slots() {
 fn should_upgrade_only_auction_delay() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -415,7 +430,7 @@ fn should_upgrade_only_auction_delay() {
 fn should_upgrade_only_locked_funds_period() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -470,7 +485,7 @@ fn should_upgrade_only_locked_funds_period() {
 fn should_upgrade_only_round_seigniorage_rate() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -532,7 +547,7 @@ fn should_upgrade_only_round_seigniorage_rate() {
 fn should_upgrade_only_unbonding_delay() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -589,7 +604,7 @@ fn should_upgrade_only_unbonding_delay() {
 fn should_apply_global_state_upgrade() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -653,7 +668,7 @@ fn should_apply_global_state_upgrade() {
 fn should_increase_max_associated_keys_after_upgrade() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
-    builder.run_genesis(&DEFAULT_RUN_GENESIS_REQUEST);
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
     let new_protocol_version =
@@ -670,6 +685,10 @@ fn should_increase_max_associated_keys_after_upgrade() {
     let new_engine_config = EngineConfig::new(
         DEFAULT_MAX_QUERY_DEPTH,
         DEFAULT_MAX_ASSOCIATED_KEYS + 1,
+        DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
+        DEFAULT_MINIMUM_DELEGATION_AMOUNT,
+        DEFAULT_STRICT_ARGUMENT_CHECKING,
+        DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
         *DEFAULT_WASM_CONFIG,
         new_system_config,
     );

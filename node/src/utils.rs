@@ -4,36 +4,45 @@
 mod display_error;
 pub(crate) mod ds;
 mod external;
-pub(crate) mod pid_file;
-#[cfg(target_os = "linux")]
+pub(crate) mod fmt_limit;
+pub(crate) mod opt_display;
 pub(crate) mod rlimit;
-mod round_robin;
+pub(crate) mod round_robin;
+pub(crate) mod umask;
+pub mod work_queue;
 
 use std::{
     any,
     cell::RefCell,
     fmt::{self, Debug, Display, Formatter},
-    fs,
-    io::{self, Write},
+    io,
     net::{SocketAddr, ToSocketAddrs},
     ops::{Add, BitXorAssign, Div},
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 use datasize::DataSize;
 use hyper::server::{conn::AddrIncoming, Builder, Server};
+#[cfg(test)]
+use once_cell::sync::Lazy;
+use prometheus::{self, Histogram, HistogramOpts, Registry};
 use serde::Serialize;
 use thiserror::Error;
 use tracing::{error, warn};
 
 pub(crate) use display_error::display_error;
+pub(crate) use external::External;
 #[cfg(test)]
 pub(crate) use external::RESOURCES_PATH;
-pub(crate) use external::{External, LoadError, Loadable};
+pub use external::{LoadError, Loadable};
 pub(crate) use round_robin::WeightedRoundRobin;
+
+use crate::types::NodeId;
 
 /// DNS resolution error.
 #[derive(Debug, Error)]
@@ -67,6 +76,31 @@ impl Display for ResolveAddressErrorKind {
     }
 }
 
+/// Backport of `Result::flatten`, see <https://github.com/rust-lang/rust/issues/70142>.
+pub trait FlattenResult {
+    /// The output of the flattening operation.
+    type Output;
+
+    /// Flattens one level.
+    ///
+    /// This function is named `flatten_result` instead of `flatten` to avoid name collisions once
+    /// `Result::flatten` stabilizes.
+    fn flatten_result(self) -> Self::Output;
+}
+
+impl<T, E> FlattenResult for Result<Result<T, E>, E> {
+    type Output = Result<T, E>;
+
+    #[inline]
+    fn flatten_result(self) -> Self::Output {
+        match self {
+            Ok(Ok(v)) => Ok(v),
+            Ok(Err(e)) => Err(e),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 /// Parses a network address from a string, with DNS resolution.
 pub(crate) fn resolve_address(address: &str) -> Result<SocketAddr, ResolveAddressError> {
     address
@@ -84,7 +118,7 @@ pub(crate) fn resolve_address(address: &str) -> Result<SocketAddr, ResolveAddres
 
 /// An error starting one of the HTTP servers.
 #[derive(Debug, Error)]
-pub enum ListeningError {
+pub(crate) enum ListeningError {
     /// Failed to resolve address.
     #[error("failed to resolve network address: {0}")]
     ResolveAddress(ResolveAddressError),
@@ -120,6 +154,45 @@ pub(crate) fn leak<T>(value: T) -> &'static T {
     Box::leak(Box::new(value))
 }
 
+/// A flag shared across multiple subsystem.
+#[derive(Copy, Clone, DataSize, Debug)]
+pub(crate) struct SharedFlag(&'static AtomicBool);
+
+impl SharedFlag {
+    /// Creates a new shared flag.
+    ///
+    /// The flag is initially not set.
+    pub(crate) fn new() -> Self {
+        SharedFlag(leak(AtomicBool::new(false)))
+    }
+
+    /// Checks whether the flag is set.
+    pub(crate) fn is_set(self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
+    /// Set the flag.
+    pub(crate) fn set(self) {
+        self.0.store(true, Ordering::SeqCst)
+    }
+
+    /// Returns a shared instance of the flag for testing.
+    ///
+    /// The returned flag should **never** have `set` be called upon it.
+    #[cfg(test)]
+    pub(crate) fn global_shared() -> Self {
+        static SHARED_FLAG: Lazy<SharedFlag> = Lazy::new(SharedFlag::new);
+
+        *SHARED_FLAG
+    }
+}
+
+impl Default for SharedFlag {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A display-helper that shows iterators display joined by ",".
 #[derive(Debug)]
 pub(crate) struct DisplayIter<T>(RefCell<Option<T>>);
@@ -152,73 +225,6 @@ where
             write!(f, "DisplayIter:GONE")
         }
     }
-}
-
-/// Error reading a file.
-#[derive(Debug, Error)]
-#[error("could not read '{0}': {error}", .path.display())]
-pub struct ReadFileError {
-    /// Path that failed to be read.
-    path: PathBuf,
-    /// The underlying OS error.
-    #[source]
-    error: io::Error,
-}
-
-/// Error writing a file
-#[derive(Debug, Error)]
-#[error("could not write to '{0}': {error}", .path.display())]
-pub struct WriteFileError {
-    /// Path that failed to be written to.
-    path: PathBuf,
-    /// The underlying OS error.
-    #[source]
-    error: io::Error,
-}
-
-/// Read complete at `path` into memory.
-///
-/// Wraps `fs::read`, but preserves the filename for better error printing.
-pub fn read_file<P: AsRef<Path>>(filename: P) -> Result<Vec<u8>, ReadFileError> {
-    let path = filename.as_ref();
-    fs::read(path).map_err(|error| ReadFileError {
-        path: path.to_owned(),
-        error,
-    })
-}
-
-/// Write data to `path`.
-///
-/// Wraps `fs::write`, but preserves the filename for better error printing.
-pub(crate) fn write_file<P: AsRef<Path>, B: AsRef<[u8]>>(
-    filename: P,
-    data: B,
-) -> Result<(), WriteFileError> {
-    let path = filename.as_ref();
-    fs::write(path, data.as_ref()).map_err(|error| WriteFileError {
-        path: path.to_owned(),
-        error,
-    })
-}
-
-/// Writes data to `path`, ensuring only the owner can read or write it.
-///
-/// Otherwise functions like [`write_file`].
-pub(crate) fn write_private_file<P: AsRef<Path>, B: AsRef<[u8]>>(
-    filename: P,
-    data: B,
-) -> Result<(), WriteFileError> {
-    let path = filename.as_ref();
-    fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .mode(0o600)
-        .open(path)
-        .and_then(|mut file| file.write_all(data.as_ref()))
-        .map_err(|error| WriteFileError {
-            path: path.to_owned(),
-            error,
-        })
 }
 
 /// With-directory context.
@@ -274,32 +280,31 @@ impl<T> WithDir<T> {
 
 /// The source of a piece of data.
 #[derive(Clone, Debug, Serialize)]
-pub enum Source<I> {
+pub(crate) enum Source {
     /// A peer with the wrapped ID.
-    Peer(I),
+    Peer(NodeId),
     /// A client.
     Client,
     /// This node.
     Ourself,
 }
 
-impl<I> Source<I> {
-    pub(crate) fn from_client(&self) -> bool {
+impl Source {
+    #[allow(clippy::wrong_self_convention)]
+    pub(crate) fn is_client(&self) -> bool {
         matches!(self, Source::Client)
     }
-}
 
-impl<I: Clone> Source<I> {
     /// If `self` represents a peer, returns its ID, otherwise returns `None`.
-    pub(crate) fn node_id(&self) -> Option<I> {
+    pub(crate) fn node_id(&self) -> Option<NodeId> {
         match self {
-            Source::Peer(node_id) => Some(node_id.clone()),
+            Source::Peer(node_id) => Some(*node_id),
             Source::Client | Source::Ourself => None,
         }
     }
 }
 
-impl<I: Display> Display for Source<I> {
+impl Display for Source {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
         match self {
             Source::Peer(node_id) => Display::fmt(node_id, formatter),
@@ -319,7 +324,20 @@ where
     (numerator + denominator / T::from(2)) / denominator
 }
 
-/// Used to unregister a metric from the Prometheus registry.
+/// Creates a prometheus Histogram and registers it.
+pub(crate) fn register_histogram_metric(
+    registry: &Registry,
+    metric_name: &str,
+    metric_help: &str,
+    buckets: Vec<f64>,
+) -> Result<Histogram, prometheus::Error> {
+    let histogram_opts = HistogramOpts::new(metric_name, metric_help).buckets(buckets);
+    let histogram = Histogram::with_opts(histogram_opts)?;
+    registry.register(Box::new(histogram.clone()))?;
+    Ok(histogram)
+}
+
+/// Unregisters a metric from the Prometheus registry.
 #[macro_export]
 macro_rules! unregister_metric {
     ($registry:expr, $metric:expr) => {
@@ -340,7 +358,7 @@ macro_rules! unregister_metric {
 ///
 /// Panics if `lhs` and `rhs` are not of equal length.
 #[inline]
-pub fn xor(lhs: &mut [u8], rhs: &[u8]) {
+pub(crate) fn xor(lhs: &mut [u8], rhs: &[u8]) {
     // Implementing SIMD support is left as an exercise for the reader.
     assert_eq!(lhs.len(), rhs.len(), "xor inputs should have equal length");
     lhs.iter_mut()
@@ -359,7 +377,11 @@ pub fn xor(lhs: &mut [u8], rhs: &[u8]) {
 ///
 /// Using this function is usually a potential architectural issue and it should be used very
 /// sparingly. Consider introducing a different access pattern for the value under `Arc`.
-pub async fn wait_for_arc_drop<T>(arc: Arc<T>, attempts: usize, retry_delay: Duration) -> bool {
+pub(crate) async fn wait_for_arc_drop<T>(
+    arc: Arc<T>,
+    attempts: usize,
+    retry_delay: Duration,
+) -> bool {
     // Ensure that if we do hold the last reference, we are now going to 0.
     let weak = Arc::downgrade(&arc);
     drop(arc);
@@ -386,6 +408,8 @@ pub async fn wait_for_arc_drop<T>(arc: Arc<T>, attempts: usize, retry_delay: Dur
 #[cfg(test)]
 mod tests {
     use std::{sync::Arc, time::Duration};
+
+    use crate::utils::SharedFlag;
 
     use super::{wait_for_arc_drop, xor};
 
@@ -442,5 +466,23 @@ mod tests {
         // Immedetialy after, we should not be able to obtain a strong reference anymore.
         // This test fails only if we have a race condition, so false positive tests are possible.
         assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn shared_flag_sanity_check() {
+        let flag = SharedFlag::new();
+        let copied = flag;
+
+        assert!(!flag.is_set());
+        assert!(!copied.is_set());
+        assert!(!flag.is_set());
+        assert!(!copied.is_set());
+
+        flag.set();
+
+        assert!(flag.is_set());
+        assert!(copied.is_set());
+        assert!(flag.is_set());
+        assert!(copied.is_set());
     }
 }

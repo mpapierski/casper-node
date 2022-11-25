@@ -20,7 +20,7 @@ function main() {
     # 0. Verify network is creating blocks
     do_await_n_blocks '5'
     # 1. Verify network is in sync
-    check_network_sync
+    check_network_sync 1 5
     # 2. Background transfers so we can stop the node mid-stream
     do_background_wasmless_transfers '5'
     # 3. Stop node being sent transfers
@@ -32,16 +32,15 @@ function main() {
     do_read_lfb_hash '1'
     do_start_node '5' "$LFB_HASH"
     # 6. Verify network is in sync
-    check_network_sync
+    check_network_sync 1 5
     # 7. Give the tranfers a chance to be included
     do_await_n_blocks '30'
     # 8. Walkback and verify transfers were included in blocks
     check_transfer_inclusion '1' '1000'
     # 10. Run Health Checks
-    # ... errors=ignore: ticket sre issue 71
     # ... restarts=1: due to node being stopped and started
     source "$NCTL"/sh/scenarios/common/health_checks.sh \
-            errors='ignore' \
+            errors='0' \
             equivocators=0 \
             doppels=0 \
             crashes=0 \

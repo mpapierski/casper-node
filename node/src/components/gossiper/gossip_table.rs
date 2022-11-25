@@ -456,7 +456,7 @@ impl<T: Copy + Eq + Hash + Display> GossipTable<T> {
     fn insert_to_finished(&mut self, data_id: &T) {
         let timeout = Instant::now() + self.finished_entry_duration;
         let _ = self.finished.insert(*data_id);
-        let _ = self.timeouts.push(timeout, *data_id);
+        self.timeouts.push(timeout, *data_id);
     }
 
     /// Retains only those finished entries which still haven't timed out.
@@ -473,10 +473,11 @@ impl<T: Copy + Eq + Hash + Display> GossipTable<T> {
 mod tests {
     use std::{collections::BTreeSet, iter, str::FromStr};
 
+    use casper_types::{testing::TestRng, TimeDiff};
     use rand::Rng;
 
     use super::{super::config::DEFAULT_FINISHED_ENTRY_DURATION, *};
-    use crate::{logging, testing::TestRng, types::TimeDiff, utils::DisplayIter};
+    use crate::{logging, utils::DisplayIter};
 
     const EXPECTED_DEFAULT_INFECTION_TARGET: usize = 3;
     const EXPECTED_DEFAULT_HOLDERS_LIMIT: usize = 15;

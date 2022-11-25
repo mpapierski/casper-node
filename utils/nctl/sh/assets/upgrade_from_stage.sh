@@ -41,7 +41,7 @@ function _get_protocol_version_of_next_upgrade()
     local PATH_TO_N1_BIN
     local SEMVAR_CURRENT
     local SEMVAR_NEXT
-    
+
     PATH_TO_N1_BIN="$(get_path_to_net)/nodes/node-1/bin"
 
     # Set semvar of current version.
@@ -74,6 +74,8 @@ function _main()
     local STAGE_ID=${1}
     local ACTIVATION_POINT=${2}
     local VERBOSE=${3}
+    local CHAINSPEC_PATH=${4}
+    local CONFIG_PATH=${5}
     local PATH_TO_STAGE
     local PROTOCOL_VERSION
     local COUNT_NODES
@@ -81,6 +83,14 @@ function _main()
     PATH_TO_STAGE="$NCTL/stages/stage-$STAGE_ID"
     COUNT_NODES=$(get_count_of_nodes)
     PROTOCOL_VERSION=$(_get_protocol_version_of_next_upgrade "$PATH_TO_STAGE")
+
+    if [ -z "$CHAINSPEC_PATH" ]; then
+        CHAINSPEC_PATH="$PATH_TO_STAGE/$PROTOCOL_VERSION/chainspec.toml"
+    fi
+
+    if [ -z "$CONFIG_PATH" ]; then
+        CONFIG_PATH="$PATH_TO_STAGE/$PROTOCOL_VERSION/config.toml"
+    fi
 
     if [ "$PROTOCOL_VERSION" != "" ]; then
         if [ $VERBOSE == true ]; then
@@ -97,11 +107,11 @@ function _main()
         setup_asset_chainspec "$COUNT_NODES" \
                               "$(get_protocol_version_for_chainspec "$PROTOCOL_VERSION")" \
                               "$ACTIVATION_POINT" \
-                              "$PATH_TO_STAGE/$PROTOCOL_VERSION/chainspec.toml" \
+                              "$CHAINSPEC_PATH" \
                               false
         setup_asset_node_configs "$COUNT_NODES" \
                                  "$PROTOCOL_VERSION" \
-                                 "$PATH_TO_STAGE/$PROTOCOL_VERSION/config.toml" \
+                                 "$CONFIG_PATH" \
                                  false
         setup_asset_global_state_toml "$COUNT_NODES" \
                                       "$PROTOCOL_VERSION"
@@ -119,6 +129,8 @@ unset ACTIVATION_POINT
 unset NET_ID
 unset STAGE_ID
 unset VERBOSE
+unset CHAINSPEC_PATH
+unset CONFIG_PATH
 
 for ARGUMENT in "$@"
 do
@@ -129,6 +141,8 @@ do
         net) NET_ID=${VALUE} ;;
         stage) STAGE_ID=${VALUE} ;;
         verbose) VERBOSE=${VALUE} ;;
+        chainspec_path) CHAINSPEC_PATH=${VALUE} ;;
+        config_path) CONFIG_PATH=${VALUE} ;;
         *)
     esac
 done
@@ -141,4 +155,6 @@ fi
 
 _main "${STAGE_ID:-1}" \
       $((ACTIVATION_POINT + NCTL_DEFAULT_ERA_ACTIVATION_OFFSET)) \
-      "${VERBOSE:-true}"
+      "${VERBOSE:-true}" \
+      "${CHAINSPEC_PATH}" \
+      "${CONFIG_PATH}"

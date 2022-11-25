@@ -64,13 +64,13 @@ static BIDS: Lazy<Bids> = Lazy::new(|| {
 static AUCTION_INFO: Lazy<AuctionState> = Lazy::new(|| {
     let state_root_hash = Digest::from([11; Digest::LENGTH]);
     let height: u64 = 10;
-    let era_validators = Some(EraValidators::doc_example().clone());
-    let bids = Some(Bids::doc_example().clone());
+    let era_validators = EraValidators::doc_example().clone();
+    let bids = Bids::doc_example().clone();
     AuctionState::new(state_root_hash, height, era_validators, bids)
 });
 
 /// A validator's weight.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonValidatorWeights {
     public_key: PublicKey,
@@ -78,7 +78,7 @@ pub struct JsonValidatorWeights {
 }
 
 /// The validators for the given era.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonEraValidators {
     era_id: EraId,
@@ -86,7 +86,7 @@ pub struct JsonEraValidators {
 }
 
 /// A delegator associated with the given validator.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonDelegator {
     public_key: PublicKey,
@@ -96,7 +96,7 @@ pub struct JsonDelegator {
 }
 
 /// An entry in a founding validator map representing a bid.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonBid {
     /// The purse that was used for bonding.
@@ -133,7 +133,7 @@ impl From<Bid> for JsonBid {
 }
 
 /// A Json representation of a single bid.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct JsonBids {
     public_key: PublicKey,
@@ -141,7 +141,7 @@ pub struct JsonBids {
 }
 
 /// Data structure summarizing auction contract data.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Clone, JsonSchema)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct AuctionState {
     /// Global state hash.
@@ -159,11 +159,11 @@ impl AuctionState {
     pub fn new(
         state_root_hash: Digest,
         block_height: u64,
-        era_validators: Option<EraValidators>,
-        bids: Option<Bids>,
+        era_validators: EraValidators,
+        bids: Bids,
     ) -> Self {
         let mut json_era_validators: Vec<JsonEraValidators> = Vec::new();
-        for (era_id, validator_weights) in era_validators.unwrap().iter() {
+        for (era_id, validator_weights) in era_validators.iter() {
             let mut json_validator_weights: Vec<JsonValidatorWeights> = Vec::new();
             for (public_key, weight) in validator_weights.iter() {
                 json_validator_weights.push(JsonValidatorWeights {
@@ -178,7 +178,7 @@ impl AuctionState {
         }
 
         let mut json_bids: Vec<JsonBids> = Vec::new();
-        for (public_key, bid) in bids.unwrap().iter() {
+        for (public_key, bid) in bids.iter() {
             let json_bid = JsonBid::from(bid.clone());
             json_bids.push(JsonBids {
                 public_key: public_key.clone(),

@@ -1,5 +1,7 @@
 use std::cmp::Reverse;
 
+use casper_types::Timestamp;
+
 use crate::{
     components::consensus::{
         highway_core::{
@@ -9,7 +11,6 @@ use crate::{
         },
         traits::Context,
     },
-    types::Timestamp,
     utils::div_round,
 };
 
@@ -48,6 +49,8 @@ impl Status {
 
 /// A map of status (faulty, inactive) by validator ID.
 #[derive(Debug)]
+// False positive, as the fields of this struct are all used in logging validator participation.
+#[allow(dead_code)]
 pub(crate) struct Participation<C>
 where
     C: Context,

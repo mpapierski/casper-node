@@ -25,8 +25,8 @@ impl<T> Deref for SharedObject<T> {
     #[inline]
     fn deref(&self) -> &Self::Target {
         match self {
-            SharedObject::Owned(obj) => &*obj,
-            SharedObject::Shared(shared) => &*shared,
+            SharedObject::Owned(obj) => obj,
+            SharedObject::Shared(shared) => shared,
         }
     }
 }
@@ -51,6 +51,9 @@ impl<T> SharedObject<T> {
     }
 
     /// Creates a new shared instance of the object.
+    #[allow(unused)] // TODO[RC]: Used only in the mem deduplication feature (via ` fn
+                     // handle_deduplicated_legacy_direct_deploy_request(deploy_hash)`), which is not merged from
+                     // `dev` to `feat-fast-sync` (?)
     pub(crate) fn shared(inner: Arc<T>) -> Self {
         SharedObject::Shared(inner)
     }
@@ -100,11 +103,18 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::{io::Cursor, sync::Arc};
+    use std::{pin::Pin, sync::Arc};
 
-    use serde::{de::DeserializeOwned, Serialize};
+    use bytes::BytesMut;
+    use serde::{Deserialize, Serialize};
+    use tokio_serde::{Deserializer, Serializer};
 
-    use crate::types::{Deploy, SharedObject};
+    use crate::{
+        components::small_network::{BincodeFormat, Message},
+        types::Deploy,
+    };
+
+    use super::SharedObject;
 
     impl<T> SharedObject<T>
     where
@@ -118,16 +128,22 @@ mod tests {
         }
     }
 
-    // TODO: Import fixed serialization settings from `small_network::message_pack_format` as soon
-    //       as merged, instead of using these `rmp_serde` helper functions.
-    #[inline]
     fn serialize<T: Serialize>(value: &T) -> Vec<u8> {
-        rmp_serde::to_vec(value).expect("could not serialize value")
+        let msg = Arc::new(Message::Payload(value));
+        Pin::new(&mut BincodeFormat::default())
+            .serialize(&msg)
+            .expect("could not serialize value")
+            .to_vec()
     }
 
-    #[inline]
-    fn deserialize<T: DeserializeOwned>(raw: &[u8]) -> T {
-        rmp_serde::from_read(Cursor::new(raw)).expect("could not deserialize value")
+    fn deserialize<T: for<'de> Deserialize<'de>>(raw: &[u8]) -> T {
+        let msg = Pin::new(&mut BincodeFormat::default())
+            .deserialize(&BytesMut::from(raw))
+            .expect("could not deserialize value");
+        match msg {
+            Message::Payload(payload) => payload,
+            Message::Handshake { .. } => panic!("expected payload"),
+        }
     }
 
     #[test]

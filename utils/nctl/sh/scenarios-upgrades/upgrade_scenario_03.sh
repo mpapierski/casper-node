@@ -18,7 +18,8 @@
 # 13. Waits for the auction delay to take effect.
 # 14. Asserts non-genesis validator is NO LONGER an active validator.
 # 15. Asserts delegatee is NO LONGER in auction info.
-# 16. Successful test cleanup.
+# 16. Run Health Checks
+# 17. Successful test cleanup.
 
 # ----------------------------------------------------------------
 # Imports.
@@ -26,6 +27,7 @@
 
 source "$NCTL/sh/utils/main.sh"
 source "$NCTL/sh/node/svc_$NCTL_DAEMON_TYPE".sh
+source "$NCTL/sh/scenarios/common/itst.sh"
 
 # ----------------------------------------------------------------
 # MAIN
@@ -60,18 +62,26 @@ function _main()
     _step_14
     _step_15
     _step_16
+    _step_17
 }
 
 # Step 01: Start network from pre-built stage.
 function _step_01()
 {
     local STAGE_ID=${1}
+    local PATH_TO_STAGE
+    local PATH_TO_PROTO1
+
+    PATH_TO_STAGE=$(get_path_to_stage "$STAGE_ID")
+    pushd "$PATH_TO_STAGE"
+    PATH_TO_PROTO1=$(ls -d */ | sort | head -n 1 | tr -d '/')
+    popd
 
     log_step_upgrades 1 "starting network from stage ($STAGE_ID)"
 
     source "$NCTL/sh/assets/setup_from_stage.sh" \
             stage="$STAGE_ID" \
-            accounts_path="$NCTL/sh/scenarios/accounts_toml/upgrade_scenario_3.accounts.toml"
+            accounts_path="$NCTL/overrides/upgrade_scenario_3.pre.accounts.toml"
     source "$NCTL/sh/node/start.sh" node=all
 }
 
@@ -80,8 +90,7 @@ function _step_02()
 {
     log_step_upgrades 2 "awaiting genesis era completion"
 
-    sleep 60.0
-    await_until_era_n 1
+    do_await_genesis_era_to_complete 'false'
 }
 
 # Step 03: Add bid non-genesis node and start
@@ -110,7 +119,7 @@ function _step_04()
 {
     local NODE_ID=${1:-'5'}
     local ACCOUNT_ID=${2:-'7'}
-    local AMOUNT=${3:-'1'}
+    local AMOUNT=${3:-'500000000000'}
 
     log_step_upgrades 4 "Delegating $AMOUNT from account-$ACCOUNT_ID to validator-$NODE_ID"
 
@@ -120,11 +129,11 @@ function _step_04()
             validator="$NODE_ID"
 }
 
-# Step 05: Await 3 eras
+# Step 05: Await 4 eras
 function _step_05()
 {
-    log_step_upgrades 5 "Awaiting Auction_Delay = 3"
-    await_n_eras '4' 'true' '5.0'
+    log_step_upgrades 5 "Awaiting Auction_Delay = 3 + 1"
+    nctl-await-n-eras offset='4' sleep_interval='5.0' timeout='300'
 }
 
 # Step 06: Assert NODE_ID is a validator
@@ -136,8 +145,8 @@ function _step_06()
     local AUCTION_INFO_FOR_HEX
 
     NODE_PATH=$(get_path_to_node "$NODE_ID")
-    HEX=$(cat "$NODE_PATH"/keys/public_key_hex)
-    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.public_key == $node_hex)')
+    HEX=$(cat "$NODE_PATH"/keys/public_key_hex | tr '[:upper:]' '[:lower:]')
+    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.public_key | ascii_downcase == $node_hex)')
 
     log_step_upgrades 6 "Asserting node-$NODE_ID is a validator"
 
@@ -163,12 +172,12 @@ function _step_07()
     TIMEOUT_SEC='0'
 
     USER_PATH=$(get_path_to_user "$USER_ID")
-    HEX=$(cat "$USER_PATH"/public_key_hex)
+    HEX=$(cat "$USER_PATH"/public_key_hex | tr '[:upper:]' '[:lower:]')
 
     log_step_upgrades 7 "Asserting user-$USER_ID is a delegatee"
 
     while [ "$TIMEOUT_SEC" -le "60" ]; do
-        AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.bid.delegators[].public_key == $node_hex)')
+        AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.bid.delegators[].public_key | ascii_downcase == $node_hex)')
         if [ ! -z "$AUCTION_INFO_FOR_HEX" ]; then
             log "... user-$USER_ID found in auction info delegators!"
             log "... public_key_hex: $HEX"
@@ -195,10 +204,13 @@ function _step_08()
     log_step_upgrades 8 "upgrading network from stage ($STAGE_ID)"
 
     log "... setting upgrade assets"
-    source "$NCTL/sh/assets/upgrade_from_stage.sh" stage="$STAGE_ID" verbose=false
+    source "$NCTL/sh/assets/upgrade_from_stage.sh" \
+        stage="$STAGE_ID" \
+        verbose=false \
+        accounts_path="$NCTL/overrides/upgrade_scenario_3.post.accounts.toml"
 
     log "... awaiting 2 eras + 1 block"
-    await_n_eras '2' 'true' '5.0'
+    nctl-await-n-eras offset='2' sleep_interval='5.0' timeout='180'
     await_n_blocks 1
 }
 
@@ -275,7 +287,7 @@ function _step_09()
 function _step_10()
 {
     log_step_upgrades 10 "awaiting next era"
-    await_n_eras '1' 'true' '5.0'
+    nctl-await-n-eras offset='1' sleep_interval='5.0' timeout='180'
 }
 
 # Step 11: Unbond previously bonded validator
@@ -297,7 +309,7 @@ function _step_12()
 {
     local NODE_ID=${1:-'5'}
     local ACCOUNT_ID=${2:-'7'}
-    local AMOUNT=${3:-'1'}
+    local AMOUNT=${3:-'500000000000'}
 
     log_step_upgrades 12 "Undelegating $AMOUNT to account-$ACCOUNT_ID from validator-$NODE_ID"
 
@@ -307,11 +319,11 @@ function _step_12()
             validator="$NODE_ID"
 }
 
-# Step 13: Await 3 eras
+# Step 13: Await 4 eras
 function _step_13()
 {
-    log_step_upgrades 13 "Awaiting Auction_Delay = 3"
-    await_n_eras '4' 'true' '5.0'
+    log_step_upgrades 13 "Awaiting Auction_Delay = 3 + 1"
+    nctl-await-n-eras offset='4' sleep_interval='5.0' timeout='300'
 }
 
 # Step 14: Assert NODE_ID is NOT a validator
@@ -325,8 +337,8 @@ function _step_14()
     local STAKED_AMOUNT
 
     NODE_PATH=$(get_path_to_node "$NODE_ID")
-    HEX=$(cat "$NODE_PATH"/keys/public_key_hex)
-    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.public_key == $node_hex)')
+    HEX=$(cat "$NODE_PATH"/keys/public_key_hex | tr '[:upper:]' '[:lower:]')
+    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.public_key | ascii_downcase == $node_hex)')
 
     INACTIVE_STATUS=$(echo "$AUCTION_INFO_FOR_HEX" | grep 'inactive' | grep 'true' | sed 's/^ *//g')
     STAKED_AMOUNT=$(echo "$AUCTION_INFO_FOR_HEX" | grep 'staked_amount' | awk '{print $2}' | tr -d '[:punct:]')
@@ -363,8 +375,8 @@ function _step_15()
     local AUCTION_INFO_FOR_HEX
 
     USER_PATH=$(get_path_to_user "$USER_ID")
-    HEX=$(cat "$USER_PATH"/public_key_hex)
-    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.bid.delegators[].public_key == $node_hex)')
+    HEX=$(cat "$USER_PATH"/public_key_hex | tr '[:upper:]' '[:lower:]')
+    AUCTION_INFO_FOR_HEX=$(nctl-view-chain-auction-info | jq --arg node_hex "$HEX" '.auction_state.bids[]| select(.bid.delegators[].public_key | ascii_downcase == $node_hex)')
 
     log_step_upgrades 15 "Asserting user-$USER_ID is NOT a delegatee"
 
@@ -378,10 +390,24 @@ function _step_15()
     fi
 }
 
-# Step 16: Terminate.
+# Step 16: Run NCTL health checks
 function _step_16()
 {
-    log_step_upgrades 16 "test successful - tidying up"
+    # restarts=6 - Nodes that upgrade
+    log_step_upgrades 16 "running health checks"
+    source "$NCTL"/sh/scenarios/common/health_checks.sh \
+            errors='0' \
+            equivocators='0' \
+            doppels='0' \
+            crashes=0 \
+            restarts=6 \
+            ejections=0
+}
+
+# Step 17: Terminate.
+function _step_17()
+{
+    log_step_upgrades 17 "test successful - tidying up"
 
     source "$NCTL/sh/assets/teardown.sh"
 
