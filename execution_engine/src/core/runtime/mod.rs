@@ -103,7 +103,8 @@ pub struct Runtime<'a, R> {
     stack: Option<RuntimeStack>,
     host_function_flag: HostFunctionFlag,
     wasm_engine: &'a WasmEngine,
-    // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime issues when dealing with wasmtime's Store object.
+    // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime
+    // issues when dealing with wasmtime's Store object.
     pub wasmtime_memory: Option<wasmtime::Memory>,
 }
 

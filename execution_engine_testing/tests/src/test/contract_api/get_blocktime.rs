@@ -19,9 +19,9 @@ fn should_run_get_blocktime_contract() {
     )
     .with_block_time(block_time)
     .build();
-    InMemoryWasmTestBuilder::default()
-        .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
-        .exec(exec_request)
-        .commit()
-        .expect_success();
+    let mut builder = InMemoryWasmTestBuilder::default();
+
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+    builder.exec(exec_request).commit().expect_success();
 }

@@ -2075,10 +2075,6 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     config.wasm_module_linking(false);
     config.wasm_threads(false);
 
-    config
-        .max_wasm_stack(wasm_config.max_stack_height as usize)
-        .expect("should set max stack");
-
     // TODO: Tweak more
     let wasmtime_engine = wasmtime::Engine::new(&config).expect("should create new engine");
     WasmtimeEngine(wasmtime_engine)
@@ -2106,9 +2102,9 @@ impl WasmEngine {
     ///
     /// This process consists of a few steps:
     /// - Validate that the given bytes contain a memory section, and check the memory page limit.
-    /// - Inject gas counters into the code, which makes it possible for the executed Wasm to be charged
-    ///   for opcodes; this also validates opcodes and ensures that there are no forbidden opcodes in
-    ///   use, such as floating point opcodes.
+    /// - Inject gas counters into the code, which makes it possible for the executed Wasm to be
+    ///   charged for opcodes; this also validates opcodes and ensures that there are no forbidden
+    ///   opcodes in use, such as floating point opcodes.
     /// - Ensure that the code has a maximum stack height.
     ///
     /// In case the preprocessing rules can't be applied, an error is returned.
@@ -2123,8 +2119,8 @@ impl WasmEngine {
         ensure_valid_access(&module)?;
 
         if memory_section(&module).is_none() {
-            // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the module,
-            // and panics otherwise.
+            // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
+            // module, and panics otherwise.
             return Err(PreprocessingError::MissingMemorySection);
         }
 
