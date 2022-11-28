@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use casper_engine_test_support::{
-    ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
     PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use num_traits::Zero;
@@ -25,6 +25,30 @@ use parity_wasm::{
 const ARG_AMOUNT: &str = "amount";
 const CONTRACT_TRANSFER_TO_EXISTING_ACCOUNT: &str = "transfer_to_existing_account.wasm";
 
+#[ignore]
+#[test]
+fn should_execute_wasm_without_imports() {
+    let minimum_deploy_payment = U512::from(DEFAULT_NOP_COST);
+
+    let do_minimum_request = {
+        let account_hash = *DEFAULT_ACCOUNT_ADDR;
+        let session_args = RuntimeArgs::default();
+        let deploy_hash = [42; 32];
+
+        ExecuteRequestBuilder::module_bytes(
+            *DEFAULT_ACCOUNT_ADDR,
+            super::regression_20210924::do_minimum_bytes(),
+            session_args,
+        )
+        .build()
+    };
+
+    let mut builder = InMemoryWasmTestBuilder::default();
+
+    builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+    builder.exec(do_minimum_request).expect_success().commit();
+}
 #[ignore]
 #[test]
 fn should_run_endless_loop() {

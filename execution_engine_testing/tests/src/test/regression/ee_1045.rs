@@ -174,7 +174,9 @@ fn should_run_ee_1045_squash_validators() {
     let rhs: BTreeSet<_> = post_round_1_auction_weights.keys().cloned().collect();
     assert_eq!(
         lhs.difference(&rhs).cloned().collect::<BTreeSet<_>>(),
-        round_1_validator_squash.into_iter().collect()
+        round_1_validator_squash
+            .into_iter()
+            .collect::<BTreeSet<_>>()
     );
 
     //
@@ -197,7 +199,9 @@ fn should_run_ee_1045_squash_validators() {
     let rhs: BTreeSet<_> = post_round_2_auction_weights.keys().cloned().collect();
     assert_eq!(
         lhs.difference(&rhs).cloned().collect::<BTreeSet<_>>(),
-        round_2_validator_squash.into_iter().collect()
+        round_2_validator_squash
+            .into_iter()
+            .collect::<BTreeSet<_>>()
     );
 
     assert!(post_round_2_auction_weights.is_empty()); // all validators are squashed

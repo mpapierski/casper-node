@@ -18,19 +18,22 @@ use pwasm_utils::{self, stack_height};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
 use std::{
-    borrow::Cow,
+    borrow::{BorrowMut, Cow},
     cell::{Cell, RefCell},
     collections::{hash_map::Entry, HashMap},
     error::Error,
     fmt::{self, Display, Formatter},
     fs::{self, File, OpenOptions},
     io::Write,
+    ops::DerefMut,
     path::Path,
     rc::Rc,
-    sync::{Mutex, Once},
+    sync::{Arc, Mutex, Once},
     time::{Duration, Instant},
 };
 use thiserror::Error;
+use wasmer::{imports, FunctionEnv, FunctionEnvMut, TypedFunction};
+use wasmer_compiler_singlepass::Singlepass;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
 /// Name of the internal gas function injected by [`pwasm_utils::inject_gas_counter`].
@@ -67,6 +70,7 @@ use crate::{
 
 use super::wasm_config::WasmConfig;
 
+/// Mode of execution for smart contracts.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionMode {
@@ -76,6 +80,8 @@ pub enum ExecutionMode {
     Compiled = 2,
     /// Runs Wasm modules in a JIT mode.
     JustInTime = 3,
+    /// Runs Wasm modules in a compiled mode via fast ahead of time compiler.
+    Singlepass,
 }
 
 impl ToBytes for ExecutionMode {
@@ -135,6 +141,12 @@ pub enum Module {
         precompile_time: Option<Duration>,
         module: wasmtime::Module,
     },
+    Singlepass {
+        original_bytes: Vec<u8>,
+        wasmi_module: WasmiModule,
+        // store: wasmer::Store,
+        wasmer_module: wasmer::Module,
+    },
 }
 
 impl fmt::Debug for Module {
@@ -146,6 +158,7 @@ impl fmt::Debug for Module {
             }
             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
             Self::Jitted { .. } => f.debug_tuple("Jitted").finish(),
+            Module::Singlepass { .. } => f.debug_tuple("Singlepass").finish(),
         }
     }
 }
@@ -172,16 +185,9 @@ impl Module {
             } => wasmi_module,
             Module::Compiled { wasmi_module, .. } => wasmi_module,
             Module::Jitted { wasmi_module, .. } => wasmi_module,
+            Module::Singlepass { wasmi_module, .. } => wasmi_module,
         }
     }
-
-    // pub fn try_into_compiled(self) -> Result<wasmtime::Module, Self> {
-    //     if let Self::Compiled(v) = self {
-    //         Ok(v)
-    //     } else {
-    //         Err(self)
-    //     }
-    // }
 }
 
 #[derive(Debug)]
@@ -320,6 +326,11 @@ pub enum Instance {
         /// This is compiled module used for execution.
         compiled_module: wasmtime::Module,
     },
+    Singlepass {
+        original_bytes: Vec<u8>,
+        module: WasmiModule,
+        instance: wasmer::Instance,
+    },
 }
 
 impl fmt::Debug for Instance {
@@ -332,6 +343,7 @@ impl fmt::Debug for Instance {
                 .field(memory)
                 .finish(),
             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
+            Self::Singlepass { .. } => f.debug_tuple("Singlepass").finish(),
         }
     }
 }
@@ -415,6 +427,11 @@ impl Instance {
             Instance::Noop => unimplemented!("Unable to get interpreted memory from noop module"),
             Instance::Interpreted { memory, .. } => memory.clone(),
             Instance::Compiled { .. } => unreachable!("available only from wasmi externals"),
+            Instance::Singlepass {
+                original_bytes,
+                module,
+                instance,
+            } => unreachable!("available only from wasmi externals"),
         }
     }
     /// Invokes exported function
@@ -1646,6 +1663,20 @@ impl Instance {
 
                 Ok(Some(RuntimeValue::I64(0)))
             }
+            Instance::Singlepass {
+                original_bytes,
+                module,
+                instance,
+            } => {
+                let call_func: TypedFunction<(), ()> = instance
+                    .exports
+                    .get_typed_function(wasm_engine.wasmer_store.borrow_mut().deref_mut(), "call")
+                    .expect("should get wasmer call func");
+                call_func
+                    .call(wasm_engine.wasmer_store.borrow_mut().deref_mut())
+                    .expect("should call");
+                Ok(Some(RuntimeValue::I64(0)))
+            }
         }
     }
 }
@@ -2012,11 +2043,12 @@ impl std::ops::Deref for WasmtimeEngine {
 static GLOBAL_CACHE: Lazy<Mutex<RefCell<HashMap<Vec<u8>, Vec<u8>>>>> = Lazy::new(Default::default);
 
 /// Wasm preprocessor.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
     compiled_engine: WasmtimeEngine,
+    wasmer_store: RefCell<wasmer::Store>,
 }
 
 fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
@@ -2083,10 +2115,12 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
 impl WasmEngine {
     /// Creates a new instance of the preprocessor.
     pub fn new(wasm_config: WasmConfig) -> Self {
+        let singlepass = Singlepass::new();
         Self {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
             compiled_engine: new_compiled_engine(&wasm_config),
+            wasmer_store: RefCell::new(wasmer::Store::new(singlepass)),
         }
     }
 
@@ -2189,6 +2223,25 @@ impl WasmEngine {
                     module: compiled_module,
                 })
             }
+            ExecutionMode::Singlepass => {
+                let preprocessed_wasm_bytes =
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+
+                // let singlepass = Singlepass::new();
+                // let store = wasmer::Store::new(singlepass);
+                // wasmer::Module::new
+                let wasmer_module = wasmer::Module::from_binary(
+                    self.wasmer_store.borrow_mut().deref_mut(),
+                    &preprocessed_wasm_bytes,
+                )
+                .expect("should create wasmer module");
+
+                Ok(Module::Singlepass {
+                    original_bytes: module_bytes.to_vec(),
+                    wasmi_module: module,
+                    wasmer_module: wasmer_module,
+                })
+            }
         }
         // let module = deserialize_interpreted(module_bytes)?;
     }
@@ -2239,6 +2292,7 @@ impl WasmEngine {
                     module,
                 }
             }
+            ExecutionMode::Singlepass => todo!(),
         };
         Ok(module)
     }
@@ -2335,6 +2389,54 @@ impl WasmEngine {
                     precompile_time,
                 })
             }
+            Module::Singlepass {
+                original_bytes,
+                wasmi_module,
+                wasmer_module,
+            } => {
+                // let import_object = imports! {};
+                let mut import_object = wasmer::Imports::new();
+                // import_object.define("env", "host_function", host_function);
+                let memory_pages = self.wasm_config().max_memory;
+
+                let memory = wasmer::Memory::new(
+                    self.wasmer_store.borrow_mut().deref_mut(),
+                    wasmer::MemoryType::new(
+                        wasmer::Pages(memory_pages),
+                        Some(wasmer::Pages(memory_pages)),
+                        false,
+                    ),
+                )
+                .expect("should create wasmer memory");
+
+                import_object.define("env", "memory", wasmer::Extern::from(memory));
+
+                struct WasmerEnv {};
+
+                let function_env =
+                    FunctionEnv::new(self.wasmer_store.borrow_mut().deref_mut(), WasmerEnv {});
+
+                let gas_func = wasmer::Function::new_typed_with_env(
+                    self.wasmer_store.borrow_mut().deref_mut(),
+                    &function_env,
+                    |_env: FunctionEnvMut<WasmerEnv>, amount: u32| {
+                        eprintln!("amount={}", amount);
+                    },
+                );
+                import_object.define("env", "gas", wasmer::Extern::from(gas_func));
+
+                let instance = wasmer::Instance::new(
+                    self.wasmer_store.borrow_mut().deref_mut(),
+                    &wasmer_module,
+                    &import_object,
+                )
+                .expect("should create new wasmer instance");
+                Ok(Instance::Singlepass {
+                    original_bytes,
+                    module: wasmi_module,
+                    instance,
+                })
+            }
         }
     }
 
@@ -2349,24 +2451,25 @@ impl WasmEngine {
         original_bytes: &[u8],
         bytes: &[u8],
     ) -> Result<(Vec<u8>, Option<Duration>), RuntimeError> {
-        let cache = GLOBAL_CACHE.lock().unwrap();
-        let mut cache = cache.borrow_mut();
-        // let mut cache = GLOBAL_CACHE.lborrow_mut();
-        let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
-            Entry::Occupied(o) => (o.get().clone(), None),
-            Entry::Vacant(v) => {
-                let start = Instant::now();
-                let precompiled_bytes = self
-                    .compiled_engine
-                    .precompile_module(bytes)
-                    .map_err(|e| RuntimeError::Other(e.to_string()))?;
-                let stop = start.elapsed();
-                // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
-                let artifact = v.insert(precompiled_bytes).clone();
-                (artifact, Some(stop))
-            }
-        };
-        Ok((bytes, maybe_duration))
+        todo!("precompile; disabled because of trait issues colliding with wasmer");
+        // let cache = GLOBAL_CACHE.lock().unwrap();
+        // let mut cache = cache.borrow_mut();
+        // // let mut cache = GLOBAL_CACHE.lborrow_mut();
+        // let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
+        //     Entry::Occupied(o) => (o.get().clone(), None),
+        //     Entry::Vacant(v) => {
+        //         let start = Instant::now();
+        //         let precompiled_bytes = self
+        //             .compiled_engine
+        //             .precompile_module(bytes)
+        //             .map_err(|e| RuntimeError::Other(e.to_string()))?;
+        //         let stop = start.elapsed();
+        //         // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
+        //         let artifact = v.insert(precompiled_bytes).clone();
+        //         (artifact, Some(stop))
+        //     }
+        // };
+        // Ok((bytes, maybe_duration))
     }
 }
 

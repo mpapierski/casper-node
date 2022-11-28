@@ -56,6 +56,10 @@ wasmtime = { version = "0.30.0", default-features = false, features = [
     "parallel-compilation",
 ] }
 
+wasmer = "3.0.1"
+wasmer-compiler-singlepass = "3.0.1"
+
+
 [dev-dependencies]
 assert_matches = "1.3.0"
 casper-types = { path = "../types", features = ["datasize", "json-schema", "testing"] }
