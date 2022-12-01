@@ -76,6 +76,7 @@ pub struct ScratchGlobalState {
 }
 
 /// Represents a "view" of global state at a particular root hash.
+#[derive(Clone)]
 pub struct ScratchGlobalStateView {
     cache: SharedCache,
     /// Environment for LMDB.

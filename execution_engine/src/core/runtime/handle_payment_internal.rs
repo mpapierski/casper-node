@@ -25,9 +25,9 @@ impl From<execution::Error> for Option<Error> {
 }
 
 // TODO: Update MintProvider to better handle errors
-impl<'a, R> MintProvider for Runtime<'a, R>
+impl<R> MintProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn transfer_purse_to_account(
@@ -69,9 +69,9 @@ where
 }
 
 // TODO: Update RuntimeProvider to better handle errors
-impl<'a, R> RuntimeProvider for Runtime<'a, R>
+impl<R> RuntimeProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_key(&self, name: &str) -> Option<Key> {
@@ -103,9 +103,9 @@ where
     }
 }
 
-impl<'a, R> HandlePayment for Runtime<'a, R>
+impl<R> HandlePayment for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
 }

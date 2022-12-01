@@ -233,9 +233,9 @@ impl From<wasmi::Error> for Error {
 
 impl From<RuntimeError> for Error {
     fn from(runtime_error: RuntimeError) -> Self {
-        match runtime_error.as_execution_error() {
-            Some(exec_error) => exec_error.clone(),
-            None => {
+        match runtime_error.into_execution_error() {
+            Ok(exec_error) => exec_error,
+            Err(runtime_error) => {
                 // TODO: We should translate all the possible reasons a Wasm can fail at runtime
                 // i.e. TrapCode(wasmtime) and TrapKind(wasmi)
                 Self::Interpreter(runtime_error.to_string())

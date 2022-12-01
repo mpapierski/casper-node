@@ -3,6 +3,7 @@ use std::{
     collections::BTreeSet,
     iter::{self, FromIterator},
     rc::Rc,
+    sync::{Arc, RwLock},
 };
 
 use once_cell::sync::Lazy;
@@ -113,15 +114,15 @@ fn random_hash<G: RngCore>(entropy_source: &mut G) -> Key {
 }
 
 fn new_runtime_context<'a>(
-    account: &'a Account,
+    account: Account,
     base_key: Key,
-    named_keys: &'a mut NamedKeys,
+    mut named_keys: NamedKeys,
     access_rights: ContextAccessRights,
     address_generator: AddressGenerator,
-) -> RuntimeContext<'a, InMemoryGlobalStateView> {
+) -> RuntimeContext<InMemoryGlobalStateView> {
     let tracking_copy = new_tracking_copy(base_key, account.clone());
     RuntimeContext::new(
-        Rc::new(RefCell::new(tracking_copy)),
+        Arc::new(RwLock::new(tracking_copy)),
         EntryPointType::Session,
         named_keys,
         access_rights,
@@ -133,7 +134,7 @@ fn new_runtime_context<'a>(
         DeployHash::new([1u8; 32]),
         Gas::new(U512::from(GAS_LIMIT)),
         Gas::default(),
-        Rc::new(RefCell::new(address_generator)),
+        Arc::new(RwLock::new(address_generator)),
         ProtocolVersion::V1_0_0,
         CorrelationId::new(),
         Phase::Session,
@@ -178,9 +179,9 @@ where
     let address_generator = AddressGenerator::new(&deploy_hash, Phase::Session);
     let access_rights = account.extract_access_rights();
     let runtime_context = new_runtime_context(
-        &account,
+        account,
         base_key,
-        &mut named_keys,
+        named_keys,
         access_rights,
         address_generator,
     );
@@ -353,11 +354,8 @@ fn contract_key_addable_valid() {
         .unwrap()
         .extract_access_rights(ContractHash::default());
 
-    let tracking_copy = Rc::new(RefCell::new(new_tracking_copy(
-        account_key,
-        account.clone(),
-    )));
-    tracking_copy.borrow_mut().write(contract_key, contract);
+    let tracking_copy = Arc::new(RwLock::new(new_tracking_copy(account_key, account.clone())));
+    tracking_copy.write().unwrap().write(contract_key, contract);
 
     let default_system_registry = {
         let mut registry = SystemContractRegistry::new();
@@ -369,7 +367,8 @@ fn contract_key_addable_valid() {
     };
 
     tracking_copy
-        .borrow_mut()
+        .write()
+        .unwrap()
         .write(Key::SystemContractRegistry, default_system_registry);
 
     let uref_as_key = create_uref_as_key(&mut address_generator, AccessRights::WRITE);
@@ -382,19 +381,19 @@ fn contract_key_addable_valid() {
     access_rights.extend(&[uref_as_key.into_uref().expect("should be a URef")]);
 
     let mut runtime_context = RuntimeContext::new(
-        Rc::clone(&tracking_copy),
+        Arc::clone(&tracking_copy),
         EntryPointType::Session,
-        &mut named_keys,
+        named_keys,
         access_rights,
         RuntimeArgs::new(),
         authorization_keys,
-        &account,
+        account,
         contract_key,
         BlockTime::new(0),
         DeployHash::new(DEPLOY_HASH),
         Gas::new(U512::from(GAS_LIMIT)),
         Gas::default(),
-        Rc::new(RefCell::new(address_generator)),
+        Arc::new(RwLock::new(address_generator)),
         ProtocolVersion::V1_0_0,
         CorrelationId::new(),
         PHASE,
@@ -417,7 +416,8 @@ fn contract_key_addable_valid() {
 
     assert_eq!(
         *tracking_copy
-            .borrow()
+            .read()
+            .unwrap()
             .effect()
             .transforms
             .get(&contract_key)
@@ -441,12 +441,9 @@ fn contract_key_addable_invalid() {
         .as_contract()
         .unwrap()
         .extract_access_rights(ContractHash::default());
-    let tracking_copy = Rc::new(RefCell::new(new_tracking_copy(
-        account_key,
-        account.clone(),
-    )));
+    let tracking_copy = Arc::new(RwLock::new(new_tracking_copy(account_key, account.clone())));
 
-    tracking_copy.borrow_mut().write(contract_key, contract);
+    tracking_copy.write().unwrap().write(contract_key, contract);
 
     let uref_as_key = create_uref_as_key(&mut address_generator, AccessRights::WRITE);
     let uref_name = "NewURef".to_owned();
@@ -458,19 +455,19 @@ fn contract_key_addable_invalid() {
     access_rights.extend(&[uref_as_key.into_uref().expect("should be a URef")]);
 
     let mut runtime_context = RuntimeContext::new(
-        Rc::clone(&tracking_copy),
+        Arc::clone(&tracking_copy),
         EntryPointType::Session,
-        &mut named_keys,
+        named_keys,
         access_rights,
         RuntimeArgs::new(),
         authorization_keys,
-        &account,
+        account,
         other_contract_key,
         BlockTime::new(0),
         DeployHash::new(DEPLOY_HASH),
         Gas::default(),
         Gas::default(),
-        Rc::new(RefCell::new(address_generator)),
+        Arc::new(RwLock::new(address_generator)),
         ProtocolVersion::V1_0_0,
         CorrelationId::new(),
         PHASE,
@@ -839,9 +836,9 @@ fn remove_uref_works() {
     let access_rights = account.extract_access_rights();
 
     let mut runtime_context = new_runtime_context(
-        &account,
+        account,
         base_key,
-        &mut named_keys,
+        named_keys.clone(),
         access_rights,
         address_generator,
     );
@@ -853,7 +850,7 @@ fn remove_uref_works() {
     assert!(runtime_context.validate_key(&uref_key).is_ok());
     assert!(!runtime_context.named_keys_contains_key(&uref_name));
     let effects = runtime_context.effect();
-    let transform = effects.transforms.get(&base_key).unwrap();
+    let transform = effects.transforms.get(&base_key).cloned().unwrap();
     let account = match transform {
         Transform::Write(StoredValue::Account(account)) => account,
         _ => panic!("Invalid transform operation found"),
@@ -866,7 +863,7 @@ fn remove_uref_works() {
     let runtime_context = new_runtime_context(
         account,
         base_key,
-        &mut named_keys,
+        named_keys,
         next_session_access_rights,
         address_generator,
     );
@@ -914,9 +911,9 @@ fn validate_valid_purse_of_an_account() {
 
     let address_generator = AddressGenerator::new(&deploy_hash, Phase::Session);
     let runtime_context = new_runtime_context(
-        &account,
+        account,
         base_key,
-        &mut named_keys,
+        named_keys,
         access_rights,
         address_generator,
     );

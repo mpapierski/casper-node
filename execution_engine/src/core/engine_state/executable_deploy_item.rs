@@ -6,6 +6,7 @@ use std::{
     cell::RefCell,
     fmt::{self, Debug, Display, Formatter},
     rc::Rc,
+    sync::{Arc, RwLock},
 };
 
 use datasize::DataSize;
@@ -787,7 +788,7 @@ impl ExecutionKind {
     ///
     /// This object is generated based on information provided by [`ExecutableDeployItem`].
     pub fn new<R>(
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         named_keys: &NamedKeys,
         executable_deploy_item: ExecutableDeployItem,
         correlation_id: CorrelationId,
@@ -795,7 +796,7 @@ impl ExecutionKind {
         phase: Phase,
     ) -> Result<ExecutionKind, Error>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let contract_hash: ContractHash;
@@ -851,7 +852,8 @@ impl ExecutionKind {
                 };
 
                 contract_package = tracking_copy
-                    .borrow_mut()
+                    .write()
+                    .unwrap()
                     .get_contract_package(correlation_id, contract_package_hash)?;
 
                 let maybe_version_key =
@@ -888,7 +890,8 @@ impl ExecutionKind {
                 ..
             } => {
                 contract_package = tracking_copy
-                    .borrow_mut()
+                    .write()
+                    .unwrap()
                     .get_contract_package(correlation_id, contract_package_hash)?;
 
                 let maybe_version_key =

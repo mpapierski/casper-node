@@ -1,4 +1,9 @@
-use std::{cell::RefCell, convert::TryFrom, rc::Rc};
+use std::{
+    cell::RefCell,
+    convert::TryFrom,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use casper_types::{
     account::{Account, AccountHash},
@@ -124,21 +129,23 @@ impl TransferRuntimeArgsBuilder {
         &self,
         uref: URef,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     ) -> bool
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let key = match tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_purse_balance_key(correlation_id, uref.into())
         {
             Ok(key) => key,
             Err(_) => return false,
         };
         tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_purse_balance(correlation_id, key)
             .is_ok()
     }
@@ -153,10 +160,10 @@ impl TransferRuntimeArgsBuilder {
         &self,
         account: &Account,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     ) -> Result<URef, Error>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let imputed_runtime_args = &self.inner;
@@ -223,10 +230,10 @@ impl TransferRuntimeArgsBuilder {
     fn resolve_transfer_target_mode<R>(
         &mut self,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     ) -> Result<TransferTargetMode, Error>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let imputed_runtime_args = &self.inner;
@@ -266,7 +273,8 @@ impl TransferRuntimeArgsBuilder {
 
         self.to = Some(account_hash);
         match tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read_account(correlation_id, account_hash)
         {
             Ok(account) => Ok(TransferTargetMode::PurseExists(
@@ -318,10 +326,10 @@ impl TransferRuntimeArgsBuilder {
     pub(crate) fn transfer_target_mode<R>(
         &mut self,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     ) -> Result<TransferTargetMode, Error>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let mode = self.transfer_target_mode;
@@ -342,16 +350,16 @@ impl TransferRuntimeArgsBuilder {
         mut self,
         from: &Account,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     ) -> Result<TransferArgs, Error>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<ExecError>,
     {
         let to = self.to;
 
         let target_uref =
-            match self.resolve_transfer_target_mode(correlation_id, Rc::clone(&tracking_copy))? {
+            match self.resolve_transfer_target_mode(correlation_id, Arc::clone(&tracking_copy))? {
                 TransferTargetMode::PurseExists(uref) => uref,
                 _ => {
                     return Err(Error::reverter(ApiError::Transfer));
@@ -359,7 +367,7 @@ impl TransferRuntimeArgsBuilder {
             };
 
         let source_uref =
-            self.resolve_source_uref(from, correlation_id, Rc::clone(&tracking_copy))?;
+            self.resolve_source_uref(from, correlation_id, Arc::clone(&tracking_copy))?;
 
         if source_uref.addr() == target_uref.addr() {
             return Err(Error::reverter(ApiError::InvalidPurse));

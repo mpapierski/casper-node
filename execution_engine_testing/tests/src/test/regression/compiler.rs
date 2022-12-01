@@ -46,8 +46,12 @@ fn should_execute_wasm_without_imports() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+    let start = Instant::now();
 
     builder.exec(do_minimum_request).expect_success().commit();
+    let end = start.elapsed();
+
+    eprintln!("elapsed {:?}", end);
 }
 #[ignore]
 #[test]
@@ -63,7 +67,8 @@ fn should_run_endless_loop() {
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let start = Instant::now();
     builder.exec(exec).commit();
-    let stop = start.elapsed();
+    let end = start.elapsed();
+    eprintln!("elapsed {:?}", end);
 
     let maybe_error = builder.get_error();
     assert!(

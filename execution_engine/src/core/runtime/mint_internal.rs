@@ -27,9 +27,9 @@ impl From<execution::Error> for Option<Error> {
     }
 }
 
-impl<'a, R> RuntimeProvider for Runtime<'a, R>
+impl<R> RuntimeProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_caller(&self) -> AccountHash {
@@ -37,7 +37,7 @@ where
     }
 
     fn get_immediate_caller(&self) -> Option<&CallStackElement> {
-        Runtime::<'a, R>::get_immediate_caller(self)
+        Runtime::<R>::get_immediate_caller(self)
     }
 
     fn get_phase(&self) -> Phase {
@@ -70,9 +70,9 @@ where
 }
 
 // TODO: update Mint + StorageProvider to better handle errors
-impl<'a, R> StorageProvider for Runtime<'a, R>
+impl<R> StorageProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn new_uref<T: CLTyped + ToBytes>(&mut self, init: T) -> Result<URef, Error> {
@@ -141,9 +141,9 @@ where
     }
 }
 
-impl<'a, R> SystemProvider for Runtime<'a, R>
+impl<R> SystemProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn record_transfer(
@@ -161,9 +161,9 @@ where
     }
 }
 
-impl<'a, R> Mint for Runtime<'a, R>
+impl<R> Mint for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
 }

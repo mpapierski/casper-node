@@ -1,10 +1,12 @@
 //! The context of execution of WASM code.
 use std::{
+    borrow::BorrowMut,
     cell::RefCell,
     collections::BTreeSet,
     convert::{TryFrom, TryInto},
     fmt::Debug,
     rc::Rc,
+    sync::{Arc, RwLock},
 };
 
 use tracing::error;
@@ -79,14 +81,15 @@ pub fn validate_group_membership(
 }
 
 /// Holds information specific to the deployed contract.
-pub struct RuntimeContext<'a, R> {
-    tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+#[derive(Clone)]
+pub struct RuntimeContext<R: Clone> {
+    tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     // Enables look up of specific uref based on human-readable name
-    named_keys: &'a mut NamedKeys,
+    named_keys: NamedKeys,
     // Used to check uref is known before use (prevents forging urefs)
     access_rights: ContextAccessRights,
     // Original account for read only tasks taken before execution
-    account: &'a Account,
+    account: Account,
     args: RuntimeArgs,
     authorization_keys: BTreeSet<AccountHash>,
     // Key pointing to the entity we are currently running
@@ -95,8 +98,8 @@ pub struct RuntimeContext<'a, R> {
     blocktime: BlockTime,
     deploy_hash: DeployHash,
     gas_limit: Gas,
-    gas_counter: Gas,
-    address_generator: Rc<RefCell<AddressGenerator>>,
+    gas_counter: Arc<RwLock<Gas>>,
+    address_generator: Arc<RwLock<AddressGenerator>>,
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
     phase: Phase,
@@ -106,9 +109,9 @@ pub struct RuntimeContext<'a, R> {
     remaining_spending_limit: U512,
 }
 
-impl<'a, R> RuntimeContext<'a, R>
+impl<R> RuntimeContext<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
     R::Error: Into<Error>,
 {
     /// Creates new runtime context where we don't already have one.
@@ -116,19 +119,19 @@ where
     /// Where we already have a runtime context, consider using `new_from_self()`.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         entry_point_type: EntryPointType,
-        named_keys: &'a mut NamedKeys,
+        named_keys: NamedKeys,
         access_rights: ContextAccessRights,
         runtime_args: RuntimeArgs,
         authorization_keys: BTreeSet<AccountHash>,
-        account: &'a Account,
+        account: Account,
         base_key: Key,
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
         gas_counter: Gas,
-        address_generator: Rc<RefCell<AddressGenerator>>,
+        address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
         phase: Phase,
@@ -148,7 +151,7 @@ where
             deploy_hash,
             base_key,
             gas_limit,
-            gas_counter,
+            gas_counter: Arc::new(RwLock::new(gas_counter)),
             address_generator,
             protocol_version,
             correlation_id,
@@ -165,18 +168,18 @@ where
         &self,
         base_key: Key,
         entry_point_type: EntryPointType,
-        named_keys: &'a mut NamedKeys,
+        named_keys: NamedKeys,
         access_rights: ContextAccessRights,
         runtime_args: RuntimeArgs,
     ) -> Self {
         // debug_assert!(base_key != self.base_key);
         let tracking_copy = self.state();
         let authorization_keys = self.authorization_keys.clone();
-        let account = self.account;
+        let account = self.account.clone();
         let blocktime = self.blocktime;
         let deploy_hash = self.deploy_hash;
         let gas_limit = self.gas_limit;
-        let gas_counter = self.gas_counter;
+        let gas_counter = Arc::clone(&self.gas_counter);
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
         let correlation_id = self.correlation_id;
@@ -220,12 +223,12 @@ where
 
     /// Returns named keys.
     pub fn named_keys(&self) -> &NamedKeys {
-        self.named_keys
+        &self.named_keys
     }
 
     /// Returns a mutable reference to named keys.
     pub fn named_keys_mut(&mut self) -> &mut NamedKeys {
-        self.named_keys
+        &mut self.named_keys
     }
 
     /// Checks if named keys contains a key referenced by name.
@@ -268,7 +271,8 @@ where
                 let contract: Contract = {
                     let value: StoredValue = self
                         .tracking_copy
-                        .borrow_mut()
+                        .write()
+                        .unwrap()
                         .read(self.correlation_id, &contract_uref)
                         .map_err(Into::into)?
                         .ok_or(Error::KeyNotFound(contract_uref))?;
@@ -367,8 +371,8 @@ where
     }
 
     /// Returns account of the caller.
-    pub fn account(&self) -> &'a Account {
-        self.account
+    pub fn account(&self) -> &Account {
+        &self.account
     }
 
     /// Returns arguments.
@@ -381,13 +385,13 @@ where
     }
 
     /// Returns new shared instance of an address generator.
-    pub fn address_generator(&self) -> Rc<RefCell<AddressGenerator>> {
-        Rc::clone(&self.address_generator)
+    pub fn address_generator(&self) -> Arc<RwLock<AddressGenerator>> {
+        Arc::clone(&self.address_generator)
     }
 
     /// Returns new shared instance of a tracking copy.
-    pub(super) fn state(&self) -> Rc<RefCell<TrackingCopy<R>>> {
-        Rc::clone(&self.tracking_copy)
+    pub(super) fn state(&self) -> Arc<RwLock<TrackingCopy<R>>> {
+        Arc::clone(&self.tracking_copy)
     }
 
     /// Returns the gas limit.
@@ -397,12 +401,13 @@ where
 
     /// Returns the current gas counter.
     pub fn gas_counter(&self) -> Gas {
-        self.gas_counter
+        *self.gas_counter.read().unwrap()
     }
 
     /// Sets the gas counter to a new value.
     pub fn set_gas_counter(&mut self, new_gas_counter: Gas) {
-        self.gas_counter = new_gas_counter;
+        // self.gas_counter = Arc::new(new_gas_counter);
+        *self.gas_counter.write().unwrap() = new_gas_counter;
     }
 
     /// Returns the base key.
@@ -430,19 +435,20 @@ where
 
     /// Generates new deterministic hash for uses as an address.
     pub fn new_hash_address(&mut self) -> Result<[u8; KEY_HASH_LENGTH], Error> {
-        Ok(self.address_generator.borrow_mut().new_hash_address())
+        Ok(self.address_generator.write().unwrap().new_hash_address())
     }
 
     /// Returns 32 pseudo random bytes.
     pub fn random_bytes(&mut self) -> Result<[u8; RANDOM_BYTES_COUNT], Error> {
-        Ok(self.address_generator.borrow_mut().create_address())
+        Ok(self.address_generator.write().unwrap().create_address())
     }
 
     /// Creates new [`URef`] instance.
     pub fn new_uref(&mut self, value: StoredValue) -> Result<URef, Error> {
         let uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
         self.insert_uref(uref);
         self.metered_write_gs(Key::URef(uref), value)?;
@@ -456,7 +462,7 @@ where
 
     /// Creates a new transfer address using a transfer address generator.
     pub fn new_transfer_addr(&mut self) -> Result<TransferAddr, Error> {
-        let transfer_addr = self.address_generator.borrow_mut().create_address();
+        let transfer_addr = self.address_generator.write().unwrap().create_address();
         Ok(TransferAddr::new(transfer_addr))
     }
 
@@ -478,7 +484,8 @@ where
     pub(crate) fn read_purse_uref(&mut self, purse_uref: &URef) -> Result<Option<CLValue>, Error> {
         match self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(self.correlation_id, &Key::Hash(purse_uref.addr()))
             .map_err(Into::into)?
         {
@@ -503,7 +510,8 @@ where
 
         let maybe_stored_value = self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(self.correlation_id, key)
             .map_err(Into::into)?;
 
@@ -523,7 +531,8 @@ where
     /// with caution.
     pub fn read_gs_direct(&mut self, key: &Key) -> Result<Option<StoredValue>, Error> {
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(self.correlation_id, key)
             .map_err(Into::into)
     }
@@ -553,7 +562,8 @@ where
     /// Returns all keys based on the tag prefix.
     pub fn get_keys(&mut self, key_tag: &KeyTag) -> Result<BTreeSet<Key>, Error> {
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_keys(self.correlation_id, key_tag)
             .map_err(Into::into)
     }
@@ -563,7 +573,8 @@ where
         if let Key::Account(_) = key {
             self.validate_key(key)?;
             self.tracking_copy
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .read(self.correlation_id, key)
                 .map_err(Into::into)
         } else {
@@ -588,7 +599,8 @@ where
         if let Key::Transfer(_) = key {
             // Writing a `Transfer` will not exceed write size limit.
             self.tracking_copy
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .write(key, StoredValue::Transfer(value));
         } else {
             panic!("Do not use this function for writing non-transfer keys")
@@ -600,7 +612,8 @@ where
         if let Key::EraInfo(_) = key {
             // Writing an `EraInfo` for 100 validators will not exceed write size limit.
             self.tracking_copy
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .write(key, StoredValue::EraInfo(value));
         } else {
             panic!("Do not use this function for writing non-era-info keys")
@@ -637,12 +650,12 @@ where
 
     /// Returns current effects of a tracking copy.
     pub fn effect(&self) -> ExecutionEffect {
-        self.tracking_copy.borrow().effect()
+        self.tracking_copy.read().unwrap().effect()
     }
 
     /// Returns an `ExecutionJournal`.
     pub fn execution_journal(&self) -> ExecutionJournal {
-        self.tracking_copy.borrow().execution_journal()
+        self.tracking_copy.read().unwrap().execution_journal()
     }
 
     /// Returns list of transfers.
@@ -929,7 +942,8 @@ where
         self.charge_gas_storage(bytes_count)?;
 
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .write(key.into(), stored_value);
         Ok(())
     }
@@ -961,7 +975,8 @@ where
 
         match self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .add(self.correlation_id, key, value)
         {
             Err(storage_error) => Err(storage_error.into()),
@@ -1215,7 +1230,8 @@ where
     ) -> Result<Option<CLValue>, Error> {
         let maybe_stored_value = self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(self.correlation_id, &dictionary_key)
             .map_err(Into::into)?;
 
@@ -1273,7 +1289,8 @@ where
     /// Returns system contract registry by querying the global state.
     pub fn system_contract_registry(&self) -> Result<SystemContractRegistry, Error> {
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_system_contracts(self.correlation_id)
             .map_err(|_| {
                 error!("Missing system contract registry");

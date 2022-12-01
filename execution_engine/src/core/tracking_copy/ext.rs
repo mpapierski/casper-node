@@ -90,7 +90,7 @@ pub trait TrackingCopyExt<R> {
 
 impl<R> TrackingCopyExt<R> for TrackingCopy<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     type Error = execution::Error;

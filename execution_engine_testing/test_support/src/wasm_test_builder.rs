@@ -96,7 +96,7 @@ pub type LmdbWasmTestBuilder = WasmTestBuilder<LmdbGlobalState>;
 /// Builder for simple WASM test
 pub struct WasmTestBuilder<S> {
     /// [`EngineState`] is wrapped in [`Rc`] to work around a missing [`Clone`] implementation
-    engine_state: Rc<EngineState<S>>,
+    engine_state: Arc<EngineState<S>>,
     /// [`ExecutionResult`] is wrapped in [`Rc`] to work around a missing [`Clone`] implementation
     exec_results: Vec<Vec<Rc<ExecutionResult>>>,
     upgrade_results: Vec<Result<UpgradeSuccess, engine_state::Error>>,
@@ -137,7 +137,7 @@ impl Default for InMemoryWasmTestBuilder {
 impl<S> Clone for WasmTestBuilder<S> {
     fn clone(&self) -> Self {
         WasmTestBuilder {
-            engine_state: Rc::clone(&self.engine_state),
+            engine_state: self.engine_state.clone(),
             exec_results: self.exec_results.clone(),
             upgrade_results: self.upgrade_results.clone(),
             genesis_hash: self.genesis_hash,
@@ -166,7 +166,7 @@ impl InMemoryWasmTestBuilder {
         WasmTestBuilder {
             exec_results: Vec::new(),
             upgrade_results: Vec::new(),
-            engine_state: Rc::new(engine_state),
+            engine_state: Arc::new(engine_state),
             genesis_hash: Some(genesis_hash),
             post_state_hash: Some(genesis_hash),
             transforms: Vec::new(),
@@ -189,7 +189,7 @@ impl InMemoryWasmTestBuilder {
         WasmTestBuilder {
             exec_results: Vec::new(),
             upgrade_results: Vec::new(),
-            engine_state: Rc::new(engine_state),
+            engine_state: Arc::new(engine_state),
             genesis_hash: maybe_post_state_hash,
             post_state_hash: maybe_post_state_hash,
             transforms: Vec::new(),
@@ -259,7 +259,7 @@ impl LmdbWasmTestBuilder {
             LmdbGlobalState::empty(environment, trie_store).expect("should create LmdbGlobalState");
         let engine_state = EngineState::new(global_state, engine_config);
         WasmTestBuilder {
-            engine_state: Rc::new(engine_state),
+            engine_state: Arc::new(engine_state),
             exec_results: Vec::new(),
             upgrade_results: Vec::new(),
             genesis_hash: None,
@@ -355,7 +355,7 @@ impl LmdbWasmTestBuilder {
             LmdbGlobalState::empty(environment, trie_store).expect("should create LmdbGlobalState");
         let engine_state = EngineState::new(global_state, engine_config);
         WasmTestBuilder {
-            engine_state: Rc::new(engine_state),
+            engine_state: Arc::new(engine_state),
             exec_results: Vec::new(),
             upgrade_results: Vec::new(),
             genesis_hash: None,
@@ -468,7 +468,7 @@ impl LmdbWasmTestBuilder {
 
 impl<S> WasmTestBuilder<S>
 where
-    S: StateProvider + CommitProvider,
+    S: Send + Sync + 'static + StateProvider + CommitProvider,
     engine_state::Error: From<S::Error>,
     S::Error: Into<execution::Error>,
 {
@@ -713,9 +713,11 @@ where
     ) -> &mut Self {
         let pre_state_hash = self.post_state_hash.expect("should have state hash");
         upgrade_config.with_pre_state_hash(pre_state_hash);
-
-        let engine_state = Rc::get_mut(&mut self.engine_state).unwrap();
-        engine_state.update_config(engine_config);
+        // todo!("todo: upgrade");
+        {
+            let engine_state = Arc::get_mut(&mut self.engine_state).unwrap();
+            engine_state.update_config(engine_config);
+        }
 
         let result = self
             .engine_state

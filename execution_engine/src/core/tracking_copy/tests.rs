@@ -1,4 +1,9 @@
-use std::{cell::Cell, iter, rc::Rc};
+use std::{
+    cell::Cell,
+    iter,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use assert_matches::assert_matches;
 use proptest::prelude::*;
@@ -24,22 +29,35 @@ use crate::{
     },
 };
 
+#[derive(Clone, Debug)]
+struct SharedCounter(Arc<RwLock<i32>>);
+
+impl SharedCounter {
+    fn new(count: i32) -> Self {
+        Self(Arc::new(RwLock::new(count)))
+    }
+    fn get(&self) -> i32 {
+        *self.0.read().unwrap()
+    }
+    fn set(&self, value: i32) {
+        *self.0.write().unwrap() = value;
+    }
+}
+
+#[derive(Clone, Debug)]
 struct CountingDb {
-    count: Rc<Cell<i32>>,
+    count: SharedCounter,
     value: Option<StoredValue>,
 }
 
 impl CountingDb {
-    fn new(counter: Rc<Cell<i32>>) -> CountingDb {
-        CountingDb {
-            count: counter,
-            value: None,
-        }
+    fn new(count: SharedCounter) -> CountingDb {
+        CountingDb { count, value: None }
     }
 
     fn new_init(v: StoredValue) -> CountingDb {
         CountingDb {
-            count: Rc::new(Cell::new(0)),
+            count: SharedCounter::new(0),
             value: Some(v),
         }
     }
@@ -80,18 +98,18 @@ impl StateReader<Key, StoredValue> for CountingDb {
 
 #[test]
 fn tracking_copy_new() {
-    let counter = Rc::new(Cell::new(0));
+    let counter = SharedCounter::new(0);
     let db = CountingDb::new(counter);
     let tc = TrackingCopy::new(db);
 
-    assert!(tc.journal.is_empty());
+    assert!(tc.execution_journal().is_empty());
 }
 
 #[test]
 fn tracking_copy_caching() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
-    let db = CountingDb::new(Rc::clone(&counter));
+    let counter = SharedCounter::new(0);
+    let db = CountingDb::new(counter.clone());
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
 
@@ -104,6 +122,7 @@ fn tracking_copy_caching() {
     // of going back to the DB
     let value = tc.read(correlation_id, &k).unwrap().unwrap();
     let db_value = counter.get();
+    dbg!(&tc);
     assert_eq!(value, zero);
     assert_eq!(db_value, 1);
 }
@@ -111,8 +130,8 @@ fn tracking_copy_caching() {
 #[test]
 fn tracking_copy_read() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
-    let db = CountingDb::new(Rc::clone(&counter));
+    let counter = SharedCounter::new(0);
+    let db = CountingDb::new(counter.clone());
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
 
@@ -122,15 +141,15 @@ fn tracking_copy_read() {
     assert_eq!(value, zero);
     // Reading does produce an identity transform.
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Identity)])
     );
 }
 
 #[test]
 fn tracking_copy_write() {
-    let counter = Rc::new(Cell::new(0));
-    let db = CountingDb::new(Rc::clone(&counter));
+    let counter = SharedCounter::new(0);
+    let db = CountingDb::new(counter.clone());
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
 
@@ -144,7 +163,7 @@ fn tracking_copy_write() {
     assert_eq!(db_value, 0);
     // Writing creates a write transform.
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Write(one.clone()))])
     );
 
@@ -153,7 +172,7 @@ fn tracking_copy_write() {
     let db_value = counter.get();
     assert_eq!(db_value, 0);
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Write(one)), (k, Transform::Write(two))])
     );
 }
@@ -161,7 +180,7 @@ fn tracking_copy_write() {
 #[test]
 fn tracking_copy_add_i32() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
+    let counter = SharedCounter::new(0);
     let db = CountingDb::new(counter);
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
@@ -174,7 +193,7 @@ fn tracking_copy_add_i32() {
 
     // Adding creates an add transform.
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::AddInt32(3))])
     );
 
@@ -182,7 +201,7 @@ fn tracking_copy_add_i32() {
     let add = tc.add(correlation_id, k, three);
     assert_matches!(add, Ok(_));
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::AddInt32(3)); 2])
     );
 }
@@ -220,13 +239,13 @@ fn tracking_copy_add_named_key() {
         StoredValue::CLValue(CLValue::from_t(3_i32).unwrap()),
     );
     assert_matches!(failed_add, Ok(AddResult::TypeMismatch(_)));
-    assert!(tc.journal.is_empty());
+    assert!(tc.execution_journal().is_empty());
 
     // adding correct type works
     let add = tc.add(correlation_id, k, named_key);
     assert_matches!(add, Ok(_));
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(
             k,
             Transform::AddKeys(iter::once((name1.clone(), u1)).collect())
@@ -238,7 +257,7 @@ fn tracking_copy_add_named_key() {
     let add = tc.add(correlation_id, k, other_named_key);
     assert_matches!(add, Ok(_));
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![
             (k, Transform::AddKeys(iter::once((name1, u1)).collect())),
             (k, Transform::AddKeys(iter::once((name2, u2)).collect()))
@@ -249,7 +268,7 @@ fn tracking_copy_add_named_key() {
 #[test]
 fn tracking_copy_rw() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
+    let counter = SharedCounter::new(0);
     let db = CountingDb::new(counter);
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
@@ -259,7 +278,7 @@ fn tracking_copy_rw() {
     let _ = tc.read(correlation_id, &k);
     tc.write(k, value.clone());
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Identity), (k, Transform::Write(value))])
     );
 }
@@ -267,7 +286,7 @@ fn tracking_copy_rw() {
 #[test]
 fn tracking_copy_ra() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
+    let counter = SharedCounter::new(0);
     let db = CountingDb::new(counter);
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
@@ -277,7 +296,7 @@ fn tracking_copy_ra() {
     let _ = tc.read(correlation_id, &k);
     let _ = tc.add(correlation_id, k, value);
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Identity), (k, Transform::AddInt32(3))])
     );
 }
@@ -285,7 +304,7 @@ fn tracking_copy_ra() {
 #[test]
 fn tracking_copy_aw() {
     let correlation_id = CorrelationId::new();
-    let counter = Rc::new(Cell::new(0));
+    let counter = SharedCounter::new(0);
     let db = CountingDb::new(counter);
     let mut tc = TrackingCopy::new(db);
     let k = Key::Hash([0u8; 32]);
@@ -296,7 +315,7 @@ fn tracking_copy_aw() {
     let _ = tc.add(correlation_id, k, value);
     tc.write(k, write_value.clone());
     assert_eq!(
-        tc.journal,
+        tc.execution_journal(),
         ExecutionJournal::new(vec![
             (k, Transform::AddInt32(3)),
             (k, Transform::Write(write_value))
@@ -489,8 +508,8 @@ fn cache_reads_invalidation() {
     tc_cache.insert_read(k2, v2.clone());
     tc_cache.insert_read(k3, v3.clone());
     assert!(tc_cache.get(&k1).is_none()); // first entry should be invalidated
-    assert_eq!(tc_cache.get(&k2), Some(&v2)); // k2 and k3 should be there
-    assert_eq!(tc_cache.get(&k3), Some(&v3));
+    assert_eq!(tc_cache.get(&k2), Some(v2)); // k2 and k3 should be there
+    assert_eq!(tc_cache.get(&k3), Some(v3));
 }
 
 #[test]
@@ -512,9 +531,9 @@ fn cache_writes_not_invalidated() {
     tc_cache.insert_read(k2, v2.clone());
     tc_cache.insert_read(k3, v3.clone());
     // Writes are not subject to cache invalidation
-    assert_eq!(tc_cache.get(&k1), Some(&v1));
-    assert_eq!(tc_cache.get(&k2), Some(&v2)); // k2 and k3 should be there
-    assert_eq!(tc_cache.get(&k3), Some(&v3));
+    assert_eq!(tc_cache.get(&k1), Some(v1));
+    assert_eq!(tc_cache.get(&k2), Some(v2)); // k2 and k3 should be there
+    assert_eq!(tc_cache.get(&k3), Some(v3));
 }
 
 #[test]

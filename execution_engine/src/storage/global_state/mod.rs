@@ -33,7 +33,7 @@ use crate::{
 };
 
 /// A trait expressing the reading of state. This trait is used to abstract the underlying store.
-pub trait StateReader<K, V> {
+pub trait StateReader<K, V>: Clone + Send + Sync + 'static {
     /// An error which occurs when reading state
     type Error;
 
@@ -96,7 +96,7 @@ pub trait StateProvider {
     type Error;
 
     /// Associated reader type for `StateProvider`.
-    type Reader: StateReader<Key, StoredValue, Error = Self::Error>;
+    type Reader: Send + Sync + 'static + StateReader<Key, StoredValue, Error = Self::Error>;
 
     /// Checkouts to the post state of a specific block.
     fn checkout(&self, state_hash: Digest) -> Result<Option<Self::Reader>, Self::Error>;

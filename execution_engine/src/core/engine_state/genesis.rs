@@ -1,5 +1,11 @@
 //! Support for a genesis process.
-use std::{cell::RefCell, collections::BTreeMap, fmt, iter, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fmt, iter,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use datasize::DataSize;
 use num::Zero;
@@ -738,8 +744,8 @@ where
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
     exec_config: ExecConfig,
-    address_generator: Rc<RefCell<AddressGenerator>>,
-    tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
+    address_generator: Arc<RwLock<AddressGenerator>>,
+    tracking_copy: Arc<RwLock<TrackingCopy<<S as StateProvider>::Reader>>>,
 }
 
 impl<S> GenesisInstaller<S>
@@ -752,14 +758,14 @@ where
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
         exec_config: ExecConfig,
-        tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<<S as StateProvider>::Reader>>>,
     ) -> Self {
         let phase = Phase::System;
         let genesis_config_hash_bytes = genesis_config_hash.as_ref();
 
         let address_generator = {
             let generator = AddressGenerator::new(genesis_config_hash_bytes, phase);
-            Rc::new(RefCell::new(generator))
+            Arc::new(RwLock::new(generator))
         };
 
         let system_account_addr = PublicKey::System.to_account_hash();
@@ -773,7 +779,7 @@ where
         let key = Key::Account(system_account_addr);
         let value = { StoredValue::Account(virtual_system_account) };
 
-        tracking_copy.borrow_mut().write(key, value);
+        tracking_copy.write().unwrap().write(key, value);
 
         GenesisInstaller {
             protocol_version,
@@ -785,7 +791,7 @@ where
     }
 
     pub(crate) fn finalize(self) -> ExecutionEffect {
-        self.tracking_copy.borrow().effect()
+        self.tracking_copy.read().unwrap().effect()
     }
 
     fn create_mint(&mut self) -> Result<Key, GenesisError> {
@@ -793,7 +799,8 @@ where
             {
                 let round_seigniorage_rate_uref = self
                     .address_generator
-                    .borrow_mut()
+                    .write()
+                    .unwrap()
                     .new_uref(AccessRights::READ_ADD_WRITE);
 
                 let (round_seigniorage_rate_numer, round_seigniorage_rate_denom) =
@@ -803,7 +810,7 @@ where
                     round_seigniorage_rate_denom.into(),
                 );
 
-                self.tracking_copy.borrow_mut().write(
+                self.tracking_copy.write().unwrap().write(
                     round_seigniorage_rate_uref.into(),
                     StoredValue::CLValue(CLValue::from_t(round_seigniorage_rate).map_err(
                         |_| GenesisError::CLValue(ARG_ROUND_SEIGNIORAGE_RATE.to_string()),
@@ -815,10 +822,11 @@ where
         let total_supply_uref = {
             let total_supply_uref = self
                 .address_generator
-                .borrow_mut()
+                .write()
+                .unwrap()
                 .new_uref(AccessRights::READ_ADD_WRITE);
 
-            self.tracking_copy.borrow_mut().write(
+            self.tracking_copy.write().unwrap().write(
                 total_supply_uref.into(),
                 StoredValue::CLValue(
                     CLValue::from_t(U512::zero())
@@ -842,7 +850,8 @@ where
 
         let access_key = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
 
         let (_, mint_hash) = self.store_contract(access_key, named_keys, entry_points);
@@ -856,7 +865,7 @@ where
             partial_registry.insert(HANDLE_PAYMENT.to_string(), DEFAULT_ADDRESS.into());
             let cl_registry = CLValue::from_t(partial_registry)
                 .map_err(|error| GenesisError::CLValue(error.to_string()))?;
-            self.tracking_copy.borrow_mut().write(
+            self.tracking_copy.write().unwrap().write(
                 Key::SystemContractRegistry,
                 StoredValue::CLValue(cl_registry),
             );
@@ -879,7 +888,8 @@ where
 
         let access_key = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
 
         let (_, handle_payment_hash) = self.store_contract(access_key, named_keys, entry_points);
@@ -1005,7 +1015,7 @@ where
             validators
         };
 
-        let _ = self.tracking_copy.borrow_mut().add(
+        let _ = self.tracking_copy.write().unwrap().add(
             CorrelationId::default(),
             total_supply_key,
             StoredValue::CLValue(
@@ -1019,9 +1029,10 @@ where
 
         let era_id_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             era_id_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(INITIAL_ERA_ID)
@@ -1032,9 +1043,10 @@ where
 
         let era_end_timestamp_millis_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             era_end_timestamp_millis_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(INITIAL_ERA_END_TIMESTAMP_MILLIS)
@@ -1048,9 +1060,10 @@ where
 
         let initial_seigniorage_recipients_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             initial_seigniorage_recipients_uref.into(),
             StoredValue::CLValue(CLValue::from_t(initial_seigniorage_recipients).map_err(
                 |_| GenesisError::CLValue(SEIGNIORAGE_RECIPIENTS_SNAPSHOT_KEY.to_string()),
@@ -1063,7 +1076,7 @@ where
 
         for (validator_public_key, bid) in validators.into_iter() {
             let validator_account_hash = AccountHash::from(&validator_public_key);
-            self.tracking_copy.borrow_mut().write(
+            self.tracking_copy.write().unwrap().write(
                 Key::Bid(validator_account_hash),
                 StoredValue::Bid(Box::new(bid)),
             );
@@ -1072,9 +1085,10 @@ where
         let validator_slots = self.exec_config.validator_slots();
         let validator_slots_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             validator_slots_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(validator_slots)
@@ -1085,9 +1099,10 @@ where
 
         let auction_delay_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             auction_delay_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(auction_delay)
@@ -1098,9 +1113,10 @@ where
 
         let locked_funds_period_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             locked_funds_period_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(locked_funds_period_millis)
@@ -1115,9 +1131,10 @@ where
         let unbonding_delay = self.exec_config.unbonding_delay();
         let unbonding_delay_uref = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             unbonding_delay_uref.into(),
             StoredValue::CLValue(
                 CLValue::from_t(unbonding_delay)
@@ -1130,7 +1147,8 @@ where
 
         let access_key = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
 
         let (_, auction_hash) = self.store_contract(access_key, named_keys, entry_points);
@@ -1147,7 +1165,8 @@ where
 
         let access_key = self
             .address_generator
-            .borrow_mut()
+            .write()
+            .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
 
         let (_, standard_payment_hash) = self.store_contract(access_key, named_keys, entry_points);
@@ -1178,12 +1197,12 @@ where
                 main_purse,
             ));
 
-            self.tracking_copy.borrow_mut().write(key, stored_value);
+            self.tracking_copy.write().unwrap().write(key, stored_value);
 
             total_supply += account.balance().value();
         }
 
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             total_supply_key,
             StoredValue::CLValue(
                 CLValue::from_t(total_supply)
@@ -1217,11 +1236,11 @@ where
     }
 
     fn create_purse(&self, amount: U512) -> Result<URef, GenesisError> {
-        let purse_addr = self.address_generator.borrow_mut().create_address();
+        let purse_addr = self.address_generator.write().unwrap().create_address();
 
         let balance_cl_value =
             CLValue::from_t(amount).map_err(|error| GenesisError::CLValue(error.to_string()))?;
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             Key::Balance(purse_addr),
             StoredValue::CLValue(balance_cl_value),
         );
@@ -1229,7 +1248,8 @@ where
         let purse_cl_value = CLValue::unit();
         let purse_uref = URef::new(purse_addr, AccessRights::READ_ADD_WRITE);
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .write(Key::URef(purse_uref), StoredValue::CLValue(purse_cl_value));
 
         Ok(purse_uref)
@@ -1243,11 +1263,11 @@ where
     ) -> (ContractPackageHash, ContractHash) {
         let protocol_version = self.protocol_version;
         let contract_wasm_hash =
-            ContractWasmHash::new(self.address_generator.borrow_mut().new_hash_address());
+            ContractWasmHash::new(self.address_generator.write().unwrap().new_hash_address());
         let contract_hash =
-            ContractHash::new(self.address_generator.borrow_mut().new_hash_address());
+            ContractHash::new(self.address_generator.write().unwrap().new_hash_address());
         let contract_package_hash =
-            ContractPackageHash::new(self.address_generator.borrow_mut().new_hash_address());
+            ContractPackageHash::new(self.address_generator.write().unwrap().new_hash_address());
 
         let contract_wasm = ContractWasm::new(vec![]);
         let contract = Contract::new(
@@ -1271,14 +1291,15 @@ where
             contract_package
         };
 
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             contract_wasm_hash.into(),
             StoredValue::ContractWasm(contract_wasm),
         );
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .write(contract_hash.into(), StoredValue::Contract(contract));
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             contract_package_hash.into(),
             StoredValue::ContractPackage(contract_package),
         );
@@ -1293,7 +1314,8 @@ where
     ) -> Result<(), GenesisError> {
         let partial_cl_registry = self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(self.correlation_id, &Key::SystemContractRegistry)
             .map_err(|_| GenesisError::FailedToCreateSystemRegistry)?
             .ok_or_else(|| {
@@ -1307,7 +1329,7 @@ where
         partial_registry.insert(contract_name.to_string(), contract_hash);
         let cl_registry = CLValue::from_t(partial_registry)
             .map_err(|error| GenesisError::CLValue(error.to_string()))?;
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             Key::SystemContractRegistry,
             StoredValue::CLValue(cl_registry),
         );
@@ -1324,7 +1346,7 @@ where
         let cl_value_registry = CLValue::from_t(chainspec_registry)
             .map_err(|error| GenesisError::CLValue(error.to_string()))?;
 
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             Key::ChainspecRegistry,
             StoredValue::CLValue(cl_value_registry),
         );

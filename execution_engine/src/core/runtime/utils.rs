@@ -17,7 +17,7 @@ use crate::{
 };
 
 /// Removes `rights_to_disable` from all urefs in `args` matching the address `uref_addr`.
-pub(super) fn attenuate_uref_in_args(
+pub(crate) fn attenuate_uref_in_args(
     mut args: RuntimeArgs,
     uref_addr: URefAddr,
     rights_to_disable: AccessRights,

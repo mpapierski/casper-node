@@ -34,9 +34,9 @@ impl From<execution::Error> for Option<Error> {
     }
 }
 
-impl<'a, R> StorageProvider for Runtime<'a, R>
+impl<R> StorageProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn read<T: FromBytes + CLTyped>(&mut self, uref: URef) -> Result<Option<T>, Error> {
@@ -112,9 +112,9 @@ where
     }
 }
 
-impl<'a, R> RuntimeProvider for Runtime<'a, R>
+impl<R> RuntimeProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_caller(&self) -> AccountHash {
@@ -142,9 +142,9 @@ where
     }
 }
 
-impl<'a, R> MintProvider for Runtime<'a, R>
+impl<R> MintProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn unbond(&mut self, unbonding_purse: &UnbondingPurse) -> Result<(), Error> {
@@ -289,9 +289,9 @@ where
     }
 }
 
-impl<'a, R> AccountProvider for Runtime<'a, R>
+impl<R> AccountProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_main_purse(&self) -> Result<URef, Error> {
@@ -303,9 +303,9 @@ where
     }
 }
 
-impl<'a, R> Auction for Runtime<'a, R>
+impl<R> Auction for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
 }

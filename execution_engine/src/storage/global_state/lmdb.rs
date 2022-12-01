@@ -45,6 +45,7 @@ pub struct LmdbGlobalState {
 }
 
 /// Represents a "view" of global state at a particular root hash.
+#[derive(Clone)]
 pub struct LmdbGlobalStateView {
     /// Environment for LMDB.
     pub(crate) environment: Arc<LmdbEnvironment>,

@@ -12,6 +12,7 @@ pub mod heap_meter {
 
     use crate::core::tracking_copy::byte_size::ByteSize;
 
+    #[derive(Debug)]
     pub struct HeapSize;
 
     impl<K: ByteSize, V: ByteSize> super::Meter<K, V> for HeapSize {

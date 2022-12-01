@@ -42,6 +42,7 @@ pub struct InMemoryGlobalState {
 }
 
 /// Represents a "view" of global state at a particular root hash.
+#[derive(Clone)]
 pub struct InMemoryGlobalStateView {
     /// Environment for `InMemoryGlobalState`.
     pub(crate) environment: Arc<InMemoryEnvironment>,

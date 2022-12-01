@@ -6,7 +6,7 @@ mod host_function_flag;
 mod mint_internal;
 pub mod stack;
 mod standard_payment_internal;
-mod utils;
+pub(crate) mod utils;
 mod wasmi_args_parser;
 
 use std::{
@@ -15,6 +15,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     convert::{TryFrom, TryInto},
     iter::FromIterator,
+    sync::{Arc, Mutex, RwLock},
 };
 
 use tracing::error;
@@ -51,7 +52,9 @@ use crate::{
     },
     shared::{
         host_function_costs::{Cost, HostFunction},
-        wasm_engine::{self, FunctionContext, Module, PreprocessingError, WasmEngine},
+        wasm_engine::{
+            self, FunctionContext, Module, PreprocessingError, RuntimeValue, WasmEngine,
+        },
     },
     storage::global_state::StateReader,
     system::{
@@ -71,7 +74,7 @@ enum CallContractIdentifier {
     },
 }
 
-use super::resolvers::v1_function_index::FunctionIndex;
+use super::{engine_state::ExecutionResult, resolvers::v1_function_index::FunctionIndex};
 
 pub fn bytes_from_memory(
     context: &mut impl FunctionContext,
@@ -95,33 +98,35 @@ where
 }
 
 /// Represents the runtime properties of a WASM execution.
-pub struct Runtime<'a, R> {
-    config: EngineConfig,
-    module: Option<Module>,
-    host_buffer: Option<CLValue>,
-    context: RuntimeContext<'a, R>,
-    stack: Option<RuntimeStack>,
-    host_function_flag: HostFunctionFlag,
-    wasm_engine: &'a WasmEngine,
-    // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime issues when dealing with wasmtime's Store object.
+#[derive(Clone)]
+pub struct Runtime<R: Clone> {
+    pub(crate) config: EngineConfig,
+    pub(crate) module: Option<Module>,
+    pub(crate) host_buffer: Arc<Mutex<Option<CLValue>>>,
+    pub(crate) context: RuntimeContext<R>,
+    pub(crate) stack: Option<RuntimeStack>,
+    pub(crate) host_function_flag: HostFunctionFlag,
+    pub(crate) wasm_engine: WasmEngine,
+    // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime
+    // issues when dealing with wasmtime's Store object.
     pub wasmtime_memory: Option<wasmtime::Memory>,
 }
 
-impl<'a, R> Runtime<'a, R>
+impl<R> Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
     R::Error: Into<Error>,
 {
     /// Creates a new runtime instance.
     pub(crate) fn new(
         config: EngineConfig,
-        context: RuntimeContext<'a, R>,
-        wasm_engine: &'a WasmEngine,
+        context: RuntimeContext<R>,
+        wasm_engine: WasmEngine,
     ) -> Self {
         Runtime {
             config,
             module: None,
-            host_buffer: None,
+            host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: None,
             host_function_flag: HostFunctionFlag::default(),
@@ -133,7 +138,7 @@ where
     /// Creates a new runtime instance by cloning the config, and host function flag from `self`.
     fn new_invocation_runtime(
         &self,
-        context: RuntimeContext<'a, R>,
+        context: RuntimeContext<R>,
         module: Module,
         stack: RuntimeStack,
     ) -> Self {
@@ -141,30 +146,26 @@ where
         Runtime {
             config: self.config,
             module: Some(module),
-            host_buffer: None,
+            host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: Some(stack),
             host_function_flag: self.host_function_flag.clone(),
-            wasm_engine: self.wasm_engine,
+            wasm_engine: self.wasm_engine.clone(),
             wasmtime_memory: self.wasmtime_memory.clone(),
         }
     }
 
     /// Creates a new runtime instance with a stack from `self`.
-    pub(crate) fn new_with_stack(
-        &self,
-        context: RuntimeContext<'a, R>,
-        stack: RuntimeStack,
-    ) -> Self {
+    pub(crate) fn new_with_stack(&self, context: RuntimeContext<R>, stack: RuntimeStack) -> Self {
         Self::check_preconditions(&stack);
         Runtime {
             config: self.config,
             module: None,
-            host_buffer: None,
+            host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: Some(stack),
             host_function_flag: self.host_function_flag.clone(),
-            wasm_engine: self.wasm_engine,
+            wasm_engine: self.wasm_engine.clone(),
             wasmtime_memory: self.wasmtime_memory,
         }
     }
@@ -184,7 +185,7 @@ where
     }
 
     /// Returns the context.
-    pub(crate) fn context(&self) -> &RuntimeContext<'a, R> {
+    pub(crate) fn context(&self) -> &RuntimeContext<R> {
         &self.context
     }
 
@@ -518,19 +519,22 @@ where
             return error;
         }
 
-        self.host_buffer = None;
+        let mut host_buffer = self.host_buffer.lock().unwrap();
 
         let mem_get = context.memory_read(value_ptr, value_size as usize);
         match mem_get {
             Ok(buf) => {
                 // Set the result field in the runtime and return the proper element of the `Error`
                 // enum indicating that the reason for exiting the module was a call to ret.
-                self.host_buffer = bytesrepr::deserialize(buf).ok();
+                let host_buffer_data: Option<CLValue> = bytesrepr::deserialize(buf).ok();
 
-                let urefs = match &self.host_buffer {
+                let urefs = match &host_buffer_data {
                     Some(buf) => utils::extract_urefs(buf),
                     None => Ok(vec![]),
                 };
+
+                *host_buffer = host_buffer_data;
+
                 match urefs {
                     Ok(urefs) => {
                         for uref in &urefs {
@@ -644,14 +648,15 @@ where
         let mint_contract = self
             .context
             .state()
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_contract(self.context.correlation_id(), mint_hash)?;
         let mut named_keys = mint_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
             base_key,
             EntryPointType::Contract,
-            &mut named_keys,
+            named_keys,
             access_rights,
             runtime_args.to_owned(),
         );
@@ -773,14 +778,15 @@ where
         let handle_payment_contract = self
             .context
             .state()
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_contract(self.context.correlation_id(), handle_payment_hash)?;
         let mut named_keys = handle_payment_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
             base_key,
             EntryPointType::Contract,
-            &mut named_keys,
+            named_keys,
             access_rights,
             runtime_args.to_owned(),
         );
@@ -872,14 +878,15 @@ where
         let auction_contract = self
             .context
             .state()
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_contract(self.context.correlation_id(), auction_hash)?;
         let mut named_keys = auction_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
             base_key,
             EntryPointType::Contract,
-            &mut named_keys,
+            named_keys,
             access_rights,
             runtime_args.to_owned(),
         );
@@ -1069,57 +1076,6 @@ where
     ) -> Result<CLValue, Error> {
         self.stack = Some(stack);
         self.call_contract(contract_hash, entry_point_name, args)
-    }
-
-    pub(crate) fn execute_module_bytes(
-        &mut self,
-        module_bytes: &Bytes,
-        stack: RuntimeStack,
-    ) -> Result<CLValue, Error> {
-        let protocol_version = self.context.protocol_version();
-        let wasm_config = self.config.wasm_config();
-        let module = self.wasm_engine().preprocess(*wasm_config, module_bytes)?;
-        let instance = self
-            .wasm_engine
-            .instance_and_memory(module.clone(), protocol_version)?;
-        self.module = Some(module);
-        self.stack = Some(stack);
-        self.context.set_args(utils::attenuate_uref_in_args(
-            self.context.args().clone(),
-            self.context.account().main_purse().addr(),
-            AccessRights::WRITE,
-        )?);
-
-        let result = instance.invoke_export(
-            &self.wasm_engine,
-            DEFAULT_ENTRY_POINT_NAME,
-            Vec::new(),
-            self,
-        );
-
-        let error = match result {
-            Err(error) => error,
-            // If `Ok` and the `host_buffer` is `None`, the contract's execution succeeded but did
-            // not explicitly call `runtime::ret()`.  Treat as though the execution
-            // returned the unit type `()` as per Rust functions which don't specify a
-            // return value.
-            Ok(_) => {
-                return Ok(self.take_host_buffer().unwrap_or(CLValue::from_t(())?));
-            }
-        };
-
-        if let Some(host_error) = error.as_execution_error() {
-            // If the "error" was in fact a trap caused by calling `ret` then
-            // this is normal operation and we should return the value captured
-            // in the Runtime result field.
-            match host_error {
-                Error::Ret(ref _ret_urefs) => {
-                    return self.take_host_buffer().ok_or(Error::ExpectedReturnValue);
-                }
-                error => return Err(error.clone()),
-            }
-        }
-        Err(Error::Interpreter(error.into()))
     }
 
     /// Calls contract living under a `key`, with supplied `args`.
@@ -1392,18 +1348,23 @@ where
         let context = self.context.new_from_self(
             context_key,
             entry_point.entry_point_type(),
-            &mut named_keys,
+            named_keys,
             access_rights,
             context_args,
         );
         let protocol_version = self.context.protocol_version();
-        let instance = self
-            .wasm_engine
-            .instance_and_memory(module.clone(), protocol_version)?;
-        let runtime = &mut Runtime::new_invocation_runtime(self, context, module, stack);
 
-        let result =
-            instance.invoke_export(&self.wasm_engine, entry_point.name(), Vec::new(), runtime);
+        let mut runtime = Runtime::new_invocation_runtime(self, context, module.clone(), stack);
+
+        let instance = self.wasm_engine.instance_and_memory(
+            module.clone(),
+            protocol_version,
+            runtime.clone(),
+        )?;
+
+        let result = instance.invoke_export(&self.wasm_engine, entry_point.name(), Vec::new());
+
+        // todo!("execute_contract invoke result {:?}", result);
 
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
@@ -1419,7 +1380,7 @@ where
             Err(error) => error,
             // If `Ok` and the `host_buffer` is `None`, the contract's execution succeeded but did
             // not explicitly call `runtime::ret()`.  Treat as though the execution returned the
-            // unit type `()` as per Rust functions which don't specify a return value.
+            // return value. unit type `()` as per Rust functions which don't specify a
             Ok(_) => {
                 if self.context.entry_point_type() == EntryPointType::Session
                     && runtime.context.entry_point_type() == EntryPointType::Session
@@ -1434,33 +1395,34 @@ where
             }
         };
 
-        if let Some(host_error) = error.as_execution_error() {
-            // If the "error" was in fact a trap caused by calling `ret` then this is normal
-            // operation and we should return the value captured in the Runtime result field.
-            match host_error {
-                Error::Ret(ref ret_urefs) => {
-                    // Insert extra urefs returned from call.
-                    // Those returned URef's are guaranteed to be valid as they were already
-                    // validated in the `ret` call inside context we ret from.
-                    self.context.access_rights_extend(ret_urefs);
+        match error.into_execution_error() {
+            Ok(host_error) => {
+                // If the "error" was in fact a trap caused by calling `ret` then this is normal
+                // operation and we should return the value captured in the Runtime result field.
+                match host_error {
+                    Error::Ret(ref ret_urefs) => {
+                        // Insert extra urefs returned from call.
+                        // Those returned URef's are guaranteed to be valid as they were already
+                        // validated in the `ret` call inside context we ret from.
+                        self.context.access_rights_extend(ret_urefs);
 
-                    if self.context.entry_point_type() == EntryPointType::Session
-                        && runtime.context.entry_point_type() == EntryPointType::Session
-                    {
-                        // Overwrites parent's named keys with child's new named keys but only when
-                        // running session code.
-                        *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                        if self.context.entry_point_type() == EntryPointType::Session
+                            && runtime.context.entry_point_type() == EntryPointType::Session
+                        {
+                            // Overwrites parent's named keys with child's new named keys but only
+                            // when running session code.
+                            *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                        }
+
+                        // Stored contracts are expected to always call a `ret` function, otherwise
+                        // it's an error.
+                        return runtime.take_host_buffer().ok_or(Error::ExpectedReturnValue);
                     }
-
-                    // Stored contracts are expected to always call a `ret` function, otherwise it's
-                    // an error.
-                    return runtime.take_host_buffer().ok_or(Error::ExpectedReturnValue);
+                    error => return Err(error.clone()),
+                    // None => return Err(Error::Interpreter(host_error.to_string())),
                 }
-                error => return Err(error.clone()),
-                // None => return Err(Error::Interpreter(host_error.to_string())),
             }
-        } else {
-            Err(Error::Interpreter(error.to_string()))
+            Err(error) => Err(Error::Interpreter(error.to_string())),
         }
     }
 
@@ -2766,21 +2728,22 @@ where
 
     /// If host_buffer set, clears the host_buffer and returns value, else None
     pub fn take_host_buffer(&mut self) -> Option<CLValue> {
-        self.host_buffer.take()
+        self.host_buffer.lock().unwrap().take()
     }
 
     /// Checks if a write to host buffer can happen.
     ///
     /// This will check if the host buffer is empty.
     fn can_write_to_host_buffer(&self) -> bool {
-        self.host_buffer.is_none()
+        self.host_buffer.lock().unwrap().is_none()
     }
 
     /// Overwrites data in host buffer only if it's in empty state
     fn write_host_buffer(&mut self, data: CLValue) -> Result<(), ApiError> {
-        match self.host_buffer {
+        let mut host_buffer = self.host_buffer.lock().unwrap();
+        match *host_buffer {
             Some(_) => return Err(ApiError::HostBufferFull),
-            None => self.host_buffer = Some(data),
+            None => *host_buffer = Some(data),
         }
         Ok(())
     }
@@ -3280,8 +3243,8 @@ where
     }
 
     /// Get a reference to the runtime's wasm engine.
-    pub fn wasm_engine(&self) -> &'a WasmEngine {
-        self.wasm_engine
+    pub fn wasm_engine(&self) -> &WasmEngine {
+        &self.wasm_engine
     }
 
     pub(crate) fn casper_transfer_from_purse_to_account(
@@ -3416,5 +3379,22 @@ where
         }
 
         Ok(Ok(()))
+    }
+
+    pub(crate) fn into_success(self) -> ExecutionResult {
+        ExecutionResult::Success {
+            execution_journal: self.context().execution_journal(),
+            transfers: self.context().transfers().to_owned(),
+            cost: self.context().gas_counter(),
+        }
+    }
+
+    pub(crate) fn into_failure(self, error: Error) -> ExecutionResult {
+        ExecutionResult::Failure {
+            error: error.into(),
+            execution_journal: self.context().execution_journal(),
+            transfers: self.context().transfers().to_owned(),
+            cost: self.context().gas_counter(),
+        }
     }
 }

@@ -8,9 +8,12 @@ pub(self) mod meter;
 mod tests;
 
 use std::{
+    cell::RefCell,
     collections::{BTreeSet, HashMap, HashSet, VecDeque},
     convert::{From, TryInto},
     iter,
+    ops::Deref,
+    sync::{Arc, RwLock},
 };
 
 use linked_hash_map::LinkedHashMap;
@@ -130,12 +133,13 @@ impl Query {
 /// Keeps track of already accessed keys.
 /// We deliberately separate cached Reads from cached mutations
 /// because we want to invalidate Reads' cache so it doesn't grow too fast.
+#[derive(Debug)]
 pub struct TrackingCopyCache<M> {
     max_cache_size: usize,
     current_cache_size: usize,
-    reads_cached: LinkedHashMap<Key, StoredValue>,
+    reads_cached: Arc<RwLock<LinkedHashMap<Key, StoredValue>>>,
     muts_cached: HashMap<Key, StoredValue>,
-    key_tag_reads_cached: LinkedHashMap<KeyTag, BTreeSet<Key>>,
+    key_tag_reads_cached: Arc<RwLock<LinkedHashMap<KeyTag, BTreeSet<Key>>>>,
     key_tag_muts_cached: HashMap<KeyTag, BTreeSet<Key>>,
     meter: M,
 }
@@ -149,9 +153,9 @@ impl<M: Meter<Key, StoredValue>> TrackingCopyCache<M> {
         TrackingCopyCache {
             max_cache_size,
             current_cache_size: 0,
-            reads_cached: LinkedHashMap::new(),
+            reads_cached: Arc::new(RwLock::new(LinkedHashMap::new())),
             muts_cached: HashMap::new(),
-            key_tag_reads_cached: LinkedHashMap::new(),
+            key_tag_reads_cached: Arc::new(RwLock::new(LinkedHashMap::new())),
             key_tag_muts_cached: HashMap::new(),
             meter,
         }
@@ -160,10 +164,10 @@ impl<M: Meter<Key, StoredValue>> TrackingCopyCache<M> {
     /// Inserts `key` and `value` pair to Read cache.
     pub fn insert_read(&mut self, key: Key, value: StoredValue) {
         let element_size = Meter::measure(&self.meter, &key, &value);
-        self.reads_cached.insert(key, value);
+        self.reads_cached.write().unwrap().insert(key, value);
         self.current_cache_size += element_size;
         while self.current_cache_size > self.max_cache_size {
-            match self.reads_cached.pop_front() {
+            match self.reads_cached.write().unwrap().pop_front() {
                 Some((k, v)) => {
                     let element_size = Meter::measure(&self.meter, &k, &v);
                     self.current_cache_size -= element_size;
@@ -176,10 +180,14 @@ impl<M: Meter<Key, StoredValue>> TrackingCopyCache<M> {
     /// Inserts a `KeyTag` value and the keys under this prefix into the key reads cache.
     pub fn insert_key_tag_read(&mut self, key_tag: KeyTag, keys: BTreeSet<Key>) {
         let element_size = Meter::measure_keys(&self.meter, &keys);
-        self.key_tag_reads_cached.insert(key_tag, keys);
+        self.key_tag_reads_cached
+            .write()
+            .unwrap()
+            .insert(key_tag, keys);
         self.current_cache_size += element_size;
         while self.current_cache_size > self.max_cache_size {
-            match self.reads_cached.pop_front() {
+            let mut reads_cached = self.reads_cached.write().unwrap();
+            match reads_cached.pop_front() {
                 Some((k, v)) => {
                     let element_size = Meter::measure(&self.meter, &k, &v);
                     self.current_cache_size -= element_size;
@@ -202,33 +210,52 @@ impl<M: Meter<Key, StoredValue>> TrackingCopyCache<M> {
     }
 
     /// Gets value from `key` in the cache.
-    pub fn get(&mut self, key: &Key) -> Option<&StoredValue> {
+    pub fn get(&self, key: &Key) -> Option<StoredValue> {
         if let Some(value) = self.muts_cached.get(key) {
-            return Some(value);
+            return Some(value.clone());
         };
 
-        self.reads_cached.get_refresh(key).map(|v| &*v)
+        let stored_value = self
+            .reads_cached
+            .write()
+            .unwrap()
+            .get_refresh(key)
+            .cloned()?;
+        Some(stored_value)
+        // .map(|v| &*v)
     }
 
     /// Gets the set of mutated keys in the cache by `KeyTag`.
-    pub fn get_key_tag_muts_cached(&mut self, key_tag: &KeyTag) -> Option<&BTreeSet<Key>> {
+    pub fn get_key_tag_muts_cached(&self, key_tag: &KeyTag) -> Option<&BTreeSet<Key>> {
         self.key_tag_muts_cached.get(key_tag)
     }
 
     /// Gets the set of read keys in the cache by `KeyTag`.
-    pub fn get_key_tag_reads_cached(&mut self, key_tag: &KeyTag) -> Option<&BTreeSet<Key>> {
-        self.key_tag_reads_cached.get_refresh(key_tag).map(|v| &*v)
+    pub fn get_key_tag_reads_cached(&self, key_tag: &KeyTag) -> Option<BTreeSet<Key>> {
+        let key_tags = self
+            .key_tag_reads_cached
+            .write()
+            .unwrap()
+            .get_refresh(key_tag)
+            .cloned()?;
+        Some(key_tags)
     }
 }
+
+type SharedTrackingCopyCache = Arc<RwLock<TrackingCopyCache<HeapSize>>>;
 
 /// An interface for the global state that caches all operations (reads and writes) instead of
 /// applying them directly to the state. This way the state remains unmodified, while the user can
 /// interact with it as if it was being modified in real time.
+#[derive(Clone, Debug)]
 pub struct TrackingCopy<R> {
     reader: R,
-    cache: TrackingCopyCache<HeapSize>,
-    journal: ExecutionJournal,
+    cache: SharedTrackingCopyCache,
+    journal: Arc<RwLock<ExecutionJournal>>,
 }
+
+unsafe impl<R> Send for TrackingCopy<R> where R: Send {}
+unsafe impl<R> Sync for TrackingCopy<R> where R: Sync {}
 
 /// Result of executing an "add" operation on a value in the state.
 #[derive(Debug)]
@@ -256,12 +283,14 @@ impl From<CLValueError> for AddResult {
     }
 }
 
-impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
+// impl<R: StateReader<Key, StoredValue>> &TrackingCopy<R> {}
+
+impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
     /// Creates a new `TrackingCopy` using the `reader` as the interface to the state.
     pub fn new(reader: R) -> TrackingCopy<R> {
         TrackingCopy {
             reader,
-            cache: TrackingCopyCache::new(1024 * 16, HeapSize),
+            cache: Arc::new(RwLock::new(TrackingCopyCache::new(1024 * 16, HeapSize))),
             /* TODO: Should `max_cache_size`
              * be fraction of wasm memory
              * limit? */
@@ -286,20 +315,27 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
     /// `TrackingCopy`. this means the current usage requires repeated
     /// forking, however we recognize this is sub-optimal and will revisit
     /// in the future.
-    pub fn fork(&self) -> TrackingCopy<&TrackingCopy<R>> {
-        TrackingCopy::new(self)
+    pub fn fork(&self) -> TrackingCopy<ForkedTrackingCopy<R>> {
+        let forked_tc = ForkedTrackingCopy {
+            cache: self.cache.clone(),
+            reader: self.clone(),
+        };
+        TrackingCopy::new(forked_tc)
     }
 
     pub(super) fn get(
-        &mut self,
+        &self,
         correlation_id: CorrelationId,
         key: &Key,
     ) -> Result<Option<StoredValue>, R::Error> {
-        if let Some(value) = self.cache.get(key) {
+        if let Some(value) = self.cache.read().unwrap().get(key) {
             return Ok(Some(value.to_owned()));
         }
         if let Some(value) = self.reader.read(correlation_id, key)? {
-            self.cache.insert_read(*key, value.to_owned());
+            self.cache
+                .write()
+                .unwrap()
+                .insert_read(*key, value.to_owned());
             Ok(Some(value))
         } else {
             Ok(None)
@@ -313,7 +349,8 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
         key_tag: &KeyTag,
     ) -> Result<BTreeSet<Key>, R::Error> {
         let mut ret: BTreeSet<Key> = BTreeSet::new();
-        match self.cache.get_key_tag_reads_cached(key_tag) {
+        let mut tracking_copy_cache = self.cache.write().unwrap();
+        match tracking_copy_cache.get_key_tag_reads_cached(key_tag) {
             Some(keys) => ret.extend(keys),
             None => {
                 let key_tag = key_tag.to_owned();
@@ -321,10 +358,10 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
                     .reader
                     .keys_with_prefix(correlation_id, &[key_tag as u8])?;
                 ret.extend(keys);
-                self.cache.insert_key_tag_read(key_tag, ret.to_owned())
+                tracking_copy_cache.insert_key_tag_read(key_tag, ret.to_owned())
             }
         }
-        if let Some(keys) = self.cache.get_key_tag_muts_cached(key_tag) {
+        if let Some(keys) = tracking_copy_cache.get_key_tag_muts_cached(key_tag) {
             ret.extend(keys)
         }
         Ok(ret)
@@ -332,13 +369,16 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
 
     /// Reads the value stored under `key`.
     pub fn read(
-        &mut self,
+        &self,
         correlation_id: CorrelationId,
         key: &Key,
     ) -> Result<Option<StoredValue>, R::Error> {
         let normalized_key = key.normalize();
         if let Some(value) = self.get(correlation_id, &normalized_key)? {
-            self.journal.push((normalized_key, Transform::Identity));
+            self.journal
+                .write()
+                .unwrap()
+                .push((normalized_key, Transform::Identity));
             Ok(Some(value))
         } else {
             Ok(None)
@@ -349,8 +389,14 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
     /// remains unmodified.
     pub fn write(&mut self, key: Key, value: StoredValue) {
         let normalized_key = key.normalize();
-        self.cache.insert_write(normalized_key, value.clone());
-        self.journal.push((normalized_key, Transform::Write(value)));
+        self.cache
+            .write()
+            .unwrap()
+            .insert_write(normalized_key, value.clone());
+        self.journal
+            .write()
+            .unwrap()
+            .push((normalized_key, Transform::Write(value)));
     }
 
     /// Ok(None) represents missing key to which we want to "add" some value.
@@ -418,8 +464,14 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
 
         match transform.clone().apply(current_value) {
             Ok(new_value) => {
-                self.cache.insert_write(normalized_key, new_value);
-                self.journal.push((normalized_key, transform));
+                self.cache
+                    .write()
+                    .unwrap()
+                    .insert_write(normalized_key, new_value);
+                self.journal
+                    .write()
+                    .unwrap()
+                    .push((normalized_key, transform));
                 Ok(AddResult::Success)
             }
             Err(transform::Error::TypeMismatch(type_mismatch)) => {
@@ -431,12 +483,13 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
 
     /// Returns the execution effects cached by this instance.
     pub fn effect(&self) -> ExecutionEffect {
-        ExecutionEffect::from(self.journal.clone())
+        let journal = self.execution_journal();
+        ExecutionEffect::from(journal)
     }
 
     /// Returns the journal of operations executed on this instance.
     pub fn execution_journal(&self) -> ExecutionJournal {
-        self.journal.clone()
+        self.journal.read().unwrap().deref().clone()
     }
 
     /// Calling `query()` avoids calling into `self.cache`, so this will not return any values
@@ -562,6 +615,31 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
             }
         }
     }
+
+    fn read_with_proof(
+        &self,
+        correlation_id: CorrelationId,
+        key: &Key,
+    ) -> Result<
+        Option<TrieMerkleProof<Key, StoredValue>>,
+        <R as StateReader<Key, StoredValue>>::Error,
+    > {
+        self.reader.read_with_proof(correlation_id, key)
+    }
+
+    fn keys_with_prefix(
+        &self,
+        correlation_id: CorrelationId,
+        prefix: &[u8],
+    ) -> Result<Vec<Key>, <R as StateReader<Key, StoredValue>>::Error> {
+        self.reader.keys_with_prefix(correlation_id, prefix)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ForkedTrackingCopy<R: StateReader<Key, StoredValue>> {
+    cache: SharedTrackingCopyCache,
+    reader: TrackingCopy<R>,
 }
 
 /// The purpose of this implementation is to allow a "snapshot" mechanism for
@@ -569,7 +647,9 @@ impl<R: StateReader<Key, StoredValue>> TrackingCopy<R> {
 /// any transforms it has accumulated) can be read using an immutable
 /// reference to that TrackingCopy via this trait implementation. See
 /// `TrackingCopy::fork` for more information.
-impl<R: StateReader<Key, StoredValue>> StateReader<Key, StoredValue> for &TrackingCopy<R> {
+impl<R: Send + Sync + StateReader<Key, StoredValue>> StateReader<Key, StoredValue>
+    for ForkedTrackingCopy<R>
+{
     type Error = R::Error;
 
     fn read(
@@ -577,7 +657,7 @@ impl<R: StateReader<Key, StoredValue>> StateReader<Key, StoredValue> for &Tracki
         correlation_id: CorrelationId,
         key: &Key,
     ) -> Result<Option<StoredValue>, Self::Error> {
-        if let Some(value) = self.cache.muts_cached.get(key) {
+        if let Some(value) = self.cache.read().unwrap().muts_cached.get(key) {
             return Ok(Some(value.to_owned()));
         }
         if let Some(value) = self.reader.read(correlation_id, key)? {

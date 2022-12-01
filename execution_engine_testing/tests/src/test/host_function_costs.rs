@@ -78,7 +78,8 @@ fn should_measure_gas_cost() {
     let do_something_cost = builder.last_exec_gas_cost().value();
     assert!(
         !do_something_cost.is_zero(),
-        "executing nothing should cost zero"
+        "executing nothing should cost zero but costs {:?}",
+        do_something_cost,
     );
     assert!(do_something_cost > do_nothing_cost);
 }

@@ -27,9 +27,9 @@ impl From<execution::Error> for Option<ApiError> {
     }
 }
 
-impl<'a, R> AccountProvider for Runtime<'a, R>
+impl<R> AccountProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_main_purse(&mut self) -> Result<URef, ApiError> {
@@ -39,9 +39,9 @@ where
     }
 }
 
-impl<'a, R> MintProvider for Runtime<'a, R>
+impl<R> MintProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn transfer_purse_to_purse(
@@ -64,9 +64,9 @@ where
     }
 }
 
-impl<'a, R> HandlePaymentProvider for Runtime<'a, R>
+impl<R> HandlePaymentProvider for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
     fn get_payment_purse(&mut self) -> Result<URef, ApiError> {
@@ -91,9 +91,9 @@ where
     }
 }
 
-impl<'a, R> StandardPayment for Runtime<'a, R>
+impl<R> StandardPayment for Runtime<R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
 }

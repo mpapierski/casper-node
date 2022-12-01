@@ -28,19 +28,19 @@ let bytes = memory_ref.get(offset, size).map_err(|e| Error::from(e))?;
 Ok(bytes)
 }*/
 
-pub(crate) struct WasmiExternals<'b, 'a, R>
+pub(crate) struct WasmiExternals<'a, R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<Error>,
 {
-    pub runtime: &'b mut Runtime<'a, R>,
+    pub runtime: &'a mut Runtime<R>,
     pub module: ModuleRef,
     pub memory: MemoryRef,
 }
 
-impl<'b, 'a, R> Externals for WasmiExternals<'b, 'a, R>
+impl<'b, R> Externals for WasmiExternals<'b, R>
 where
-    R: StateReader<Key, StoredValue>,
+    R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<Error>,
 {
     fn invoke_index(

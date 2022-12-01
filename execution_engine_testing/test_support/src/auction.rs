@@ -215,7 +215,7 @@ fn find_necessary_tries<S>(
     necessary_tries: &mut HashSet<Digest>,
     state_root: Digest,
 ) where
-    S: StateProvider + CommitProvider,
+    S: Send + Sync + 'static + StateProvider + CommitProvider,
     S::Error: Into<execution::Error>,
     engine_state::Error: From<S::Error>,
 {

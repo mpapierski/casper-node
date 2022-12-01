@@ -1,12 +1,17 @@
-use std::{cell::RefCell, collections::BTreeSet, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeSet,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use casper_types::{
     account::{Account, AccountHash},
     bytesrepr::FromBytes,
-    contracts::NamedKeys,
+    contracts::{NamedKeys, DEFAULT_ENTRY_POINT_NAME},
     system::{auction, handle_payment, mint, AUCTION, HANDLE_PAYMENT, MINT},
-    BlockTime, CLTyped, ContextAccessRights, DeployHash, EntryPointType, Gas, Key, Phase,
-    ProtocolVersion, RuntimeArgs, StoredValue, U512,
+    AccessRights, BlockTime, CLTyped, CLValue, ContextAccessRights, DeployHash, EntryPointType,
+    Gas, Key, Phase, ProtocolVersion, RuntimeArgs, StoredValue, U512,
 };
 
 use crate::{
@@ -16,7 +21,7 @@ use crate::{
             ExecError,
         },
         execution::{address_generator::AddressGenerator, Error},
-        runtime::{Runtime, RuntimeStack},
+        runtime::{utils, Runtime, RuntimeStack},
         runtime_context::RuntimeContext,
         tracking_copy::{TrackingCopy, TrackingCopyExt},
     },
@@ -71,8 +76,8 @@ impl Executor {
         &self,
         execution_kind: ExecutionKind,
         args: RuntimeArgs,
-        account: &Account,
-        named_keys: &mut NamedKeys,
+        account: Account,
+        named_keys: NamedKeys,
         access_rights: ContextAccessRights,
         authorization_keys: BTreeSet<AccountHash>,
         blocktime: BlockTime,
@@ -80,12 +85,12 @@ impl Executor {
         gas_limit: Gas,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         phase: Phase,
         stack: RuntimeStack,
     ) -> ExecutionResult
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
     {
         let spending_limit: U512 = match try_get_amount(&args) {
@@ -97,7 +102,7 @@ impl Executor {
 
         let address_generator = {
             let generator = AddressGenerator::new(deploy_hash.as_bytes(), phase);
-            Rc::new(RefCell::new(generator))
+            Arc::new(RwLock::new(generator))
         };
 
         let context = self.create_runtime_context(
@@ -119,11 +124,56 @@ impl Executor {
             spending_limit,
         );
 
-        let mut runtime = Runtime::new(self.config, context, &self.wasm_engine);
+        let mut runtime = Runtime::new(self.config, context, self.wasm_engine.clone());
 
         let result = match execution_kind {
             ExecutionKind::Module(module_bytes) => {
-                runtime.execute_module_bytes(&module_bytes, stack)
+                runtime.stack = Some(stack);
+
+                match utils::attenuate_uref_in_args(
+                    runtime.context.args().clone(),
+                    runtime.context.account().main_purse().addr(),
+                    AccessRights::WRITE,
+                ) {
+                    Ok(attenuated_args) => {
+                        runtime.context.set_args(attenuated_args);
+                    }
+                    Err(error) => return runtime.into_failure(error.into()),
+                };
+
+                let module = match runtime
+                    .wasm_engine()
+                    .preprocess(self.wasm_engine().wasm_config().clone(), &module_bytes)
+                {
+                    Ok(module) => module,
+                    Err(error) => return runtime.into_failure(error.into()),
+                };
+
+                runtime.module = Some(module.clone());
+
+                let instance = match self.wasm_engine.instance_and_memory(
+                    module,
+                    protocol_version,
+                    runtime.clone(),
+                ) {
+                    Ok(instance) => instance,
+                    Err(error) => return runtime.into_failure(error.into()),
+                };
+
+                let result =
+                    instance.invoke_export(&self.wasm_engine, DEFAULT_ENTRY_POINT_NAME, Vec::new());
+
+                match result {
+                    Ok(_) => {
+                        return runtime.into_success();
+                    }
+                    Err(error) => match error.into_execution_error() {
+                        Ok(host_error) => return runtime.into_failure(host_error),
+                        Err(error) => {
+                            return runtime.into_failure(Error::Interpreter(error.to_string()))
+                        }
+                    },
+                }
             }
             ExecutionKind::Contract {
                 contract_hash,
@@ -137,17 +187,8 @@ impl Executor {
         };
 
         match result {
-            Ok(_) => ExecutionResult::Success {
-                execution_journal: runtime.context().execution_journal(),
-                transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
-            },
-            Err(error) => ExecutionResult::Failure {
-                error: error.into(),
-                execution_journal: runtime.context().execution_journal(),
-                transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
-            },
+            Ok(_) => runtime.into_success(),
+            Err(error) => runtime.into_failure(error),
         }
     }
 
@@ -157,8 +198,8 @@ impl Executor {
         &self,
         payment_args: RuntimeArgs,
         payment_base_key: Key,
-        account: &Account,
-        payment_named_keys: &mut NamedKeys,
+        account: Account,
+        payment_named_keys: NamedKeys,
         access_rights: ContextAccessRights,
         authorization_keys: BTreeSet<AccountHash>,
         blocktime: BlockTime,
@@ -166,12 +207,12 @@ impl Executor {
         payment_gas_limit: Gas,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         phase: Phase,
         stack: RuntimeStack,
     ) -> ExecutionResult
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
     {
         let spending_limit: U512 = match try_get_amount(&payment_args) {
@@ -183,7 +224,7 @@ impl Executor {
 
         let address_generator = {
             let generator = AddressGenerator::new(deploy_hash.as_bytes(), phase);
-            Rc::new(RefCell::new(generator))
+            Arc::new(RwLock::new(generator))
         };
 
         let runtime_context = self.create_runtime_context(
@@ -200,16 +241,16 @@ impl Executor {
             address_generator,
             protocol_version,
             correlation_id,
-            Rc::clone(&tracking_copy),
+            Arc::clone(&tracking_copy),
             phase,
             spending_limit,
         );
 
-        let execution_journal = tracking_copy.borrow().execution_journal();
+        let execution_journal = tracking_copy.read().unwrap().execution_journal();
 
         // Standard payment is executed in the calling account's context; the stack already
         // captures that.
-        let mut runtime = Runtime::new(self.config, runtime_context, &self.wasm_engine);
+        let mut runtime = Runtime::new(self.config, runtime_context, self.wasm_engine.clone());
 
         match runtime.call_host_standard_payment(stack) {
             Ok(()) => ExecutionResult::Success {
@@ -233,39 +274,40 @@ impl Executor {
         &self,
         direct_system_contract_call: DirectSystemContractCall,
         runtime_args: RuntimeArgs,
-        account: &Account,
+        account: Account,
         authorization_keys: BTreeSet<AccountHash>,
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         phase: Phase,
         stack: RuntimeStack,
         remaining_spending_limit: U512,
     ) -> (Option<T>, ExecutionResult)
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
         T: FromBytes + CLTyped,
     {
         let address_generator = {
             let generator = AddressGenerator::new(deploy_hash.as_bytes(), phase);
-            Rc::new(RefCell::new(generator))
+            Arc::new(RwLock::new(generator))
         };
 
         // Today lack of existence of the system contract registry and lack of entry
         // for the minimum defined system contracts (mint, auction, handle_payment)
         // should cause the EE to panic. Do not remove the panics.
         let system_contract_registry = tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_system_contracts(correlation_id)
             .unwrap_or_else(|error| panic!("Could not retrieve system contracts: {:?}", error));
 
         // Snapshot of effects before execution, so in case of error only nonce update
         // can be returned.
-        let execution_journal = tracking_copy.borrow().execution_journal();
+        let execution_journal = tracking_copy.read().unwrap().execution_journal();
 
         let entry_point_name = direct_system_contract_call.entry_point_name();
 
@@ -294,7 +336,8 @@ impl Executor {
         };
 
         let contract = match tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .get_contract(CorrelationId::default(), contract_hash)
         {
             Ok(contract) => contract,
@@ -308,7 +351,7 @@ impl Executor {
         let runtime_context = self.create_runtime_context(
             EntryPointType::Contract,
             runtime_args.clone(),
-            &mut named_keys,
+            named_keys,
             access_rights,
             base_key,
             account,
@@ -324,7 +367,7 @@ impl Executor {
             remaining_spending_limit,
         );
 
-        let mut runtime = Runtime::new(self.config, runtime_context, &self.wasm_engine);
+        let mut runtime = Runtime::new(self.config, runtime_context, self.wasm_engine.clone());
 
         // DO NOT alter this logic to call a system contract directly (such as via mint_internal,
         // etc). Doing so would bypass necessary context based security checks in some use cases. It
@@ -362,27 +405,27 @@ impl Executor {
 
     /// Creates new runtime context.
     #[allow(clippy::too_many_arguments)]
-    fn create_runtime_context<'a, R>(
+    fn create_runtime_context<R>(
         &self,
         entry_point_type: EntryPointType,
         runtime_args: RuntimeArgs,
-        named_keys: &'a mut NamedKeys,
+        mut named_keys: NamedKeys,
         access_rights: ContextAccessRights,
         base_key: Key,
-        account: &'a Account,
+        account: Account,
         authorization_keys: BTreeSet<AccountHash>,
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
-        address_generator: Rc<RefCell<AddressGenerator>>,
+        address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
-        tracking_copy: Rc<RefCell<TrackingCopy<R>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
         phase: Phase,
         remaining_spending_limit: U512,
-    ) -> RuntimeContext<'a, R>
+    ) -> RuntimeContext<R>
     where
-        R: StateReader<Key, StoredValue>,
+        R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
     {
         let gas_counter = Gas::default();

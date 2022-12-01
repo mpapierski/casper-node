@@ -1,5 +1,11 @@
 //! Support for applying upgrades on the execution engine.
-use std::{cell::RefCell, collections::BTreeMap, fmt, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    fmt,
+    rc::Rc,
+    sync::{Arc, RwLock},
+};
 
 use num_rational::Ratio;
 use thiserror::Error;
@@ -183,7 +189,7 @@ where
 {
     new_protocol_version: ProtocolVersion,
     old_protocol_version: ProtocolVersion,
-    tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
+    tracking_copy: Arc<RwLock<TrackingCopy<<S as StateProvider>::Reader>>>,
 }
 
 impl<S> SystemUpgrader<S>
@@ -194,7 +200,7 @@ where
     pub(crate) fn new(
         new_protocol_version: ProtocolVersion,
         old_protocol_version: ProtocolVersion,
-        tracking_copy: Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
+        tracking_copy: Arc<RwLock<TrackingCopy<<S as StateProvider>::Reader>>>,
     ) -> Self {
         SystemUpgrader {
             new_protocol_version,
@@ -249,7 +255,8 @@ where
 
         let mut contract = if let StoredValue::Contract(contract) = self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(correlation_id, &Key::Hash(contract_hash.value()))
             .map_err(|_| {
                 ProtocolUpgradeError::UnableToRetrieveSystemContract(contract_name.to_string())
@@ -280,7 +287,8 @@ where
 
         let mut contract_package = if let StoredValue::ContractPackage(contract_package) = self
             .tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .read(correlation_id, &contract_package_key)
             .map_err(|_| {
                 ProtocolUpgradeError::UnableToRetrieveSystemContractPackage(
@@ -314,13 +322,14 @@ where
             self.new_protocol_version,
         );
         self.tracking_copy
-            .borrow_mut()
+            .write()
+            .unwrap()
             .write(contract_hash.into(), StoredValue::Contract(new_contract));
 
         contract_package
             .insert_contract_version(self.new_protocol_version.value().major, contract_hash);
 
-        self.tracking_copy.borrow_mut().write(
+        self.tracking_copy.write().unwrap().write(
             contract_package_key,
             StoredValue::ContractPackage(contract_package),
         );
