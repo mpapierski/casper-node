@@ -1,12 +1,15 @@
 use std::{
     collections::BTreeMap,
     convert::{TryFrom, TryInto},
+    env,
     ffi::OsStr,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     ops::Deref,
     path::{Path, PathBuf},
     rc::Rc,
     sync::Arc,
+    time::Instant,
 };
 
 use filesize::PathExt;
@@ -150,6 +153,29 @@ impl<S> Clone for WasmTestBuilder<S> {
             global_state_dir: self.global_state_dir.clone(),
         }
     }
+}
+
+/// Wraps an expression with details useful for instrumentation.
+#[macro_export]
+macro_rules! instrumented {
+    ( $x:expr) => {{
+        (
+            $x,
+            module_path!(),
+            file!(),
+            line!(),
+            Option::<(&str, &str)>::None,
+        )
+    }};
+    ( $x:expr, $val:expr) => {{
+        (
+            $x,
+            module_path!(),
+            file!(),
+            line!(),
+            Some((stringify!($val), $val)),
+        )
+    }};
 }
 
 impl InMemoryWasmTestBuilder {
@@ -681,6 +707,106 @@ where
         self
     }
 
+    /// Runs an instrumented [`ExecuteRequest`]. See also [`instrumented`] macro.
+    ///
+    /// # Usage
+    pub fn exec_instrumented<T>(
+        &mut self,
+        mut instrumented_request: (ExecuteRequest, &str, &str, u32, Option<(&str, T)>),
+    ) -> &mut Self
+    where
+        T: std::fmt::Display,
+    {
+        let exec_request = {
+            let hash = self.post_state_hash.expect("expected post_state_hash");
+            instrumented_request.0.parent_state_hash = hash;
+            instrumented_request.0
+        };
+
+        let start = Instant::now();
+        let maybe_exec_results = self
+            .engine_state
+            .run_execute(CorrelationId::new(), exec_request);
+        let end = start.elapsed();
+
+        {
+            // let out = env!("OUT_DIR");
+            let current_exe = env::current_exe().expect("should have path on this platform");
+
+            let parent_path = current_exe
+                .parent()
+                .expect("should have parent path of current exe on this platform");
+            let results_file = parent_path.join("execution_results.txt");
+
+            let mut file = OpenOptions::new()
+                .create(true)
+                .write(true)
+                .append(true)
+                .open(results_file)
+                .expect("should open file in create and append mode");
+
+            // let file = File::append("execution_results.txt");
+
+            // module,file,line,elapsed,expr,value
+            match instrumented_request.4 {
+                Some((expr, value)) => {
+                    writeln!(
+                        file,
+                        r#""{}","{}","{}","{}","{}","{}""#,
+                        instrumented_request.1,
+                        instrumented_request.2,
+                        instrumented_request.3,
+                        end.as_micros(),
+                        expr,
+                        value,
+                    )
+                    .unwrap();
+                }
+                None => {
+                    writeln!(
+                        file,
+                        r#""{}","{}","{}","{}","{}","{}""#,
+                        instrumented_request.1,
+                        instrumented_request.2,
+                        instrumented_request.3,
+                        end.as_micros(),
+                        "",
+                        "",
+                    )
+                    .unwrap();
+                }
+            }
+        }
+
+        assert!(maybe_exec_results.is_ok());
+        // Parse deploy results
+        let execution_results = maybe_exec_results.as_ref().unwrap();
+        // Cache transformations
+        self.transforms.extend(
+            execution_results
+                .iter()
+                .map(|res| res.execution_journal().clone()),
+        );
+        self.exec_results.push(
+            maybe_exec_results
+                .unwrap()
+                .into_iter()
+                .map(Rc::new)
+                .collect(),
+        );
+        self
+    }
+    // /// Runs an [`ExecuteRequest`] with measuring time that execution takes with source code
+    // based instrumentation details. pub fn exec_instrumented(
+    //     &mut self,
+    //     exec_request: ExecuteRequest,
+    //     _module: &str,
+    //     _file: &str,
+    //     _line: usize,
+    // ) -> &mut Self {
+    //     self.exec_instrumented(instrumented!(exec_request))
+    // }
+
     /// Commit effects of previous exec call on the latest post-state hash.
     pub fn commit(&mut self) -> &mut Self {
         let prestate_hash = self.post_state_hash.expect("Should have genesis hash");
@@ -759,7 +885,9 @@ where
             },
         )
         .build();
-        self.exec(run_request).commit().expect_success()
+        self.exec_instrumented(instrumented!(run_request))
+            .commit()
+            .expect_success()
     }
 
     /// Increments engine state.

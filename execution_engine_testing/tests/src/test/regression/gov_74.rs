@@ -1,9 +1,9 @@
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder, DEFAULT_ACCOUNT_ADDR,
-    DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PROTOCOL_VERSION, PRODUCTION_CHAINSPEC,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder, UpgradeRequestBuilder,
+    DEFAULT_ACCOUNT_ADDR, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PROTOCOL_VERSION,
+    PRODUCTION_CHAINSPEC, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::{
@@ -65,7 +65,10 @@ fn should_verify_interpreter_stack_limit() {
         RuntimeArgs::default(),
     )
     .build();
-    builder.exec(exec).expect_failure().commit();
+    builder
+        .exec_instrumented(instrumented!(exec))
+        .expect_failure()
+        .commit();
 
     let error = builder.get_error().expect("should have error");
 
@@ -101,7 +104,10 @@ fn should_observe_stack_height_limit() {
         .build()
     };
 
-    builder.exec(exec_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec_request_1))
+        .expect_success()
+        .commit();
 
     {
         // We need to perform an upgrade to be able to observe new max wasm stack height.
@@ -149,7 +155,10 @@ fn should_observe_stack_height_limit() {
         .build()
     };
 
-    builder.exec(exec_request_2).expect_failure().commit();
+    builder
+        .exec_instrumented(instrumented!(exec_request_2))
+        .expect_failure()
+        .commit();
 
     let error = builder.get_error().expect("should have error");
     assert!(
@@ -173,5 +182,8 @@ fn should_observe_stack_height_limit() {
         .build()
     };
 
-    builder.exec(exec_request_3).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec_request_3))
+        .expect_success()
+        .commit();
 }

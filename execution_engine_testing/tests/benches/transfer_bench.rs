@@ -59,7 +59,7 @@ fn bootstrap(data_dir: &Path, accounts: Vec<AccountHash>, amount: U512) -> LmdbW
     // temporarily set to interpreted, so generated baseline will be consistent with different mode
     builder
         .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
-        .exec(exec_request)
+        .exec_instrumented(instrumented!(exec_request))
         .expect_success()
         .commit();
 
@@ -80,7 +80,10 @@ fn create_purses(
     )
     .build();
 
-    builder.exec(exec_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec_request))
+        .expect_success()
+        .commit();
 
     // Return creates purses for given account by filtering named keys
     let query_result = builder
@@ -124,7 +127,9 @@ fn transfer_to_account_multiple_execs(
         )
         .build();
 
-        let builder = builder.exec(exec_request).expect_success();
+        let builder = builder
+            .exec_instrumented(instrumented!(exec_request))
+            .expect_success();
         if should_commit {
             builder.commit();
         }
@@ -158,7 +163,9 @@ fn native_transfer_to_account_multiple_execs(
         let exec_request =
             ExecuteRequestBuilder::transfer(*DEFAULT_ACCOUNT_ADDR, transfer_args).build();
 
-        let builder = builder.exec(exec_request).expect_success();
+        let builder = builder
+            .exec_instrumented(instrumented!(exec_request))
+            .expect_success();
         if should_commit {
             builder.commit();
         }
@@ -192,7 +199,9 @@ fn transfer_to_account_multiple_deploys(
 
     let exec_request = exec_builder.build();
 
-    let builder = builder.exec(exec_request).expect_success();
+    let builder = builder
+        .exec_instrumented(instrumented!(exec_request))
+        .expect_success();
     if should_commit {
         builder.commit();
     }
@@ -215,7 +224,7 @@ fn transfer_to_account_multiple_deploys(
 //         )
 //         .build();
 
-//         let builder = builder.exec(exec_request).expect_success();
+//         let builder = builder.exec_instrumented(instrumented!(exec_request)).expect_success();
 //         if should_commit {
 //             builder.commit();
 //         }
@@ -246,7 +255,7 @@ fn transfer_to_account_multiple_deploys(
 
 //     let exec_request = exec_builder.build();
 
-//     let builder = builder.exec(exec_request).expect_success();
+//     let builder = builder.exec_instrumented(instrumented!(exec_request)).expect_success();
 //     if should_commit {
 //         builder.commit();
 //     }
@@ -401,7 +410,9 @@ fn transfer_to_account_multiple_native_transfers(
         if use_scratch {
             builder.scratch_exec_and_commit(request).expect_success();
         } else {
-            builder.exec(request).expect_success();
+            builder
+                .exec_instrumented(instrumented!(request))
+                .expect_success();
             builder.commit();
         }
     }

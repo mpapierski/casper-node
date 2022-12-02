@@ -3,8 +3,8 @@ use num_rational::Ratio;
 use casper_execution_engine::core::{engine_state, execution};
 
 use casper_engine_test_support::{
-    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    DEFAULT_PAYMENT, PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNT_ADDR, DEFAULT_PAYMENT, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_types::{
     account::AccountHash, runtime_args, system::mint, ApiError, Key, PublicKey, RuntimeArgs,
@@ -42,14 +42,14 @@ fn should_install_faucet_contract() {
         .build();
 
     builder
-        .exec(fund_installer_account_request)
+        .exec_instrumented(instrumented!(fund_installer_account_request))
         .expect_success()
         .commit();
 
     let install_faucet_request = FaucetInstallSessionRequestBuilder::new().build();
 
     builder
-        .exec(install_faucet_request)
+        .exec_instrumented(instrumented!(install_faucet_request))
         .expect_success()
         .commit();
 
@@ -143,12 +143,12 @@ fn should_allow_installer_to_set_variables() {
         .with_faucet_time_interval(Some(FAUCET_TIME_INTERVAL));
 
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
@@ -187,7 +187,7 @@ fn should_allow_installer_to_set_variables() {
     assert_eq!(distributions_per_interval, 0u64);
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
@@ -235,19 +235,19 @@ fn should_fund_new_account() {
         .with_faucet_distributions_per_interval(Some(faucet_distributions_per_interval));
 
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
     helper.query_and_set_faucet_contract_hash(&builder);
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
@@ -265,7 +265,7 @@ fn should_fund_new_account() {
     let faucet_purse_balance_before = builder.get_purse_balance(faucet_purse_uref);
 
     builder
-        .exec(fund_new_account_request)
+        .exec_instrumented(instrumented!(fund_new_account_request))
         .expect_success()
         .commit();
 
@@ -299,7 +299,7 @@ fn should_fund_existing_account() {
         .with_faucet_distributions_per_interval(Some(faucet_distributions_per_interval));
 
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
@@ -310,30 +310,32 @@ fn should_fund_existing_account() {
         .with_fund_amount(user_account_initial_balance)
         .build();
 
-    builder.exec(fund_user_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(fund_user_request))
+        .expect_success()
+        .commit();
 
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
     helper.query_and_set_faucet_contract_hash(&builder);
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
     let user_purse_uref = builder.get_expected_account(user_account).main_purse();
     let user_purse_balance_before = builder.get_purse_balance(user_purse_uref);
 
+    let instrumented_request = helper
+        .new_faucet_fund_request_builder()
+        .with_user_account(user_account)
+        .build();
     builder
-        .exec(
-            helper
-                .new_faucet_fund_request_builder()
-                .with_user_account(user_account)
-                .build(),
-        )
+        .exec_instrumented(instrumented!(instrumented_request))
         .expect_success()
         .commit();
 
@@ -373,13 +375,13 @@ fn should_not_fund_once_exhausted() {
 
     // fund installer amount
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
     // faucet install request
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
@@ -395,7 +397,7 @@ fn should_not_fund_once_exhausted() {
     assert_eq!(available_amount, U512::zero());
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
@@ -416,7 +418,7 @@ fn should_not_fund_once_exhausted() {
         .build();
 
     builder
-        .exec(faucet_call_by_installer)
+        .exec_instrumented(instrumented!(faucet_call_by_installer))
         .expect_success()
         .commit();
 
@@ -428,7 +430,10 @@ fn should_not_fund_once_exhausted() {
             .with_block_time(1000 + i as u64)
             .build();
 
-        builder.exec(faucet_call_by_user).expect_success().commit();
+        builder
+            .exec_instrumented(instrumented!(faucet_call_by_user))
+            .expect_success()
+            .commit();
     }
 
     let remaining_requests = get_remaining_requests(&builder, faucet_contract_hash);
@@ -450,7 +455,10 @@ fn should_not_fund_once_exhausted() {
         .with_block_time(1010)
         .build();
 
-    builder.exec(faucet_call_by_user).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(faucet_call_by_user))
+        .expect_success()
+        .commit();
 
     let user_main_purse_balance_after =
         builder.get_purse_balance(builder.get_expected_account(user_account).main_purse());
@@ -475,7 +483,10 @@ fn should_not_fund_once_exhausted() {
         .with_block_time(11_011u64)
         .build();
 
-    builder.exec(faucet_call_by_user).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(faucet_call_by_user))
+        .expect_success()
+        .commit();
     let last_distribution_time = query_stored_value::<u64>(
         &mut builder,
         faucet_contract_hash.into(),
@@ -525,12 +536,12 @@ fn should_allow_installer_to_fund_freely() {
         .with_faucet_time_interval(Some(10_000u64));
 
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
@@ -553,7 +564,7 @@ fn should_allow_installer_to_fund_freely() {
     assert_eq!(available_amount, U512::zero());
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
@@ -579,7 +590,7 @@ fn should_allow_installer_to_fund_freely() {
             .build();
 
         builder
-            .exec(faucet_call_by_installer)
+            .exec_instrumented(instrumented!(faucet_call_by_installer))
             .expect_success()
             .commit();
     }
@@ -615,7 +626,7 @@ fn should_not_fund_if_zero_distributions_per_interval() {
         .build();
 
     builder
-        .exec(fund_installer_account_request)
+        .exec_instrumented(instrumented!(fund_installer_account_request))
         .expect_success()
         .commit();
 
@@ -629,7 +640,7 @@ fn should_not_fund_if_zero_distributions_per_interval() {
     .build();
 
     builder
-        .exec(installer_session_request)
+        .exec_instrumented(instrumented!(installer_session_request))
         .expect_success()
         .commit();
 
@@ -642,7 +653,7 @@ fn should_not_fund_if_zero_distributions_per_interval() {
     .build();
 
     builder
-        .exec(installer_call_faucet_request)
+        .exec_instrumented(instrumented!(installer_call_faucet_request))
         .expect_failure()
         .commit();
 }
@@ -675,19 +686,19 @@ fn should_allow_funding_by_an_authorized_account() {
         .with_faucet_time_interval(Some(10_000u64));
 
     builder
-        .exec(helper.fund_installer_request())
+        .exec_instrumented(instrumented!(helper.fund_installer_request()))
         .expect_success()
         .commit();
 
     builder
-        .exec(helper.faucet_install_request())
+        .exec_instrumented(instrumented!(helper.faucet_install_request()))
         .expect_success()
         .commit();
 
     helper.query_and_set_faucet_contract_hash(&builder);
 
     builder
-        .exec(helper.faucet_config_request())
+        .exec_instrumented(instrumented!(helper.faucet_config_request()))
         .expect_success()
         .commit();
 
@@ -725,7 +736,7 @@ fn should_allow_funding_by_an_authorized_account() {
         .build();
 
     builder
-        .exec(faucet_authorize_account_request)
+        .exec_instrumented(instrumented!(faucet_authorize_account_request))
         .expect_success()
         .commit();
 
@@ -759,7 +770,9 @@ fn should_allow_funding_by_an_authorized_account() {
         .build();
 
     builder
-        .exec(faucet_fund_authorized_account_by_installer_request)
+        .exec_instrumented(instrumented!(
+            faucet_fund_authorized_account_by_installer_request
+        ))
         .expect_success()
         .commit();
 
@@ -772,7 +785,9 @@ fn should_allow_funding_by_an_authorized_account() {
         .build();
 
     builder
-        .exec(faucet_fund_user_by_authorized_account_request)
+        .exec_instrumented(instrumented!(
+            faucet_fund_user_by_authorized_account_request
+        ))
         .expect_success()
         .commit();
 
@@ -787,7 +802,7 @@ fn should_allow_funding_by_an_authorized_account() {
         .build();
 
     builder
-        .exec(faucet_fund_by_user_request)
+        .exec_instrumented(instrumented!(faucet_fund_by_user_request))
         .expect_failure()
         .commit();
 
@@ -837,7 +852,7 @@ fn faucet_costs() {
     .build();
 
     builder
-        .exec(fund_installer_account_request)
+        .exec_instrumented(instrumented!(fund_installer_account_request))
         .expect_success()
         .commit();
 
@@ -850,7 +865,7 @@ fn faucet_costs() {
     .build();
 
     builder
-        .exec(installer_session_request)
+        .exec_instrumented(instrumented!(installer_session_request))
         .expect_success()
         .commit();
 
@@ -883,7 +898,7 @@ fn faucet_costs() {
     };
 
     builder
-        .exec(installer_set_variable_request)
+        .exec_instrumented(instrumented!(installer_set_variable_request))
         .expect_success()
         .commit();
 
@@ -911,7 +926,7 @@ fn faucet_costs() {
     };
 
     builder
-        .exec(faucet_call_by_installer)
+        .exec_instrumented(instrumented!(faucet_call_by_installer))
         .expect_success()
         .commit();
 
@@ -940,7 +955,7 @@ fn faucet_costs() {
     };
 
     builder
-        .exec(faucet_call_by_user_request)
+        .exec_instrumented(instrumented!(faucet_call_by_user_request))
         .expect_success()
         .commit();
 

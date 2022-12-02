@@ -26,12 +26,12 @@ use casper_types::{
 use rand::Rng;
 
 use crate::{
-    transfer, DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder, StepRequestBuilder,
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_ACCOUNT_PUBLIC_KEY,
-    DEFAULT_AUCTION_DELAY, DEFAULT_GENESIS_CONFIG_HASH, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
-    DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_PROPOSER_PUBLIC_KEY, DEFAULT_PROTOCOL_VERSION,
-    DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY,
-    DEFAULT_WASM_CONFIG, SYSTEM_ADDR,
+    instrumented, transfer, DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder,
+    StepRequestBuilder, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+    DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_AUCTION_DELAY, DEFAULT_GENESIS_CONFIG_HASH,
+    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
+    DEFAULT_PROPOSER_PUBLIC_KEY, DEFAULT_PROTOCOL_VERSION, DEFAULT_ROUND_SEIGNIORAGE_RATE,
+    DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG, SYSTEM_ADDR,
 };
 
 const ARG_AMOUNT: &str = "amount";
@@ -94,7 +94,7 @@ pub fn run_blocks_with_transfers_and_step(
             delegator_account_hash,
             contract_hash,
         );
-        builder.exec(delegate);
+        builder.exec_instrumented(instrumented!(delegate));
         builder.expect_success();
         builder.commit();
         builder.clear_results();
@@ -304,7 +304,7 @@ pub fn run_genesis_and_create_initial_accounts(
         },
     )
     .build();
-    builder.exec(transfer);
+    builder.exec_instrumented(instrumented!(transfer));
     builder.expect_success().commit();
 
     for (_i, delegator_account) in delegator_accounts.iter().enumerate() {
@@ -317,7 +317,7 @@ pub fn run_genesis_and_create_initial_accounts(
             },
         )
         .build();
-        builder.exec(transfer);
+        builder.exec_instrumented(instrumented!(transfer));
         builder.expect_success().commit();
     }
 }

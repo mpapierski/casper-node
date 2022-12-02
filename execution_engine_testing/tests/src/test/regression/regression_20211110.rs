@@ -1,6 +1,6 @@
 use casper_engine_test_support::{
-    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNT_ADDR, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::core::{
     engine_state::Error as CoreError, execution::Error as ExecError,
@@ -55,8 +55,14 @@ fn regression_20211110() {
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
 
-    builder.exec(transfer_request).expect_success().commit();
-    builder.exec(install_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(transfer_request))
+        .expect_success()
+        .commit();
+    builder
+        .exec_instrumented(instrumented!(install_request))
+        .expect_success()
+        .commit();
 
     funds = funds.checked_sub(INSTALL_COST).unwrap();
 
@@ -83,7 +89,9 @@ fn regression_20211110() {
         ExecuteRequestBuilder::from_deploy_item(deploy_item).build()
     };
 
-    builder.exec(recurse_request).expect_failure();
+    builder
+        .exec_instrumented(instrumented!(recurse_request))
+        .expect_failure();
 
     let error = builder.get_error().expect("should have returned an error");
     assert!(matches!(

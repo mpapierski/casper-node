@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use casper_engine_test_support::{
-    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNT_ADDR, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use num_traits::Zero;
 
@@ -21,9 +21,58 @@ use parity_wasm::{
     builder,
     elements::{Instruction, Instructions},
 };
+use wabt::wat2wasm;
 
 const ARG_AMOUNT: &str = "amount";
 const CONTRACT_TRANSFER_TO_EXISTING_ACCOUNT: &str = "transfer_to_existing_account.wasm";
+
+const SLOW_INPUT: &str = r#"(module
+    (type $CASPER_RET_TY (func (param i32 i32)))
+    (type $CALL_TY (func))
+    (type $BUSY_LOOP_TY (func (param i32 i32 i32) (result i32)))
+
+    (func $CALL_FN (type $CALL_TY)
+      (local i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32 i32)
+      local.get 0
+      i64.const -2259106222686656124
+      local.get 0
+      i32.const 16
+      i32.add
+      i32.const 18
+      i32.const 50000
+      call $BUSY_LOOP_FN
+      drop
+      local.get 0
+      i32.const 12
+      i32.add
+      i32.const 770900
+      call 0
+      unreachable)
+    (func $BUSY_LOOP_FN (type $BUSY_LOOP_TY) (param i32 i32 i32) (result i32)
+      (local i32)
+      loop  ;; label = @1
+        i32.const 0
+        i32.eqz
+        br_if 0 (;@1;)
+        local.get 0
+        local.set 3
+        loop  ;; label = @2
+          local.get 3
+          local.get 1
+          i32.store8
+          local.get 3
+          local.set 3
+          local.get 2
+          i32.const -1
+          i32.add
+          local.tee 2
+          br_if 0 (;@2;)
+        end
+      end
+      local.get 0)
+    (memory $MEM 11)
+    (export "memory" (memory 0))
+    (export "call" (func $CALL_FN)))"#;
 
 #[ignore]
 #[test]
@@ -46,12 +95,11 @@ fn should_execute_wasm_without_imports() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
-    let start = Instant::now();
-
-    builder.exec(do_minimum_request).expect_success().commit();
-    let end = start.elapsed();
-
-    eprintln!("elapsed {:?}", end);
+    builder
+        .exec_instrumented(instrumented!(do_minimum_request))
+        .expect_success()
+        .commit();
+    builder.expect_success().commit();
 }
 #[ignore]
 #[test]
@@ -66,9 +114,10 @@ fn should_run_endless_loop() {
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let start = Instant::now();
-    builder.exec(exec).commit();
+    builder.exec_instrumented(instrumented!(exec));
     let end = start.elapsed();
     eprintln!("elapsed {:?}", end);
+    builder.commit();
 
     let maybe_error = builder.get_error();
     assert!(
@@ -80,6 +129,37 @@ fn should_run_endless_loop() {
         maybe_error
     );
 }
+
+// #[ignore]
+// #[test]
+// fn should_run_slow_input() {
+//     let slow_input = wat2wasm(SLOW_INPUT).expect("should compile");
+
+//     let exec = ExecuteRequestBuilder::module_bytes(
+//         *DEFAULT_ACCOUNT_ADDR,
+//         slow_input,
+//         RuntimeArgs::default(),
+//     )
+//     .build();
+
+//     let mut builder = InMemoryWasmTestBuilder::default();
+//     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
+
+//     let start = Instant::now();
+//     builder.exec_instrumented(instrumented!(exec));
+//     let end = start.elapsed();
+//     eprintln!("elapsed {:?}", end);
+
+//     let maybe_error = builder.get_error();
+//     assert!(
+//         matches!(
+//             maybe_error,
+//             Some(engine_state::Error::Exec(execution::Error::GasLimit))
+//         ),
+//         "{:?}",
+//         maybe_error
+//     );
+// }
 
 #[ignore]
 #[test]
@@ -101,7 +181,7 @@ fn should_try_to_exercise_cache() {
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let start1 = Instant::now();
-    builder.exec(exec1).commit();
+    builder.exec_instrumented(instrumented!(exec1)).commit();
     let stop1 = start1.elapsed();
     eprintln!("elapsed1 {:?}", stop1);
 
@@ -116,7 +196,7 @@ fn should_try_to_exercise_cache() {
     );
 
     let start2 = Instant::now();
-    builder.exec(exec2).commit();
+    builder.exec_instrumented(instrumented!(exec2)).commit();
     let stop2 = start2.elapsed();
 
     let maybe_error = builder.get_error();
@@ -163,7 +243,10 @@ fn should_run_create_200_accounts() {
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let start = Instant::now();
-    builder.exec(exec).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec))
+        .expect_success()
+        .commit();
     let stop = start.elapsed();
 
     for account in accounts {
@@ -192,7 +275,10 @@ fn should_run_create_200_purses() {
 
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
-    builder.exec(exec).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec))
+        .expect_success()
+        .commit();
 
     let purses: Vec<URef> = {
         let account = builder.get_account(*DEFAULT_ACCOUNT_ADDR).unwrap();
@@ -245,11 +331,14 @@ fn simple_transfer() {
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     builder
-        .exec(create_account_request)
+        .exec_instrumented(instrumented!(create_account_request))
         .expect_success()
         .commit();
 
     let start1 = Instant::now();
-    builder.exec(exec1).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(exec1))
+        .expect_success()
+        .commit();
     let stop1 = start1.elapsed();
 }

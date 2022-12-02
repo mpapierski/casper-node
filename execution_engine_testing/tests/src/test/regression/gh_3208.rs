@@ -1,14 +1,14 @@
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, StepRequestBuilder,
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_ACCOUNT_PUBLIC_KEY,
-    DEFAULT_AUCTION_DELAY, DEFAULT_CHAINSPEC_REGISTRY, DEFAULT_GENESIS_CONFIG_HASH,
-    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
-    DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT, DEFAULT_PROPOSER_ADDR,
-    DEFAULT_PROPOSER_PUBLIC_KEY, DEFAULT_PROTOCOL_VERSION, DEFAULT_ROUND_SEIGNIORAGE_RATE,
-    DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY, DEFAULT_VALIDATOR_SLOTS,
-    DEFAULT_VESTING_SCHEDULE_PERIOD_MILLIS, DEFAULT_WASM_CONFIG,
+    instrumented, utils, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    StepRequestBuilder, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+    DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_AUCTION_DELAY, DEFAULT_CHAINSPEC_REGISTRY,
+    DEFAULT_GENESIS_CONFIG_HASH, DEFAULT_GENESIS_TIMESTAMP_MILLIS,
+    DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT,
+    DEFAULT_PROPOSER_ADDR, DEFAULT_PROPOSER_PUBLIC_KEY, DEFAULT_PROTOCOL_VERSION,
+    DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY,
+    DEFAULT_VALIDATOR_SLOTS, DEFAULT_VESTING_SCHEDULE_PERIOD_MILLIS, DEFAULT_WASM_CONFIG,
 };
 use casper_execution_engine::core::{
     engine_state::{
@@ -217,7 +217,10 @@ fn should_immediatelly_unbond_genesis_validator_with_zero_day_vesting_schedule()
     )
     .build();
 
-    builder.exec(add_bid_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(add_bid_request))
+        .expect_success()
+        .commit();
 
     let withdraw_bid_request_1 = {
         let sender = *DEFAULT_PROPOSER_ADDR;
@@ -262,7 +265,7 @@ fn should_immediatelly_unbond_genesis_validator_with_zero_day_vesting_schedule()
     };
 
     builder
-        .exec(withdraw_bid_request_1)
+        .exec_instrumented(instrumented!(withdraw_bid_request_1))
         .expect_failure()
         .commit();
 
@@ -299,7 +302,7 @@ fn should_immediatelly_unbond_genesis_validator_with_zero_day_vesting_schedule()
         .expect("should run step to initialize a schedule");
 
     builder
-        .exec(withdraw_bid_request_2)
+        .exec_instrumented(instrumented!(withdraw_bid_request_2))
         .expect_success()
         .commit();
 }
@@ -365,7 +368,10 @@ fn should_immediatelly_unbond_genesis_validator_with_zero_day_vesting_schedule_a
     )
     .build();
 
-    builder.exec(add_bid_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(add_bid_request))
+        .expect_success()
+        .commit();
 
     let era_end_timestamp_millis = DEFAULT_GENESIS_TIMESTAMP_MILLIS;
 
@@ -402,7 +408,7 @@ fn should_immediatelly_unbond_genesis_validator_with_zero_day_vesting_schedule_a
     };
 
     builder
-        .exec(withdraw_bid_request_1)
+        .exec_instrumented(instrumented!(withdraw_bid_request_1))
         .expect_success()
         .commit();
 }

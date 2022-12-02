@@ -1,7 +1,7 @@
 //! Tests whether transforms produced by contracts appear ordered in the transform journal.
 use casper_engine_test_support::{
-    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNT_ADDR, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::shared::transform::Transform;
 use casper_types::{
@@ -24,21 +24,18 @@ fn contract_transforms_should_be_ordered_in_the_journal() {
     let mut rng = StdRng::seed_from_u64(0);
 
     // Installs the contract and creates the URefs, all initialized to `0_i32`.
+    let deploy_item = DeployItemBuilder::new()
+        .with_address(*DEFAULT_ACCOUNT_ADDR)
+        .with_empty_payment_bytes(runtime_args! {
+            standard_payment::ARG_AMOUNT => U512::from(30_000_000_000_u64)
+        })
+        .with_session_code("ordered-transforms.wasm", runtime_args! { "n" => N_UREFS })
+        .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+        .with_deploy_hash(rng.gen())
+        .build();
+    let exec_request = ExecuteRequestBuilder::from_deploy_item(deploy_item).build();
     builder
-        .exec(
-            ExecuteRequestBuilder::from_deploy_item(
-                DeployItemBuilder::new()
-                    .with_address(*DEFAULT_ACCOUNT_ADDR)
-                    .with_empty_payment_bytes(runtime_args! {
-                        standard_payment::ARG_AMOUNT => U512::from(30_000_000_000_u64)
-                    })
-                    .with_session_code("ordered-transforms.wasm", runtime_args! { "n" => N_UREFS })
-                    .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
-                    .with_deploy_hash(rng.gen())
-                    .build(),
-            )
-            .build(),
-        )
+        .exec_instrumented(instrumented!(exec_request))
         .expect_success()
         .commit();
 
@@ -67,27 +64,24 @@ fn contract_transforms_should_be_ordered_in_the_journal() {
         })
         .collect();
 
-    builder
-        .exec(
-            ExecuteRequestBuilder::from_deploy_item(
-                DeployItemBuilder::new()
-                    .with_address(*DEFAULT_ACCOUNT_ADDR)
-                    .with_empty_payment_bytes(runtime_args! {
-                        standard_payment::ARG_AMOUNT => U512::from(10_000_000_000_u64),
-                    })
-                    .with_stored_session_hash(
-                        contract_hash,
-                        "perform_operations",
-                        runtime_args! {
-                            "operations" => operations.clone(),
-                        },
-                    )
-                    .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
-                    .with_deploy_hash(rng.gen())
-                    .build(),
-            )
-            .build(),
+    let deploy_item = DeployItemBuilder::new()
+        .with_address(*DEFAULT_ACCOUNT_ADDR)
+        .with_empty_payment_bytes(runtime_args! {
+            standard_payment::ARG_AMOUNT => U512::from(10_000_000_000_u64),
+        })
+        .with_stored_session_hash(
+            contract_hash,
+            "perform_operations",
+            runtime_args! {
+                "operations" => operations.clone(),
+            },
         )
+        .with_authorization_keys(&[*DEFAULT_ACCOUNT_ADDR])
+        .with_deploy_hash(rng.gen())
+        .build();
+    let exec_request = ExecuteRequestBuilder::from_deploy_item(deploy_item).build();
+    builder
+        .exec_instrumented(instrumented!(exec_request))
         .expect_success()
         .commit();
 

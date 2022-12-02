@@ -479,7 +479,7 @@ impl<'a> FunctionContext for WasmerAdapter<'a> {
 }
 
 fn caller_adapter_and_runtime<'b, 'c, 'd: 'c, R: Clone>(
-    caller: &'c mut Caller<'d, &'b mut Runtime<R>>,
+    caller: &'c mut Caller<'d, Runtime<R>>,
 ) -> (WasmtimeAdapter<'c>, &'c mut Runtime<R>) {
     let mem = caller.data().wasmtime_memory;
     let (data, runtime) = mem
@@ -569,1169 +569,1157 @@ where
                 // record_performance_log(&original_bytes,
                 // LogProperty::EntryPoint(func_name.to_string()));
 
-                todo!("wasmtime temporarily unavailable");
-
-                // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
-
-                // let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
-
-                // let memory_import = compiled_module.imports().find_map(|import| {
-                //     if (import.module(), import.name()) == ("env", Some("memory")) {
-                //         Some(import.ty())
-                //     } else {
-                //         None
-                //     }
-                // });
-
-                // let memory_type = match memory_import {
-                //     Some(ExternType::Memory(memory)) => memory,
-                //     Some(unknown_extern) => panic!("unexpected extern {:?}", unknown_extern),
-                //     None => MemoryType::new(1, Some(wasm_engine.wasm_config().max_memory)),
-                // };
-
-                // debug_assert_eq!(
-                //     memory_type.maximum(),
-                //     Some(wasm_engine.wasm_config().max_memory as u64)
-                // );
-
-                // let memory = wasmtime::Memory::new(&mut store, memory_type).unwrap();
-                // store.data_mut().wasmtime_memory = Some(memory);
-
-                // linker
-                //     .define("env", "memory", wasmtime::Extern::from(memory))
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_read_value",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          key_ptr: u32,
-                //          key_size: u32,
-                //          output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.read(
-                //                 function_context,
-                //                 key_ptr,
-                //                 key_size,
-                //                 output_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_add",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          key_ptr: u32,
-                //          key_size: u32,
-                //          value_ptr: u32,
-                //          value_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_add(
-                //                 function_context,
-                //                 key_ptr,
-                //                 key_size,
-                //                 value_ptr,
-                //                 value_size,
-                //             )?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_revert",
-                //         |mut caller: Caller<&mut Runtime<R>>, param: u32| {
-                //             caller.data_mut().casper_revert(param)?;
-                //             Ok(()) //unreachable
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_ret",
-                //         |mut caller: Caller<&mut Runtime<R>>, value_ptr: u32, value_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-                //             let error = runtime.ret(function_context, value_ptr, value_size);
-                //             Result::<(), _>::Err(error.into())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_phase",
-                //         |mut caller: Caller<&mut Runtime<R>>, dest_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.get_phase,
-                //                 [dest_ptr],
-                //             )?;
-                //             runtime.get_phase(function_context, dest_ptr)?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_is_valid_uref",
-                //         |mut caller: Caller<&mut Runtime<R>>, uref_ptr: u32, uref_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret =
-                //                 runtime.is_valid_uref(function_context, uref_ptr, uref_size)?;
-                //             Ok(i32::from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_add_associated_key",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          account_hash_ptr: u32,
-                //          account_hash_size: u32,
-                //          weight: i32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.add_associated_key(
-                //                 function_context,
-                //                 account_hash_ptr,
-                //                 account_hash_size as usize,
-                //                 weight as u8,
-                //             )?;
-                //             Ok(ret)
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_remove_associated_key",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          account_hash_ptr: u32,
-                //          account_hash_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.remove_associated_key(
-                //                 function_context,
-                //                 account_hash_ptr,
-                //                 account_hash_size as usize,
-                //             )?;
-                //             Ok(ret)
-                //             // Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_update_associated_key",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          account_hash_ptr: u32,
-                //          account_hash_size: u32,
-                //          weight: i32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.update_associated_key(
-                //                 function_context,
-                //                 account_hash_ptr,
-                //                 account_hash_size as usize,
-                //                 weight as u8,
-                //             )?;
-                //             Ok(ret)
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_set_action_threshold",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          permission_level: u32,
-                //          permission_threshold: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.set_action_threshold(
-                //                 function_context,
-                //                 permission_level,
-                //                 permission_threshold as u8,
-                //             )?;
-                //             Ok(ret)
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_caller",
-                //         |mut caller: Caller<&mut Runtime<R>>, output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.get_caller(function_context, output_size_ptr)?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_blocktime",
-                //         |mut caller: Caller<&mut Runtime<R>>, dest_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.get_blocktime(function_context, dest_ptr)?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "gas",
-                //         |mut caller: Caller<&mut Runtime<R>>, param: u32| {
-                //             caller.data_mut().gas(Gas::new(U512::from(param)))?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_new_uref",
-                //         |mut caller: Caller<&mut Runtime<R>>, uref_ptr, value_ptr, value_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_new_uref(
-                //                 function_context,
-                //                 uref_ptr,
-                //                 value_ptr,
-                //                 value_size,
-                //             )?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_create_purse",
-                //         |mut caller: Caller<&mut Runtime<R>>, dest_ptr: u32, dest_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_create_purse(
-                //                 function_context,
-                //                 dest_ptr,
-                //                 dest_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_write",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          key_ptr: u32,
-                //          key_size: u32,
-                //          value_ptr: u32,
-                //          value_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_write(
-                //                 function_context,
-                //                 key_ptr,
-                //                 key_size,
-                //                 value_ptr,
-                //                 value_size,
-                //             )?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_main_purse",
-                //         |mut caller: Caller<&mut Runtime<R>>, dest_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_get_main_purse(function_context, dest_ptr)?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_named_arg_size",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          name_ptr: u32,
-                //          name_size: u32,
-                //          size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_get_named_arg_size(
-                //                 function_context,
-                //                 name_ptr,
-                //                 name_size,
-                //                 size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_named_arg",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          name_ptr: u32,
-                //          name_size: u32,
-                //          dest_ptr: u32,
-                //          dest_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_get_named_arg(
-                //                 function_context,
-                //                 name_ptr,
-                //                 name_size,
-                //                 dest_ptr,
-                //                 dest_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_transfer_to_account",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          key_ptr: u32,
-                //          key_size: u32,
-                //          amount_ptr: u32,
-                //          amount_size: u32,
-                //          id_ptr: u32,
-                //          id_size: u32,
-                //          result_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_transfer_to_account(
-                //                 function_context,
-                //                 key_ptr,
-                //                 key_size,
-                //                 amount_ptr,
-                //                 amount_size,
-                //                 id_ptr,
-                //                 id_size,
-                //                 result_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_has_key",
-                //         |mut caller: Caller<&mut Runtime<R>>, name_ptr: u32, name_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.has_key(function_context, name_ptr, name_size)?;
-                //             Ok(ret)
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_key",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          name_ptr: u32,
-                //          name_size: u32,
-                //          output_ptr: u32,
-                //          output_size: u32,
-                //          bytes_written: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.load_key(
-                //                 function_context,
-                //                 name_ptr,
-                //                 name_size,
-                //                 output_ptr,
-                //                 output_size as usize,
-                //                 bytes_written,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_put_key",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          name_ptr,
-                //          name_size,
-                //          key_ptr,
-                //          key_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_put_key(
-                //                 function_context,
-                //                 name_ptr,
-                //                 name_size,
-                //                 key_ptr,
-                //                 key_size,
-                //             )?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_remove_key",
-                //         |mut caller: Caller<&mut Runtime<R>>, name_ptr: u32, name_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.remove_key(function_context, name_ptr, name_size)?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // #[cfg(feature = "test-support")]
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_print",
-                //         |mut caller: Caller<&mut Runtime<R>>, text_ptr: u32, text_size: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.casper_print(function_context, text_ptr, text_size)?;
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_transfer_from_purse_to_purse",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          source_ptr,
-                //          source_size,
-                //          target_ptr,
-                //          target_size,
-                //          amount_ptr,
-                //          amount_size,
-                //          id_ptr,
-                //          id_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_transfer_from_purse_to_purse(
-                //                 function_context,
-                //                 source_ptr,
-                //                 source_size,
-                //                 target_ptr,
-                //                 target_size,
-                //                 amount_ptr,
-                //                 amount_size,
-                //                 id_ptr,
-                //                 id_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_transfer_from_purse_to_account",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          source_ptr,
-                //          source_size,
-                //          key_ptr,
-                //          key_size,
-                //          amount_ptr,
-                //          amount_size,
-                //          id_ptr,
-                //          id_size,
-                //          result_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_transfer_from_purse_to_account(
-                //                 function_context,
-                //                 source_ptr,
-                //                 source_size,
-                //                 key_ptr,
-                //                 key_size,
-                //                 amount_ptr,
-                //                 amount_size,
-                //                 id_ptr,
-                //                 id_size,
-                //                 result_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_balance",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          ptr: u32,
-                //          ptr_size: u32,
-                //          output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.get_balance,
-                //                 [ptr, ptr_size, output_size_ptr],
-                //             )?;
-                //             let ret = runtime.get_balance_host_buffer(
-                //                 function_context,
-                //                 ptr,
-                //                 ptr_size as usize,
-                //                 output_size_ptr,
-                //             )?;
-
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_read_host_buffer",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          dest_ptr,
-                //          dest_size,
-                //          bytes_written_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.read_host_buffer,
-                //                 [dest_ptr, dest_size, bytes_written_ptr],
-                //             )?;
-
-                //             let ret = runtime.read_host_buffer(
-                //                 function_context,
-                //                 dest_ptr,
-                //                 dest_size as usize,
-                //                 bytes_written_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_get_system_contract",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          system_contract_index,
-                //          dest_ptr,
-                //          dest_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.get_system_contract,
-                //                 [system_contract_index, dest_ptr, dest_size],
-                //             )?;
-                //             let ret = runtime.get_system_contract(
-                //                 function_context,
-                //                 system_contract_index,
-                //                 dest_ptr,
-                //                 dest_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_load_named_keys",
-                //         |mut caller: Caller<&mut Runtime<R>>, total_keys_ptr, result_size_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.load_named_keys,
-                //                 [total_keys_ptr, result_size_ptr],
-                //             )?;
-                //             let ret = runtime.load_named_keys(
-                //                 function_context,
-                //                 total_keys_ptr,
-                //                 result_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_create_contract_package_at_hash",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          hash_dest_ptr,
-                //          access_dest_ptr,
-                //          is_locked: u32| {
-                //             let (mut function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.create_contract_package_at_hash,
-                //                 [hash_dest_ptr, access_dest_ptr],
-                //             )?;
-                //             let package_status = ContractPackageStatus::new(is_locked != 0);
-                //             let (hash_addr, access_addr) =
-                //                 runtime.create_contract_package_at_hash(package_status)?;
-
-                //             runtime.function_address(
-                //                 &mut function_context,
-                //                 hash_addr,
-                //                 hash_dest_ptr,
-                //             )?;
-                //             runtime.function_address(
-                //                 &mut function_context,
-                //                 access_addr,
-                //                 access_dest_ptr,
-                //             )?;
-
-                //             Ok(())
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_create_contract_user_group",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          package_key_ptr: u32,
-                //          package_key_size: u32,
-                //          label_ptr: u32,
-                //          label_size: u32,
-                //          num_new_urefs: u32,
-                //          existing_urefs_ptr: u32,
-                //          existing_urefs_size: u32,
-                //          output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let ret = runtime.casper_create_contract_user_group(
-                //                 function_context,
-                //                 package_key_ptr,
-                //                 package_key_size,
-                //                 label_ptr,
-                //                 label_size,
-                //                 num_new_urefs,
-                //                 existing_urefs_ptr,
-                //                 existing_urefs_size,
-                //                 output_size_ptr,
-                //             )?;
-
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_provision_contract_user_group_uref",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          package_ptr,
-                //          package_size,
-                //          label_ptr,
-                //          label_size,
-                //          value_size_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.provision_contract_user_group_uref,
-                //                 [
-                //                     package_ptr,
-                //                     package_size,
-                //                     label_ptr,
-                //                     label_size,
-                //                     value_size_ptr,
-                //                 ],
-                //             )?;
-                //             let ret = runtime.provision_contract_user_group_uref(
-                //                 function_context,
-                //                 package_ptr,
-                //                 package_size,
-                //                 label_ptr,
-                //                 label_size,
-                //                 value_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_remove_contract_user_group",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          package_key_ptr,
-                //          package_key_size,
-                //          label_ptr,
-                //          label_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.casper_remove_contract_user_group(
-                //                 function_context,
-                //                 package_key_ptr,
-                //                 package_key_size,
-                //                 label_ptr,
-                //                 label_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_remove_contract_user_group_urefs",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          package_ptr,
-                //          package_size,
-                //          label_ptr,
-                //          label_size,
-                //          urefs_ptr,
-                //          urefs_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.remove_contract_user_group_urefs,
-                //                 [
-                //                     package_ptr,
-                //                     package_size,
-                //                     label_ptr,
-                //                     label_size,
-                //                     urefs_ptr,
-                //                     urefs_size,
-                //                 ],
-                //             )?;
-                //             let ret = runtime.remove_contract_user_group_urefs(
-                //                 function_context,
-                //                 package_ptr,
-                //                 package_size,
-                //                 label_ptr,
-                //                 label_size,
-                //                 urefs_ptr,
-                //                 urefs_size,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_call_versioned_contract",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          contract_package_hash_ptr,
-                //          contract_package_hash_size,
-                //          contract_version_ptr,
-                //          contract_package_size,
-                //          entry_point_name_ptr,
-                //          entry_point_name_size,
-                //          args_ptr,
-                //          args_size,
-                //          result_size_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.call_versioned_contract,
-                //                 [
-                //                     contract_package_hash_ptr,
-                //                     contract_package_hash_size,
-                //                     contract_version_ptr,
-                //                     contract_package_size,
-                //                     entry_point_name_ptr,
-                //                     entry_point_name_size,
-                //                     args_ptr,
-                //                     args_size,
-                //                     result_size_ptr,
-                //                 ],
-                //             )?;
-
-                //             // TODO: Move
-
-                //             let contract_package_hash: ContractPackageHash = {
-                //                 let contract_package_hash_bytes = function_context
-                //                     .memory_read(
-                //                         contract_package_hash_ptr,
-                //                         contract_package_hash_size as usize,
-                //                     )
-                //                     .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-                //                 bytesrepr::deserialize(contract_package_hash_bytes)
-                //                     .map_err(execution::Error::BytesRepr)?
-                //             };
-                //             let contract_version: Option<ContractVersion> = {
-                //                 let contract_version_bytes = function_context
-                //                     .memory_read(
-                //                         contract_version_ptr,
-                //                         contract_package_size as usize,
-                //                     )
-                //                     .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-                //                 bytesrepr::deserialize(contract_version_bytes)
-                //                     .map_err(execution::Error::BytesRepr)?
-                //             };
-                //             let entry_point_name: String = {
-                //                 let entry_point_name_bytes = function_context
-                //                     .memory_read(
-                //                         entry_point_name_ptr,
-                //                         entry_point_name_size as usize,
-                //                     )
-                //                     .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-                //                 bytesrepr::deserialize(entry_point_name_bytes)
-                //                     .map_err(execution::Error::BytesRepr)?
-                //             };
-                //             let args_bytes: Vec<u8> = function_context
-                //                 .memory_read(args_ptr, args_size as usize)
-                //                 .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-
-                //             let ret = runtime.call_versioned_contract_host_buffer(
-                //                 function_context,
-                //                 contract_package_hash,
-                //                 contract_version,
-                //                 entry_point_name,
-                //                 args_bytes,
-                //                 result_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_add_contract_version",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          contract_package_hash_ptr,
-                //          contract_package_hash_size,
-                //          version_ptr,
-                //          entry_points_ptr,
-                //          entry_points_size,
-                //          named_keys_ptr,
-                //          named_keys_size,
-                //          output_ptr,
-                //          output_size,
-                //          bytes_written_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             let ret = runtime.casper_add_contract_version(
-                //                 function_context,
-                //                 contract_package_hash_ptr,
-                //                 contract_package_hash_size,
-                //                 version_ptr,
-                //                 entry_points_ptr,
-                //                 entry_points_size,
-                //                 named_keys_ptr,
-                //                 named_keys_size,
-                //                 output_ptr,
-                //                 output_size,
-                //                 bytes_written_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_call_contract",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          contract_hash_ptr,
-                //          contract_hash_size,
-                //          entry_point_name_ptr,
-                //          entry_point_name_size,
-                //          args_ptr,
-                //          args_size,
-                //          result_size_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-
-                //             let ret = runtime.casper_call_contract(
-                //                 function_context,
-                //                 contract_hash_ptr,
-                //                 contract_hash_size,
-                //                 entry_point_name_ptr,
-                //                 entry_point_name_size,
-                //                 args_ptr,
-                //                 args_size,
-                //                 result_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_load_call_stack",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          call_stack_len_ptr,
-                //          result_size_ptr| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs::HostFunction::fixed(10_000),
-                //                 [call_stack_len_ptr, result_size_ptr],
-                //             )?;
-                //             let ret = runtime.load_call_stack(
-                //                 function_context,
-                //                 call_stack_len_ptr,
-                //                 result_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_new_dictionary",
-                //         |mut caller: Caller<&mut Runtime<R>>, output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs::DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
-                //                 [output_size_ptr],
-                //             )?;
-                //             let ret = runtime.new_dictionary(function_context, output_size_ptr)?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_dictionary_get",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          uref_ptr: u32,
-                //          uref_size: u32,
-                //          key_bytes_ptr: u32,
-                //          key_bytes_size: u32,
-                //          output_size_ptr: u32| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.dictionary_get,
-                //                 [key_bytes_ptr, key_bytes_size, output_size_ptr],
-                //             )?;
-                //             let ret = runtime.dictionary_get(
-                //                 function_context,
-                //                 uref_ptr,
-                //                 uref_size,
-                //                 key_bytes_ptr,
-                //                 key_bytes_size,
-                //                 output_size_ptr,
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_dictionary_put",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          uref_ptr,
-                //          uref_size,
-                //          key_bytes_ptr,
-                //          key_bytes_size,
-                //          value_ptr,
-                //          value_ptr_size| {
-                //             let (function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let ret = runtime.dictionary_put(
-                //                 function_context,
-                //                 uref_ptr,
-                //                 uref_size,
-                //                 key_bytes_ptr,
-                //                 key_bytes_size,
-                //                 value_ptr,
-                //                 value_ptr_size,
-                //             )?;
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.dictionary_put,
-                //                 [key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size],
-                //             )?;
-                //             Ok(api_error::i32_from(ret))
-                //         },
-                //     )
-                //     .unwrap();
-
-                // linker
-                //     .func_wrap(
-                //         "env",
-                //         "casper_blake2b",
-                //         |mut caller: Caller<&mut Runtime<R>>,
-                //          in_ptr: u32,
-                //          in_size: u32,
-                //          out_ptr: u32,
-                //          out_size: u32| {
-                //             let (mut function_context, runtime) =
-                //                 caller_adapter_and_runtime(&mut caller);
-                //             let host_function_costs =
-                //                 runtime.config().wasm_config().take_host_function_costs();
-                //             runtime.charge_host_function_call(
-                //                 &host_function_costs.blake2b,
-                //                 [in_ptr, in_size, out_ptr, out_size],
-                //             )?;
-                //             let digest = account::blake2b(
-                //                 function_context
-                //                     .memory_read(in_ptr, in_size as usize)
-                //                     .map_err(|e| execution::Error::Interpreter(e.into()))?,
-                //             );
-                //             if digest.len() != out_size as usize {
-                //                 let err_value =
-                //                     u32::from(api_error::ApiError::BufferTooSmall) as i32;
-                //                 return Ok(err_value);
-                //             }
-                //             function_context
-                //                 .memory_write(out_ptr, &digest)
-                //                 .map_err(|e| execution::Error::Interpreter(e.into()))?;
-                //             Ok(0_i32)
-                //         },
-                //     )
-                //     .unwrap();
-
-                // let start = Instant::now();
-
-                // let instance = linker
-                //     .instantiate(&mut store, &compiled_module)
-                //     .expect("should instantiate");
-
-                // let exported_func = instance
-                //     .get_typed_func::<(), (), _>(&mut store, func_name)
-                //     .expect("should get typed func");
-
-                // let ret = exported_func
-                //     .call(&mut store, ())
-                //     .map_err(RuntimeError::from);
-
-                // let stop = start.elapsed();
-
-                // record_performance_log(
-                //     &original_bytes,
-                //     vec![
-                //         LogProperty::Size(original_bytes.len()),
-                //         LogProperty::EntryPoint(func_name.to_string()),
-                //         LogProperty::PrecompileTime(precompile_time.unwrap_or_default()),
-                //         LogProperty::Runtime(stop),
-                //     ],
-                // );
-
-                // // record_performance_log(&original_bytes, LogProperty::Runtime(stop));
-                // // record_performance_log(&original_bytes, LogProperty::Finish);
-
-                // ret?;
-                todo!("wasmtime temporarily unavailable");
+                let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine, runtime);
+
+                let mut linker = wasmtime::Linker::new(&wasm_engine.compiled_engine);
+
+                let memory_import = compiled_module.imports().find_map(|import| {
+                    if (import.module(), import.name()) == ("env", Some("memory")) {
+                        Some(import.ty())
+                    } else {
+                        None
+                    }
+                });
+
+                let memory_type = match memory_import {
+                    Some(ExternType::Memory(memory)) => memory,
+                    Some(unknown_extern) => panic!("unexpected extern {:?}", unknown_extern),
+                    None => MemoryType::new(1, Some(wasm_engine.wasm_config().max_memory)),
+                };
+
+                debug_assert_eq!(
+                    memory_type.maximum(),
+                    Some(wasm_engine.wasm_config().max_memory as u64)
+                );
+
+                let memory = wasmtime::Memory::new(&mut store, memory_type).unwrap();
+                store.data_mut().wasmtime_memory = Some(memory);
+
+                linker
+                    .define("env", "memory", wasmtime::Extern::from(memory))
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_read_value",
+                        |mut caller: Caller<Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.read(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                output_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add",
+                        |mut caller: Caller<Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         value_ptr: u32,
+                         value_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_add(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_revert",
+                        |mut caller: Caller<Runtime<R>>, param: u32| {
+                            caller.data_mut().casper_revert(param)?;
+                            Ok(()) //unreachable
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_ret",
+                        |mut caller: Caller<Runtime<R>>, value_ptr: u32, value_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            let error = runtime.ret(function_context, value_ptr, value_size);
+                            Result::<(), _>::Err(error.into())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_phase",
+                        |mut caller: Caller<Runtime<R>>, dest_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            runtime.charge_host_function_call(
+                                &host_function_costs.get_phase,
+                                [dest_ptr],
+                            )?;
+                            runtime.get_phase(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_is_valid_uref",
+                        |mut caller: Caller<Runtime<R>>, uref_ptr: u32, uref_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret =
+                                runtime.is_valid_uref(function_context, uref_ptr, uref_size)?;
+                            Ok(i32::from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add_associated_key",
+                        |mut caller: Caller<Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32,
+                         weight: i32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.add_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_associated_key",
+                        |mut caller: Caller<Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.remove_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                            )?;
+                            Ok(ret)
+                            // Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_update_associated_key",
+                        |mut caller: Caller<Runtime<R>>,
+                         account_hash_ptr: u32,
+                         account_hash_size: u32,
+                         weight: i32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.update_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_set_action_threshold",
+                        |mut caller: Caller<Runtime<R>>,
+                         permission_level: u32,
+                         permission_threshold: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.set_action_threshold(
+                                function_context,
+                                permission_level,
+                                permission_threshold as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_caller",
+                        |mut caller: Caller<Runtime<R>>, output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.get_caller(function_context, output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_blocktime",
+                        |mut caller: Caller<Runtime<R>>, dest_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.get_blocktime(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "gas",
+                        |mut caller: Caller<Runtime<R>>, param: u32| {
+                            caller.data_mut().gas(Gas::new(U512::from(param)))?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_new_uref",
+                        |mut caller: Caller<Runtime<R>>, uref_ptr, value_ptr, value_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_new_uref(
+                                function_context,
+                                uref_ptr,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_create_purse",
+                        |mut caller: Caller<Runtime<R>>, dest_ptr: u32, dest_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_create_purse(
+                                function_context,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_write",
+                        |mut caller: Caller<Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         value_ptr: u32,
+                         value_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_write(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_main_purse",
+                        |mut caller: Caller<Runtime<R>>, dest_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_get_main_purse(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_named_arg_size",
+                        |mut caller: Caller<Runtime<R>>,
+                         name_ptr: u32,
+                         name_size: u32,
+                         size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_get_named_arg_size(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_named_arg",
+                        |mut caller: Caller<Runtime<R>>,
+                         name_ptr: u32,
+                         name_size: u32,
+                         dest_ptr: u32,
+                         dest_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_get_named_arg(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_transfer_to_account",
+                        |mut caller: Caller<Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         amount_ptr: u32,
+                         amount_size: u32,
+                         id_ptr: u32,
+                         id_size: u32,
+                         result_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_transfer_to_account(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                                result_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_has_key",
+                        |mut caller: Caller<Runtime<R>>, name_ptr: u32, name_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.has_key(function_context, name_ptr, name_size)?;
+                            Ok(ret)
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_key",
+                        |mut caller: Caller<Runtime<R>>,
+                         name_ptr: u32,
+                         name_size: u32,
+                         output_ptr: u32,
+                         output_size: u32,
+                         bytes_written: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.load_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                output_ptr,
+                                output_size as usize,
+                                bytes_written,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_put_key",
+                        |mut caller: Caller<Runtime<R>>, name_ptr, name_size, key_ptr, key_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_put_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                key_ptr,
+                                key_size,
+                            )?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_key",
+                        |mut caller: Caller<Runtime<R>>, name_ptr: u32, name_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.remove_key(function_context, name_ptr, name_size)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                #[cfg(feature = "test-support")]
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_print",
+                        |mut caller: Caller<Runtime<R>>, text_ptr: u32, text_size: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.casper_print(function_context, text_ptr, text_size)?;
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_transfer_from_purse_to_purse",
+                        |mut caller: Caller<Runtime<R>>,
+                         source_ptr,
+                         source_size,
+                         target_ptr,
+                         target_size,
+                         amount_ptr,
+                         amount_size,
+                         id_ptr,
+                         id_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_transfer_from_purse_to_purse(
+                                function_context,
+                                source_ptr,
+                                source_size,
+                                target_ptr,
+                                target_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_transfer_from_purse_to_account",
+                        |mut caller: Caller<Runtime<R>>,
+                         source_ptr,
+                         source_size,
+                         key_ptr,
+                         key_size,
+                         amount_ptr,
+                         amount_size,
+                         id_ptr,
+                         id_size,
+                         result_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_transfer_from_purse_to_account(
+                                function_context,
+                                source_ptr,
+                                source_size,
+                                key_ptr,
+                                key_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                                result_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_balance",
+                        |mut caller: Caller<Runtime<R>>,
+                         ptr: u32,
+                         ptr_size: u32,
+                         output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.get_balance,
+                                [ptr, ptr_size, output_size_ptr],
+                            )?;
+                            let ret = runtime.get_balance_host_buffer(
+                                function_context,
+                                ptr,
+                                ptr_size as usize,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_read_host_buffer",
+                        |mut caller: Caller<Runtime<R>>, dest_ptr, dest_size, bytes_written_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.read_host_buffer,
+                                [dest_ptr, dest_size, bytes_written_ptr],
+                            )?;
+
+                            let ret = runtime.read_host_buffer(
+                                function_context,
+                                dest_ptr,
+                                dest_size as usize,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_get_system_contract",
+                        |mut caller: Caller<Runtime<R>>,
+                         system_contract_index,
+                         dest_ptr,
+                         dest_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.get_system_contract,
+                                [system_contract_index, dest_ptr, dest_size],
+                            )?;
+                            let ret = runtime.get_system_contract(
+                                function_context,
+                                system_contract_index,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_load_named_keys",
+                        |mut caller: Caller<Runtime<R>>, total_keys_ptr, result_size_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.load_named_keys,
+                                [total_keys_ptr, result_size_ptr],
+                            )?;
+                            let ret = runtime.load_named_keys(
+                                function_context,
+                                total_keys_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_create_contract_package_at_hash",
+                        |mut caller: Caller<Runtime<R>>,
+                         hash_dest_ptr,
+                         access_dest_ptr,
+                         is_locked: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.create_contract_package_at_hash,
+                                [hash_dest_ptr, access_dest_ptr],
+                            )?;
+                            let package_status = ContractPackageStatus::new(is_locked != 0);
+                            let (hash_addr, access_addr) =
+                                runtime.create_contract_package_at_hash(package_status)?;
+
+                            runtime.function_address(
+                                &mut function_context,
+                                hash_addr,
+                                hash_dest_ptr,
+                            )?;
+                            runtime.function_address(
+                                &mut function_context,
+                                access_addr,
+                                access_dest_ptr,
+                            )?;
+
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_create_contract_user_group",
+                        |mut caller: Caller<Runtime<R>>,
+                         package_key_ptr: u32,
+                         package_key_size: u32,
+                         label_ptr: u32,
+                         label_size: u32,
+                         num_new_urefs: u32,
+                         existing_urefs_ptr: u32,
+                         existing_urefs_size: u32,
+                         output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let ret = runtime.casper_create_contract_user_group(
+                                function_context,
+                                package_key_ptr,
+                                package_key_size,
+                                label_ptr,
+                                label_size,
+                                num_new_urefs,
+                                existing_urefs_ptr,
+                                existing_urefs_size,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_provision_contract_user_group_uref",
+                        |mut caller: Caller<Runtime<R>>,
+                         package_ptr,
+                         package_size,
+                         label_ptr,
+                         label_size,
+                         value_size_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.provision_contract_user_group_uref,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    value_size_ptr,
+                                ],
+                            )?;
+                            let ret = runtime.provision_contract_user_group_uref(
+                                function_context,
+                                package_ptr,
+                                package_size,
+                                label_ptr,
+                                label_size,
+                                value_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_contract_user_group",
+                        |mut caller: Caller<Runtime<R>>,
+                         package_key_ptr,
+                         package_key_size,
+                         label_ptr,
+                         label_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.casper_remove_contract_user_group(
+                                function_context,
+                                package_key_ptr,
+                                package_key_size,
+                                label_ptr,
+                                label_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_remove_contract_user_group_urefs",
+                        |mut caller: Caller<Runtime<R>>,
+                         package_ptr,
+                         package_size,
+                         label_ptr,
+                         label_size,
+                         urefs_ptr,
+                         urefs_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.remove_contract_user_group_urefs,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    urefs_ptr,
+                                    urefs_size,
+                                ],
+                            )?;
+                            let ret = runtime.remove_contract_user_group_urefs(
+                                function_context,
+                                package_ptr,
+                                package_size,
+                                label_ptr,
+                                label_size,
+                                urefs_ptr,
+                                urefs_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_call_versioned_contract",
+                        |mut caller: Caller<Runtime<R>>,
+                         contract_package_hash_ptr,
+                         contract_package_hash_size,
+                         contract_version_ptr,
+                         contract_package_size,
+                         entry_point_name_ptr,
+                         entry_point_name_size,
+                         args_ptr,
+                         args_size,
+                         result_size_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            runtime.charge_host_function_call(
+                                &host_function_costs.call_versioned_contract,
+                                [
+                                    contract_package_hash_ptr,
+                                    contract_package_hash_size,
+                                    contract_version_ptr,
+                                    contract_package_size,
+                                    entry_point_name_ptr,
+                                    entry_point_name_size,
+                                    args_ptr,
+                                    args_size,
+                                    result_size_ptr,
+                                ],
+                            )?;
+
+                            // TODO: Move
+
+                            let contract_package_hash: ContractPackageHash = {
+                                let contract_package_hash_bytes = function_context
+                                    .memory_read(
+                                        contract_package_hash_ptr,
+                                        contract_package_hash_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_package_hash_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let contract_version: Option<ContractVersion> = {
+                                let contract_version_bytes = function_context
+                                    .memory_read(
+                                        contract_version_ptr,
+                                        contract_package_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_version_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let entry_point_name: String = {
+                                let entry_point_name_bytes = function_context
+                                    .memory_read(
+                                        entry_point_name_ptr,
+                                        entry_point_name_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(entry_point_name_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let args_bytes: Vec<u8> = function_context
+                                .memory_read(args_ptr, args_size as usize)
+                                .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+
+                            let ret = runtime.call_versioned_contract_host_buffer(
+                                function_context,
+                                contract_package_hash,
+                                contract_version,
+                                entry_point_name,
+                                args_bytes,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_add_contract_version",
+                        |mut caller: Caller<Runtime<R>>,
+                         contract_package_hash_ptr,
+                         contract_package_hash_size,
+                         version_ptr,
+                         entry_points_ptr,
+                         entry_points_size,
+                         named_keys_ptr,
+                         named_keys_size,
+                         output_ptr,
+                         output_size,
+                         bytes_written_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            let ret = runtime.casper_add_contract_version(
+                                function_context,
+                                contract_package_hash_ptr,
+                                contract_package_hash_size,
+                                version_ptr,
+                                entry_points_ptr,
+                                entry_points_size,
+                                named_keys_ptr,
+                                named_keys_size,
+                                output_ptr,
+                                output_size,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_call_contract",
+                        |mut caller: Caller<Runtime<R>>,
+                         contract_hash_ptr,
+                         contract_hash_size,
+                         entry_point_name_ptr,
+                         entry_point_name_size,
+                         args_ptr,
+                         args_size,
+                         result_size_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+
+                            let ret = runtime.casper_call_contract(
+                                function_context,
+                                contract_hash_ptr,
+                                contract_hash_size,
+                                entry_point_name_ptr,
+                                entry_point_name_size,
+                                args_ptr,
+                                args_size,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_load_call_stack",
+                        |mut caller: Caller<Runtime<R>>, call_stack_len_ptr, result_size_ptr| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.charge_host_function_call(
+                                &host_function_costs::HostFunction::fixed(10_000),
+                                [call_stack_len_ptr, result_size_ptr],
+                            )?;
+                            let ret = runtime.load_call_stack(
+                                function_context,
+                                call_stack_len_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_new_dictionary",
+                        |mut caller: Caller<Runtime<R>>, output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            runtime.charge_host_function_call(
+                                &host_function_costs::DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
+                                [output_size_ptr],
+                            )?;
+                            let ret = runtime.new_dictionary(function_context, output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_dictionary_get",
+                        |mut caller: Caller<Runtime<R>>,
+                         uref_ptr: u32,
+                         uref_size: u32,
+                         key_bytes_ptr: u32,
+                         key_bytes_size: u32,
+                         output_size_ptr: u32| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            runtime.charge_host_function_call(
+                                &host_function_costs.dictionary_get,
+                                [key_bytes_ptr, key_bytes_size, output_size_ptr],
+                            )?;
+                            let ret = runtime.dictionary_get(
+                                function_context,
+                                uref_ptr,
+                                uref_size,
+                                key_bytes_ptr,
+                                key_bytes_size,
+                                output_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_dictionary_put",
+                        |mut caller: Caller<Runtime<R>>,
+                         uref_ptr,
+                         uref_size,
+                         key_bytes_ptr,
+                         key_bytes_size,
+                         value_ptr,
+                         value_ptr_size| {
+                            let (function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let ret = runtime.dictionary_put(
+                                function_context,
+                                uref_ptr,
+                                uref_size,
+                                key_bytes_ptr,
+                                key_bytes_size,
+                                value_ptr,
+                                value_ptr_size,
+                            )?;
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            runtime.charge_host_function_call(
+                                &host_function_costs.dictionary_put,
+                                [key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size],
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_blake2b",
+                        |mut caller: Caller<Runtime<R>>,
+                         in_ptr: u32,
+                         in_size: u32,
+                         out_ptr: u32,
+                         out_size: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            runtime.charge_host_function_call(
+                                &host_function_costs.blake2b,
+                                [in_ptr, in_size, out_ptr, out_size],
+                            )?;
+                            let digest = account::blake2b(
+                                function_context
+                                    .memory_read(in_ptr, in_size as usize)
+                                    .map_err(|e| execution::Error::Interpreter(e.into()))?,
+                            );
+                            if digest.len() != out_size as usize {
+                                let err_value =
+                                    u32::from(api_error::ApiError::BufferTooSmall) as i32;
+                                return Ok(err_value);
+                            }
+                            function_context
+                                .memory_write(out_ptr, &digest)
+                                .map_err(|e| execution::Error::Interpreter(e.into()))?;
+                            Ok(0_i32)
+                        },
+                    )
+                    .unwrap();
+
+                let start = Instant::now();
+
+                let instance = linker
+                    .instantiate(&mut store, &compiled_module)
+                    .expect("should instantiate");
+
+                let exported_func = instance
+                    .get_typed_func::<(), (), _>(&mut store, func_name)
+                    .expect("should get typed func");
+
+                let ret = exported_func
+                    .call(&mut store, ())
+                    .map_err(RuntimeError::from);
+
+                let stop = start.elapsed();
+
+                record_performance_log(
+                    &original_bytes,
+                    vec![
+                        LogProperty::Size(original_bytes.len()),
+                        LogProperty::EntryPoint(func_name.to_string()),
+                        LogProperty::PrecompileTime(precompile_time.unwrap_or_default()),
+                        LogProperty::Runtime(stop),
+                    ],
+                );
+
+                // record_performance_log(&original_bytes, LogProperty::Runtime(stop));
+                // record_performance_log(&original_bytes, LogProperty::Finish);
+
+                ret?;
 
                 Ok(Some(RuntimeValue::I64(0)))
             }
@@ -1771,11 +1759,10 @@ where
                 let gas_func = wasmer::Function::new_typed_with_env(
                     wasmer_store.deref_mut(),
                     &function_env,
-                    |mut env: FunctionEnvMut<WasmerEnv<R>>, gas_arg: u32| {
-                        env.data_mut()
-                            .runtime
-                            .gas(Gas::new(gas_arg.into()))
-                            .expect("todo: handle errors");
+                    |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                     gas_arg: u32|
+                     -> Result<(), execution::Error> {
+                        env.data_mut().runtime.gas(Gas::new(gas_arg.into()))
                     },
                 );
 
@@ -2239,7 +2226,7 @@ impl std::ops::Deref for WasmtimeEngine {
 }
 
 // NOTE: Imitates persistent on disk cache for precompiled artifacts
-static GLOBAL_CACHE: Lazy<Mutex<RefCell<HashMap<Vec<u8>, Vec<u8>>>>> = Lazy::new(Default::default);
+static GLOBAL_CACHE: Lazy<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = Lazy::new(Default::default);
 
 /// Wasm preprocessor.
 #[derive(Debug, Clone)]
@@ -2631,25 +2618,25 @@ impl WasmEngine {
         original_bytes: &[u8],
         bytes: &[u8],
     ) -> Result<(Vec<u8>, Option<Duration>), RuntimeError> {
-        todo!("precompile; disabled because of trait issues colliding with wasmer");
-        // let cache = GLOBAL_CACHE.lock().unwrap();
+        // todo!("precompile; disabled because of trait issues colliding with wasmer");
+        let mut cache = GLOBAL_CACHE.lock().unwrap();
         // let mut cache = cache.borrow_mut();
-        // // let mut cache = GLOBAL_CACHE.lborrow_mut();
-        // let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
-        //     Entry::Occupied(o) => (o.get().clone(), None),
-        //     Entry::Vacant(v) => {
-        //         let start = Instant::now();
-        //         let precompiled_bytes = self
-        //             .compiled_engine
-        //             .precompile_module(bytes)
-        //             .map_err(|e| RuntimeError::Other(e.to_string()))?;
-        //         let stop = start.elapsed();
-        //         // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
-        //         let artifact = v.insert(precompiled_bytes).clone();
-        //         (artifact, Some(stop))
-        //     }
-        // };
-        // Ok((bytes, maybe_duration))
+        // let mut cache = GLOBAL_CACHE.lborrow_mut();
+        let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
+            Entry::Occupied(o) => (o.get().clone(), None),
+            Entry::Vacant(v) => {
+                let start = Instant::now();
+                let precompiled_bytes = self
+                    .compiled_engine
+                    .precompile_module(bytes)
+                    .map_err(|e| RuntimeError::Other(e.to_string()))?;
+                let stop = start.elapsed();
+                // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
+                let artifact = v.insert(precompiled_bytes).clone();
+                (artifact, Some(stop))
+            }
+        };
+        Ok((bytes, maybe_duration))
     }
 }
 

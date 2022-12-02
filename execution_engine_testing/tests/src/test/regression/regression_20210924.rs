@@ -3,8 +3,8 @@ use std::time::Instant;
 use num_traits::Zero;
 
 use casper_engine_test_support::{
-    DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNT_ADDR, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::engine_state::{Error as CoreError, MAX_PAYMENT},
@@ -76,7 +76,9 @@ fn should_charge_minimum_for_do_nothing_session() {
 
     let account_balance_before = builder.get_purse_balance(account.main_purse());
 
-    builder.exec(do_nothing_request).commit();
+    builder
+        .exec_instrumented(instrumented!(do_nothing_request))
+        .commit();
 
     let error = builder.get_error().unwrap();
     assert!(
@@ -133,7 +135,10 @@ fn should_execute_do_minimum_session() {
     let account_balance_before = builder.get_purse_balance(account.main_purse());
 
     let start = Instant::now();
-    builder.exec(do_minimum_request).expect_success().commit();
+    builder
+        .exec_instrumented(instrumented!(do_minimum_request))
+        .expect_success()
+        .commit();
     let stop = start.elapsed();
 
     let gas = builder.last_exec_gas_cost();
@@ -189,7 +194,9 @@ fn should_charge_minimum_for_do_nothing_payment() {
 
     let account_balance_before = builder.get_purse_balance(account.main_purse());
 
-    builder.exec(do_nothing_request).commit();
+    builder
+        .exec_instrumented(instrumented!(do_nothing_request))
+        .commit();
 
     let error = builder.get_error().unwrap();
     assert!(

@@ -87,7 +87,7 @@ fn run_genesis_and_create_initial_accounts(
         },
     )
     .build();
-    builder.exec(transfer);
+    builder.exec_instrumented(instrumented!(transfer));
     builder.expect_success().commit();
 
     for delegator_account in delegator_accounts {
@@ -100,7 +100,7 @@ fn run_genesis_and_create_initial_accounts(
             },
         )
         .build();
-        builder.exec(transfer);
+        builder.exec_instrumented(instrumented!(transfer));
         builder.expect_success().commit();
     }
     builder
@@ -173,7 +173,7 @@ fn setup_bench_run_auction(
             delegator_account_hash,
             contract_hash,
         );
-        builder.exec(delegate);
+        builder.exec_instrumented(instrumented!(delegate));
         builder.expect_success();
         builder.commit();
         builder.clear_results();
