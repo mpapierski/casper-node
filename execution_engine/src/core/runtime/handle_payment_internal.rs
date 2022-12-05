@@ -75,7 +75,7 @@ where
     R::Error: Into<execution::Error>,
 {
     fn get_key(&self, name: &str) -> Option<Key> {
-        self.context.named_keys_get(name).cloned()
+        self.context.named_keys_get(name)
     }
 
     fn put_key(&mut self, name: &str, key: Key) -> Result<(), Error> {

@@ -40,6 +40,35 @@ pub fn revert<T: Into<ApiError>>(error: T) -> ! {
     }
 }
 
+#[cfg(feature = "test-support")]
+#[macro_export]
+macro_rules! assert_here {
+    ($lhs:expr) => {{
+        match ($lhs) {
+            lhs => {
+                if !(lhs) {
+                    let current_line = line!();
+                    let status = u16::MAX as u32 + 1 + current_line;
+                    // let (text_ptr, text_size, _bytes) = $crate::contract_api::to_ptr(text);
+                    // unsafe { ext_ffi::casper_print(text_ptr, text_size) }
+                    $crate::contract_api::runtime::print(&alloc::format!(
+                        "{} [{}:{}] assertion failed: {} is {}",
+                        module_path!(),
+                        file!(),
+                        line!(),
+                        stringify!($lhs),
+                        lhs
+                    ));
+
+                    unsafe {
+                        $crate::ext_ffi::casper_revert(status);
+                    }
+                }
+            }
+        }
+    }};
+}
+
 /// Calls the given stored contract, passing the given arguments to it.
 ///
 /// If the stored contract calls [`ret`], then that value is returned from `call_contract`.  If the

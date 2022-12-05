@@ -126,7 +126,7 @@ where
     }
 
     fn named_keys_get(&self, name: &str) -> Option<Key> {
-        self.context.named_keys_get(name).cloned()
+        self.context.named_keys_get(name)
     }
 
     fn get_keys(&mut self, key_tag: &KeyTag) -> Result<BTreeSet<Key>, Error> {

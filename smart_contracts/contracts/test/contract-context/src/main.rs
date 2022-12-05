@@ -3,9 +3,12 @@
 
 extern crate alloc;
 
+use core::convert::TryInto;
+
 use alloc::{string::ToString, vec::Vec};
 
 use casper_contract::{
+    assert_here,
     contract_api::{runtime, storage},
     unwrap_or_revert::UnwrapOrRevert,
 };
@@ -14,7 +17,8 @@ use casper_types::{
         EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, NamedKeys,
         CONTRACT_INITIAL_VERSION,
     },
-    runtime_args, CLType, ContractHash, ContractPackageHash, ContractVersion, Key, RuntimeArgs,
+    runtime_args, ApiError, CLType, ContractHash, ContractPackageHash, ContractVersion, Key,
+    RuntimeArgs,
 };
 
 const PACKAGE_HASH_KEY: &str = "package_hash_key";
@@ -28,16 +32,16 @@ const CONTRACT_VERSION: &str = "contract_version";
 
 #[no_mangle]
 pub extern "C" fn session_code_test() {
-    assert!(runtime::get_key(PACKAGE_HASH_KEY).is_some());
-    assert!(runtime::get_key(PACKAGE_ACCESS_KEY).is_some());
-    assert!(runtime::get_key(NAMED_KEY).is_none());
+    assert_here!(runtime::get_key(PACKAGE_HASH_KEY).is_some());
+    assert_here!(runtime::get_key(PACKAGE_ACCESS_KEY).is_some());
+    assert_here!(runtime::get_key(NAMED_KEY).is_none());
 }
 
 #[no_mangle]
 pub extern "C" fn contract_code_test() {
-    assert!(runtime::get_key(PACKAGE_HASH_KEY).is_none());
-    assert!(runtime::get_key(PACKAGE_ACCESS_KEY).is_none());
-    assert!(runtime::get_key(NAMED_KEY).is_some());
+    assert_here!(runtime::get_key(PACKAGE_HASH_KEY).is_none());
+    assert_here!(runtime::get_key(PACKAGE_ACCESS_KEY).is_none());
+    assert_here!(runtime::get_key(NAMED_KEY).is_some());
 }
 
 #[no_mangle]
@@ -69,14 +73,16 @@ pub extern "C" fn add_new_key_as_session() {
         .unwrap_or_revert()
         .into();
 
-    assert!(runtime::get_key(NEW_KEY).is_none());
+    assert_here!(runtime::get_key(NEW_KEY).is_none());
+
     runtime::call_versioned_contract::<()>(
         contract_package_hash,
         Some(CONTRACT_INITIAL_VERSION),
         "add_new_key",
         runtime_args! {},
     );
-    assert!(runtime::get_key(NEW_KEY).is_some());
+
+    assert_here!(runtime::get_key(NEW_KEY).is_some());
 }
 
 #[no_mangle]

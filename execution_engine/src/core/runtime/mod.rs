@@ -756,10 +756,10 @@ where
 
         let urefs = utils::extract_urefs(&ret)?;
         self.context.access_rights_extend(&urefs);
-        {
-            let transfers = self.context.transfers_mut();
-            *transfers = mint_runtime.context.transfers().to_owned();
-        }
+        // {
+        //     let transfers = self.context.transfers_mut();
+        //     *transfers = mint_runtime.context.transfers().to_owned();
+        // }
         Ok(ret)
     }
 
@@ -844,8 +844,8 @@ where
         let urefs = utils::extract_urefs(&ret)?;
         self.context.access_rights_extend(&urefs);
         {
-            let transfers = self.context.transfers_mut();
-            *transfers = runtime.context.transfers().to_owned();
+            // let transfers = self.context.transfers_mut();
+            // *transfers = runtime.context.transfers().to_owned();
         }
         Ok(ret)
     }
@@ -1059,8 +1059,8 @@ where
         let urefs = utils::extract_urefs(&ret)?;
         self.context.access_rights_extend(&urefs);
         {
-            let transfers = self.context.transfers_mut();
-            *transfers = runtime.context.transfers().to_owned();
+            // let transfers = self.context.transfers_mut();
+            // *transfers = runtime.context.transfers().to_owned();
         }
 
         Ok(ret)
@@ -1372,8 +1372,8 @@ where
         self.context.set_gas_counter(runtime.context.gas_counter());
 
         {
-            let transfers = self.context.transfers_mut();
-            *transfers = runtime.context.transfers().to_owned();
+            // let transfers = self.context.transfers_mut();
+            // *transfers = runtime.context.transfers().to_owned();
         }
 
         let error = match result {
@@ -1387,7 +1387,7 @@ where
                 {
                     // Overwrites parent's named keys with child's new named key but only when
                     // running session code.
-                    *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                    self.context.named_keys_set(runtime.context.named_keys());
                 }
                 self.context
                     .set_remaining_spending_limit(runtime.context.remaining_spending_limit());
@@ -1411,7 +1411,12 @@ where
                         {
                             // Overwrites parent's named keys with child's new named keys but only
                             // when running session code.
-                            *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                            // *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                            assert_eq!(
+                                self.context.named_keys(),
+                                runtime.context.named_keys(),
+                                "violated"
+                            );
                         }
 
                         // Stored contracts are expected to always call a `ret` function, otherwise
@@ -2054,7 +2059,7 @@ where
             Transfer::new(deploy_hash, from, maybe_to, source, target, amount, fee, id)
         };
         {
-            let transfers = self.context.transfers_mut();
+            let mut transfers = self.context.transfers.write().unwrap();
             transfers.push(transfer_addr);
         }
         self.context

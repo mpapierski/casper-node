@@ -85,7 +85,7 @@ pub fn validate_group_membership(
 pub struct RuntimeContext<R: Clone> {
     tracking_copy: Arc<RwLock<TrackingCopy<R>>>,
     // Enables look up of specific uref based on human-readable name
-    named_keys: NamedKeys,
+    named_keys: Arc<RwLock<NamedKeys>>,
     // Used to check uref is known before use (prevents forging urefs)
     access_rights: ContextAccessRights,
     // Original account for read only tasks taken before execution
@@ -98,6 +98,7 @@ pub struct RuntimeContext<R: Clone> {
     blocktime: BlockTime,
     deploy_hash: DeployHash,
     gas_limit: Gas,
+    // NOTE: Should gas counter be wrapped in Arc + RwLock?
     gas_counter: Arc<RwLock<Gas>>,
     address_generator: Arc<RwLock<AddressGenerator>>,
     protocol_version: ProtocolVersion,
@@ -105,7 +106,7 @@ pub struct RuntimeContext<R: Clone> {
     phase: Phase,
     engine_config: EngineConfig,
     entry_point_type: EntryPointType,
-    transfers: Vec<TransferAddr>,
+    pub(crate) transfers: Arc<RwLock<Vec<TransferAddr>>>,
     remaining_spending_limit: U512,
 }
 
@@ -142,7 +143,7 @@ where
         RuntimeContext {
             tracking_copy,
             entry_point_type,
-            named_keys,
+            named_keys: Arc::new(RwLock::new(named_keys)),
             access_rights,
             args: runtime_args,
             account,
@@ -157,7 +158,7 @@ where
             correlation_id,
             phase,
             engine_config,
-            transfers,
+            transfers: Arc::new(RwLock::new(transfers)),
             remaining_spending_limit,
         }
     }
@@ -179,7 +180,7 @@ where
         let blocktime = self.blocktime;
         let deploy_hash = self.deploy_hash;
         let gas_limit = self.gas_limit;
-        let gas_counter = Arc::clone(&self.gas_counter);
+        let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
         let correlation_id = self.correlation_id;
@@ -191,7 +192,7 @@ where
         RuntimeContext {
             tracking_copy,
             entry_point_type,
-            named_keys,
+            named_keys: Arc::new(RwLock::new(named_keys)),
             access_rights,
             args: runtime_args,
             account,
@@ -217,24 +218,21 @@ where
     }
 
     /// Returns a named key by a name if it exists.
-    pub fn named_keys_get(&self, name: &str) -> Option<&Key> {
-        self.named_keys.get(name)
+    pub fn named_keys_get(&self, name: &str) -> Option<Key> {
+        self.named_keys.read().unwrap().get(name).cloned()
     }
 
     /// Returns named keys.
-    pub fn named_keys(&self) -> &NamedKeys {
-        &self.named_keys
-    }
-
-    /// Returns a mutable reference to named keys.
-    pub fn named_keys_mut(&mut self) -> &mut NamedKeys {
-        &mut self.named_keys
+    pub fn named_keys(&self) -> NamedKeys {
+        self.named_keys.read().unwrap().clone()
     }
 
     /// Checks if named keys contains a key referenced by name.
     pub fn named_keys_contains_key(&self, name: &str) -> bool {
-        self.named_keys.contains_key(name)
+        self.named_keys.read().unwrap().contains_key(name)
     }
+
+    /// Overw
 
     /// Helper function to avoid duplication in `remove_uref`.
     fn remove_key_from_contract(
@@ -262,7 +260,7 @@ where
                     account.named_keys_mut().remove(name);
                     account
                 };
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 let account_value = self.account_to_validated_value(account)?;
                 self.metered_write_gs_unsafe(account_hash, account_value)?;
                 Ok(())
@@ -280,50 +278,50 @@ where
                     value.try_into().map_err(Error::TypeMismatch)?
                 };
 
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 self.remove_key_from_contract(contract_uref, contract, name)
             }
             contract_hash @ Key::Hash(_) => {
                 let contract: Contract = self.read_gs_typed(&contract_hash)?;
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 self.remove_key_from_contract(contract_hash, contract, name)
             }
             transfer_addr @ Key::Transfer(_) => {
                 let _transfer: Transfer = self.read_gs_typed(&transfer_addr)?;
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 // Users cannot remove transfers from global state
                 Ok(())
             }
             deploy_info_addr @ Key::DeployInfo(_) => {
                 let _deploy_info: DeployInfo = self.read_gs_typed(&deploy_info_addr)?;
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 // Users cannot remove deploy infos from global state
                 Ok(())
             }
             era_info_addr @ Key::EraInfo(_) => {
                 let _era_info: EraInfo = self.read_gs_typed(&era_info_addr)?;
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 // Users cannot remove era infos from global state
                 Ok(())
             }
             Key::Balance(_) => {
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 Ok(())
             }
             Key::Bid(_) => {
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 Ok(())
             }
             Key::Withdraw(_) => {
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 Ok(())
             }
             Key::Unbond(_) => {
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 Ok(())
             }
             Key::Dictionary(_) => {
-                self.named_keys.remove(name);
+                self.named_keys.write().unwrap().remove(name);
                 Ok(())
             }
             Key::SystemContractRegistry => {
@@ -628,7 +626,7 @@ where
         if let Key::URef(uref) = key {
             self.insert_uref(uref);
         }
-        self.named_keys.insert(name, key);
+        self.named_keys.write().unwrap().insert(name, key);
     }
 
     /// Adds a new [`URef`] into the context.
@@ -658,15 +656,15 @@ where
         self.tracking_copy.read().unwrap().execution_journal()
     }
 
-    /// Returns list of transfers.
-    pub fn transfers(&self) -> &Vec<TransferAddr> {
-        &self.transfers
+    // /// Returns list of transfers.
+    pub fn transfers(&self) -> Vec<TransferAddr> {
+        self.transfers.read().unwrap().clone()
     }
 
-    /// Returns mutable list of transfers.
-    pub fn transfers_mut(&mut self) -> &mut Vec<TransferAddr> {
-        &mut self.transfers
-    }
+    // /// Returns mutable list of transfers.
+    // pub fn transfers_mut(&mut self) -> &mut Vec<TransferAddr> {
+    //     &mut self.transfers
+    // }
 
     fn validate_cl_value(&self, cl_value: &CLValue) -> Result<(), Error> {
         match cl_value.cl_type() {
@@ -1323,5 +1321,9 @@ where
     /// towards global limit for the whole deploy execution.
     pub(crate) fn set_remaining_spending_limit(&mut self, amount: U512) {
         self.remaining_spending_limit = amount;
+    }
+
+    pub(crate) fn named_keys_set(&self, named_keys: NamedKeys) {
+        *self.named_keys.write().unwrap() = named_keys;
     }
 }

@@ -51,7 +51,7 @@ where
     }
 
     fn get_key(&self, name: &str) -> Option<Key> {
-        self.context.named_keys_get(name).cloned()
+        self.context.named_keys_get(name)
     }
 
     fn get_approved_spending_limit(&self) -> U512 {
