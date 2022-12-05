@@ -107,7 +107,7 @@ native_transfer_minimum_motes = 2_500_000_000
 max_memory = 64
 # Max stack height (native WebAssembly stack limiter).
 max_stack_height = 188
-execution_mode = { type = "interpreted" }
+execution_mode = { type = "compiled" }
 
 [wasm.storage_costs]
 # Gas charged per byte stored in the global state.

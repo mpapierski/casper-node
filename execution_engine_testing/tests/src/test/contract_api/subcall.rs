@@ -253,6 +253,8 @@ fn expensive_subcall_should_cost_more() {
 
     assert!(
         do_nothing_cost < expensive_calculation_cost,
-        "calculation cost should be higher than doing nothing cost"
+        "calculation cost should be higher than doing nothing cost {} >= {}",
+        do_nothing_cost,
+        expensive_calculation_cost,
     );
 }

@@ -623,15 +623,6 @@ where
                 // args(3) = size of contract hash in wasm memory
                 let (package_key_ptr, package_key_size, contract_hash_ptr, contract_hash_size) =
                     Args::parse(args)?;
-                self.runtime.charge_host_function_call(
-                    &host_function_costs.disable_contract_version,
-                    [
-                        package_key_ptr,
-                        package_key_size,
-                        contract_hash_ptr,
-                        contract_hash_size,
-                    ],
-                )?;
 
                 let result = self.runtime.casper_disable_contract_version(
                     function_context,
@@ -1005,11 +996,8 @@ where
                 // args(1) = size of key in Wasm memory
                 // args(2) = pointer to output size (output param)
                 let (key_ptr, key_size, output_size_ptr) = Args::parse(args)?;
-                self.runtime.charge_host_function_call(
-                    &host_function_costs.read_value,
-                    [key_ptr, key_size, output_size_ptr],
-                )?;
-                let ret = self.runtime.dictionary_read(
+
+                let ret = self.runtime.casper_dictionary_read(
                     function_context,
                     key_ptr,
                     key_size,
@@ -1039,11 +1027,8 @@ where
                 // args(0) (Output) Pointer to number of authorization keys.
                 // args(1) (Output) Pointer to size in bytes of the total bytes.
                 let (len_ptr, result_size_ptr) = Args::parse(args)?;
-                self.runtime.charge_host_function_call(
-                    &HostFunction::fixed(10_000),
-                    [len_ptr, result_size_ptr],
-                )?;
-                let ret = self.runtime.load_authorization_keys(
+
+                let ret = self.runtime.casper_load_authorization_keys(
                     function_context,
                     len_ptr,
                     result_size_ptr,
@@ -1053,27 +1038,12 @@ where
 
             FunctionIndex::RandomBytes => {
                 let (out_ptr, out_size) = Args::parse(args)?;
-                self.runtime.charge_host_function_call(
-                    &host_function_costs.random_bytes,
-                    [out_ptr, out_size],
-                )?;
 
-                let random_bytes = self.runtime.context.random_bytes()?;
+                let ret = self
+                    .runtime
+                    .casper_random_bytes(function_context, out_ptr, out_size)?;
 
-                let result = if random_bytes.len() != out_size as usize {
-                    Err(ApiError::BufferTooSmall)
-                } else {
-                    Ok(())
-                };
-                if result.is_err() {
-                    return Ok(Some(RuntimeValue::I32(api_error::i32_from(result))));
-                }
-
-                function_context
-                    .memory_write(out_ptr, &random_bytes)
-                    .map_err(|error| Error::Interpreter(error.into()))?;
-
-                Ok(Some(RuntimeValue::I32(0)))
+                Ok(Some(RuntimeValue::I32(api_error::i32_from(ret))))
             }
         }
     }

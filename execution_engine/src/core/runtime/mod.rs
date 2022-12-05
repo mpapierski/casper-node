@@ -1944,7 +1944,7 @@ where
         Ok(Ok(()))
     }
 
-    fn casper_disable_contract_version(
+    pub(crate) fn casper_disable_contract_version(
         &mut self,
         context: impl FunctionContext,
         package_key_ptr: u32,
@@ -1952,6 +1952,17 @@ where
         contract_hash_ptr: u32,
         contract_hash_size: u32,
     ) -> Result<Result<(), ApiError>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.disable_contract_version,
+            [
+                package_key_ptr,
+                package_key_size,
+                contract_hash_ptr,
+                contract_hash_size,
+            ],
+        )?;
+
         let contract_package_hash: ContractPackageHash = {
             let contract_package_hash_bytes =
                 context.memory_read(package_key_ptr, package_key_size as usize)?;
@@ -3176,13 +3187,20 @@ where
     }
 
     /// Reads the `value` under a `Key::Dictionary`.
-    fn dictionary_read(
+    pub(crate) fn casper_dictionary_read(
         &mut self,
         mut context: impl FunctionContext,
         key_ptr: u32,
         key_size: u32,
         output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+
+        self.charge_host_function_call(
+            &host_function_costs.read_value,
+            [key_ptr, key_size, output_size_ptr],
+        )?;
+
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -3339,12 +3357,14 @@ where
         }
     }
 
-    fn load_authorization_keys(
+    pub(crate) fn casper_load_authorization_keys(
         &mut self,
         mut context: impl FunctionContext,
         len_ptr: u32,
         result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Trap> {
+    ) -> Result<Result<(), ApiError>, Error> {
+        self.charge_host_function_call(&HostFunction::fixed(10_000), [len_ptr, result_size_ptr])?;
+
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
             return Ok(Err(ApiError::HostBufferFull));
@@ -3401,5 +3421,26 @@ where
             transfers: self.context().transfers().to_owned(),
             cost: self.context().gas_counter(),
         }
+    }
+
+    pub(crate) fn casper_random_bytes(
+        &mut self,
+        mut function_context: impl FunctionContext,
+        out_ptr: u32,
+        out_size: u32,
+    ) -> Result<Result<(), ApiError>, Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+
+        self.charge_host_function_call(&host_function_costs.random_bytes, [out_ptr, out_size])?;
+
+        let random_bytes = self.context.random_bytes()?;
+
+        if random_bytes.len() != out_size as usize {
+            return Ok(Err(ApiError::BufferTooSmall));
+        }
+
+        function_context.memory_write(out_ptr, &random_bytes)?;
+
+        Ok(Ok(()))
     }
 }

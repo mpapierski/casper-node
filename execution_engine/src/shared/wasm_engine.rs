@@ -235,10 +235,10 @@ pub fn record_performance_log(wasm_bytes: &[u8], log_property: Vec<LogProperty>)
 }
 
 /// Common error type adapter for all Wasm engines supported.
-#[derive(Error, Debug)]
+#[derive(Error, Clone, Debug)]
 pub enum RuntimeError {
     #[error(transparent)]
-    WasmiError(#[from] wasmi::Error),
+    WasmiError(Arc<wasmi::Error>),
     #[error(transparent)]
     WasmtimeError(#[from] wasmtime::Trap),
     #[error(transparent)]
@@ -247,6 +247,12 @@ pub enum RuntimeError {
     MemoryAccessError(#[from] wasmer::MemoryAccessError),
     #[error("{0}")]
     Other(String),
+}
+
+impl From<wasmi::Error> for RuntimeError {
+    fn from(error: wasmi::Error) -> Self {
+        RuntimeError::WasmiError(Arc::new(error))
+    }
 }
 
 impl From<String> for RuntimeError {
@@ -1690,11 +1696,93 @@ where
                     )
                     .unwrap();
 
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_load_authorization_keys",
+                        |mut caller: Caller<Runtime<R>>, len_ptr: u32, result_size_ptr: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let ret = runtime.casper_load_authorization_keys(
+                                function_context,
+                                len_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_disable_contract_version",
+                        |mut caller: Caller<Runtime<R>>,
+                         package_key_ptr: u32,
+                         package_key_size: u32,
+                         contract_hash_ptr: u32,
+                         contract_hash_size: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let result = runtime.casper_disable_contract_version(
+                                function_context,
+                                package_key_ptr,
+                                package_key_size,
+                                contract_hash_ptr,
+                                contract_hash_size,
+                            )?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_dictionary_read",
+                        |mut caller: Caller<Runtime<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         output_size_ptr: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let result = runtime.casper_dictionary_read(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    )
+                    .unwrap();
+
+                linker
+                    .func_wrap(
+                        "env",
+                        "casper_random_bytes",
+                        |mut caller: Caller<Runtime<R>>, out_ptr: u32, out_size: u32| {
+                            let (mut function_context, runtime) =
+                                caller_adapter_and_runtime(&mut caller);
+
+                            let result =
+                                runtime.casper_random_bytes(function_context, out_ptr, out_size)?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    )
+                    .unwrap();
+
                 let start = Instant::now();
 
                 let instance = linker
                     .instantiate(&mut store, &compiled_module)
-                    .expect("should instantiate");
+                    .map_err(|error| RuntimeError::Other(error.to_string()))?;
 
                 let exported_func = instance
                     .get_typed_func::<(), (), _>(&mut store, func_name)
@@ -1961,6 +2049,8 @@ pub enum PreprocessingError {
     /// Unable to validate wasm bytes.
     #[error("Wasm validation error: {0}")]
     WasmValidation(#[from] WasmValidationError),
+    #[error("Precompile error: {0}")]
+    Precompile(RuntimeError),
 }
 
 impl From<elements::Error> for PreprocessingError {
@@ -2374,7 +2464,8 @@ impl WasmEngine {
                 // aot compile
                 let (precompiled_bytes, duration) = self
                     .precompile(module_bytes, &preprocessed_wasm_bytes)
-                    .unwrap();
+                    .map_err(PreprocessingError::Precompile)?;
+
                 // let wasmtime_module =
                 //     wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
                 //         .expect("should process");
@@ -2518,14 +2609,7 @@ impl WasmEngine {
                 original_bytes,
                 wasmi_module,
             } => {
-                // let wasmi_module = wasm_module.try_into_interpreted().expect("expected
-                // interpreted wasm module");
-
-                // let start = Instant::now();
                 let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
-                // let elapsed = start.elapsed();
-                // eprintln!("interpreted ")
-
                 let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
                 let mut imports = ImportsBuilder::new();
                 imports.push_resolver("env", &resolver);
@@ -2548,17 +2632,11 @@ impl WasmEngine {
                 compiled_artifact,
                 precompile_time,
             } => {
-                // aot compile
-                // let precompiled_bytes =
-                // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
-                // preprocess"); Ok(Module::Compiled(precompiled_bytes))
-
-                // todo!("compiled mode")
-                // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
-                // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
-                // &[]).expect("should create compiled module");
-
+                if wasmi_module.start_section().is_some() {
+                    return Err(execution::Error::UnsupportedWasmStart);
+                }
                 let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+
                 Ok(Instance::Compiled {
                     original_bytes,
                     module: wasmi_module,
@@ -2575,6 +2653,9 @@ impl WasmEngine {
                 module: compiled_module,
                 // runtime,
             } => {
+                if wasmi_module.start_section().is_some() {
+                    return Err(execution::Error::UnsupportedWasmStart);
+                }
                 // aot compile
                 // let precompiled_bytes =
                 // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
@@ -2598,12 +2679,17 @@ impl WasmEngine {
                 original_bytes,
                 wasmi_module,
                 wasmer_module,
-            } => Ok(Instance::Singlepass {
-                original_bytes,
-                module: wasmi_module,
-                wasmer_module,
-                runtime,
-            }),
+            } => {
+                if wasmi_module.start_section().is_some() {
+                    return Err(execution::Error::UnsupportedWasmStart);
+                }
+                Ok(Instance::Singlepass {
+                    original_bytes,
+                    module: wasmi_module,
+                    wasmer_module,
+                    runtime,
+                })
+            }
         }
     }
 

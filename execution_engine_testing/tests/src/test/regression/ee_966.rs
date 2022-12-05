@@ -237,6 +237,7 @@ fn should_run_ee_966_cant_have_larger_initial_than_max_memory() {
         .get_exec_result_owned(0)
         .expect("should have exec response")[0];
     let error = exec_response.as_error().expect("should have error");
+
     assert_matches!(error, Error::Exec(ExecError::Interpreter(_)));
 }
 
