@@ -8,11 +8,12 @@ use std::{
     ops::Deref,
     path::{Path, PathBuf},
     rc::Rc,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Instant,
 };
 
 use filesize::PathExt;
+use fs2::FileExt;
 use lmdb::DatabaseFlags;
 use log::LevelFilter;
 use num_rational::Ratio;
@@ -73,6 +74,7 @@ use casper_types::{
     DeployHash, DeployInfo, EraId, Gas, Key, KeyTag, ProtocolVersion, PublicKey, RuntimeArgs,
     StoredValue, Transfer, TransferAddr, URef, U512,
 };
+use once_cell::sync::Lazy;
 
 use crate::{
     chainspec_config::{ChainspecConfig, PRODUCTION_PATH},
@@ -95,6 +97,8 @@ const GLOBAL_STATE_DIR: &str = "global_state";
 pub type InMemoryWasmTestBuilder = WasmTestBuilder<InMemoryGlobalState>;
 /// Wasm test builder where state is held in LMDB.
 pub type LmdbWasmTestBuilder = WasmTestBuilder<LmdbGlobalState>;
+
+static INSTRUMENT_FILE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 /// Builder for simple WASM test
 pub struct WasmTestBuilder<S> {
@@ -730,6 +734,16 @@ where
         let end = start.elapsed();
 
         {
+            // let _file_lock = INSTRUMENT_FILE_LOCK.lock();
+
+            let (exec_error, gas_cost) = match &maybe_exec_results {
+                Ok(results) => {
+                    debug_assert_eq!(results.len(), 1);
+                    (results[0].as_error().cloned(), Some(results[0].cost()))
+                }
+                Err(error) => (Some(error.clone()), None),
+            };
+
             // let out = env!("OUT_DIR");
             let current_exe = env::current_exe().expect("should have path on this platform");
 
@@ -745,34 +759,53 @@ where
                 .open(results_file)
                 .expect("should open file in create and append mode");
 
+            file.lock_exclusive().expect("should lock file");
+
             // let file = File::append("execution_results.txt");
 
-            // module,file,line,elapsed,expr,value
+            // module,file,line,elapsed,result,gas,expr,value
             match instrumented_request.4 {
                 Some((expr, value)) => {
                     writeln!(
                         file,
-                        r#""{}","{}","{}","{}","{}","{}""#,
-                        instrumented_request.1,
-                        instrumented_request.2,
-                        instrumented_request.3,
-                        end.as_micros(),
-                        expr,
-                        value,
+                        r#""{module}","{file}","{line}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        module = instrumented_request.1,
+                        file = instrumented_request.2,
+                        line = instrumented_request.3, // line
+                        elapsed = end.as_micros(),
+                        error = match exec_error {
+                            Some(error) => error.to_string(),
+                            None => String::new(),
+                        },
+                        gas = match gas_cost {
+                            Some(gas_cost) => gas_cost.to_string(),
+                            None => String::new(),
+                        },
+                        expr = expr,
+                        value = value,
                     )
                     .unwrap();
                 }
                 None => {
                     writeln!(
                         file,
-                        r#""{}","{}","{}","{}","{}","{}""#,
-                        instrumented_request.1,
-                        instrumented_request.2,
-                        instrumented_request.3,
-                        end.as_micros(),
-                        "",
-                        "",
+                        r#""{module}","{file}","{line}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        module = instrumented_request.1,
+                        file = instrumented_request.2,
+                        line = instrumented_request.3, // line
+                        elapsed = end.as_micros(),
+                        error = match exec_error {
+                            Some(error) => error.to_string(),
+                            None => String::new(),
+                        },
+                        gas = match gas_cost {
+                            Some(gas_cost) => gas_cost.to_string(),
+                            None => String::new(),
+                        },
+                        expr = "",
+                        value = "",
                     )
+
                     .unwrap();
                 }
             }

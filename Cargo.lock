@@ -425,6 +425,7 @@ dependencies = [
  "casper-hashing",
  "casper-types 1.5.0",
  "filesize",
+ "fs2",
  "humantime 2.1.0",
  "lmdb",
  "log",

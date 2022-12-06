@@ -19,7 +19,6 @@ use std::{
 };
 
 use tracing::error;
-use wasmi::{MemoryRef, Trap, TrapKind};
 
 use casper_types::{
     account::{Account, AccountHash, ActionType, Weight},
@@ -54,6 +53,7 @@ use crate::{
         host_function_costs::{Cost, HostFunction},
         wasm_engine::{
             self, FunctionContext, Module, PreprocessingError, RuntimeValue, WasmEngine,
+            WasmiModule,
         },
     },
     storage::global_state::StateReader,
@@ -101,7 +101,7 @@ where
 #[derive(Clone)]
 pub struct Runtime<R: Clone> {
     pub(crate) config: EngineConfig,
-    pub(crate) module: Option<Module>,
+    pub(crate) module: Option<WasmiModule>,
     pub(crate) host_buffer: Arc<Mutex<Option<CLValue>>>,
     pub(crate) context: RuntimeContext<R>,
     pub(crate) stack: Option<RuntimeStack>,
@@ -139,13 +139,13 @@ where
     fn new_invocation_runtime(
         &self,
         context: RuntimeContext<R>,
-        module: Module,
+        module: &Module,
         stack: RuntimeStack,
     ) -> Self {
         Self::check_preconditions(&stack);
         Runtime {
             config: self.config,
-            module: Some(module),
+            module: Some(module.get_wasmi_module()),
             host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: Some(stack),
@@ -227,7 +227,7 @@ where
         &mut self,
         entry_points: &EntryPoints,
     ) -> Result<Vec<u8>, Error> {
-        let mut parity_wasm = self.module.clone().unwrap().into_interpreted();
+        let mut parity_wasm = self.module.clone().unwrap();
 
         let export_section = parity_wasm
             .export_section()
@@ -248,7 +248,7 @@ where
         if let Some(missing_name) = maybe_missing_name {
             Err(Error::FunctionNotFound(missing_name))
         } else {
-            let mut module = self.module.clone().unwrap().into_interpreted();
+            let mut module = self.module.clone().unwrap();
             pwasm_utils::optimize(&mut module, entry_point_names)?;
             parity_wasm::serialize(module).map_err(Error::ParityWasm)
         }
@@ -1128,11 +1128,6 @@ where
             | (EntryPointType::Contract, EntryPointType::Contract) => Ok(contract_hash.into()),
         }
     }
-    fn try_get_module(&self) -> Result<&Module, Error> {
-        self.module
-            .as_ref()
-            .ok_or(Error::WasmPreprocessing(PreprocessingError::MissingModule))
-    }
 
     fn try_get_stack(&self) -> Result<&RuntimeStack, Error> {
         self.stack.as_ref().ok_or(Error::MissingRuntimeStack)
@@ -1354,13 +1349,11 @@ where
         );
         let protocol_version = self.context.protocol_version();
 
-        let mut runtime = Runtime::new_invocation_runtime(self, context, module.clone(), stack);
+        let mut runtime = Runtime::new_invocation_runtime(self, context, &module, stack);
 
-        let instance = self.wasm_engine.instance_and_memory(
-            module.clone(),
-            protocol_version,
-            runtime.clone(),
-        )?;
+        let instance =
+            self.wasm_engine
+                .instance_and_memory(module, protocol_version, runtime.clone())?;
 
         let result = instance.invoke_export(&self.wasm_engine, entry_point.name(), Vec::new());
 
@@ -1411,7 +1404,8 @@ where
                         {
                             // Overwrites parent's named keys with child's new named keys but only
                             // when running session code.
-                            // *self.context.named_keys_mut() = runtime.context.named_keys().clone();
+                            // *self.context.named_keys_mut() =
+                            // runtime.context.named_keys().clone();
                             assert_eq!(
                                 self.context.named_keys(),
                                 runtime.context.named_keys(),

@@ -25,7 +25,7 @@ use std::{
     fmt::{self, Display, Formatter},
     fs::{self, File, OpenOptions},
     io::Write,
-    ops::DerefMut,
+    ops::{Deref, DerefMut},
     path::Path,
     rc::Rc,
     sync::{Arc, Mutex, Once, RwLock},
@@ -49,7 +49,7 @@ pub const DEFAULT_MAX_GLOBALS: u32 = 256;
 /// Maximum number of parameters a function can have.
 pub const DEFAULT_MAX_PARAMETER_COUNT: u32 = 256;
 
-use parity_wasm::elements::Module as WasmiModule;
+pub use parity_wasm::elements::Module as WasmiModule;
 use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
 use wasmtime::{
     AsContext, AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory,
@@ -120,7 +120,6 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 /// Statically dispatched Wasm module wrapper for different implementations
 /// NOTE: Probably at this stage it can hold raw wasm bytes without being an enum, and the decision
 /// can be made later
-#[derive(Clone)]
 pub enum Module {
     /// TODO: We might not need it anymore. We use "do nothing" bytes for replacing wasm modules
     Noop,
@@ -147,6 +146,7 @@ pub enum Module {
         wasmi_module: WasmiModule,
         // store: wasmer::Store,
         wasmer_module: wasmer::Module,
+        store: wasmer::Store,
     },
 }
 
@@ -188,6 +188,35 @@ impl Module {
             Module::Jitted { wasmi_module, .. } => wasmi_module,
             Module::Singlepass { wasmi_module, .. } => wasmi_module,
         }
+    }
+
+    pub fn get_wasmi_module(&self) -> WasmiModule {
+        let wasmi_module_ref = match self {
+            Module::Noop => unreachable!("noop is unused"),
+            Module::Interpreted {
+                original_bytes,
+                wasmi_module,
+            } => wasmi_module,
+            Module::Compiled {
+                original_bytes,
+                wasmi_module,
+                precompile_time,
+                compiled_artifact,
+            } => wasmi_module,
+            Module::Jitted {
+                original_bytes,
+                wasmi_module,
+                precompile_time,
+                module,
+            } => wasmi_module,
+            Module::Singlepass {
+                original_bytes,
+                wasmi_module,
+                wasmer_module,
+                store,
+            } => wasmi_module,
+        };
+        wasmi_module_ref.clone()
     }
 }
 
@@ -247,6 +276,14 @@ pub enum RuntimeError {
     MemoryAccessError(#[from] wasmer::MemoryAccessError),
     #[error("{0}")]
     Other(String),
+    #[error(transparent)]
+    Instantiation(Arc<wasmer::InstantiationError>),
+}
+
+impl From<wasmer::InstantiationError> for RuntimeError {
+    fn from(v: wasmer::InstantiationError) -> Self {
+        Self::Instantiation(Arc::new(v))
+    }
 }
 
 impl From<wasmi::Error> for RuntimeError {
@@ -294,8 +331,7 @@ impl RuntimeError {
                     None => Err(self),
                 }
             }
-            RuntimeError::Other(_) => Err(self),
-            RuntimeError::MemoryAccessError(_) => Err(self),
+            _ => Err(self),
         }
     }
 }
@@ -339,7 +375,6 @@ impl Into<wasmi::RuntimeValue> for RuntimeValue {
 }
 
 /// Warmed up instance of a wasm module used for execution.
-#[derive(Clone)]
 pub enum Instance<R>
 where
     R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
@@ -371,6 +406,7 @@ where
         /// There is no separate "compile" step that turns a wasm bytes into a wasmer module
         wasmer_module: wasmer::Module,
         runtime: Runtime<R>,
+        store: wasmer::Store,
     },
 }
 
@@ -1816,12 +1852,13 @@ where
                 module,
                 wasmer_module,
                 runtime,
+                store: mut wasmer_store,
             } => {
                 // let import_object = imports! {};
                 let mut import_object = wasmer::Imports::new();
+                // let memory = memory.clone();
                 // import_object.define("env", "host_function", host_function);
                 let memory_pages = wasm_engine.wasm_config().max_memory;
-                let mut wasmer_store = wasm_engine.wasmer_store.write().unwrap();
 
                 let import_type = wasmer_module
                     .imports()
@@ -1831,123 +1868,1641 @@ where
                     .expect("should be validated already");
                 let memory_import = import_type.ty().memory().expect("should be memory");
 
-                let memory = wasmer::Memory::new(wasmer_store.deref_mut(), memory_import.clone())
-                    .expect("should create wasmer memory");
+                let memory =
+                    wasmer::Memory::new(&mut wasmer_store.as_store_mut(), memory_import.clone())
+                        .expect("should create wasmer memory");
 
-                import_object.define("env", "memory", memory.clone());
+                let memory_obj = memory.clone();
+                import_object.define("env", "memory", memory_obj.clone());
 
                 let function_env = FunctionEnv::new(
-                    wasmer_store.deref_mut(),
+                    &mut wasmer_store.as_store_mut(),
                     WasmerEnv {
                         runtime: Box::new(runtime.clone()),
                         // memory: memory.clone(),
                     },
                 );
 
-                let gas_func = wasmer::Function::new_typed_with_env(
-                    wasmer_store.deref_mut(),
-                    &function_env,
-                    |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                     gas_arg: u32|
-                     -> Result<(), execution::Error> {
-                        env.data_mut().runtime.gas(Gas::new(gas_arg.into()))
-                    },
+                // let gas_func = wasmer::Function::new_typed_with_env(
+                //     &mut wasmer_store.as_store_mut(),
+                //     &function_env,
+                //     |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                //      gas_arg: u32|
+                //      -> Result<(), execution::Error> {
+                //         env.data_mut().runtime.gas(Gas::new(gas_arg.into()))
+                //     },
+                // );
+
+                // let revert_func = wasmer::Function::new_typed_with_env(
+                //     &mut wasmer_store.as_store_mut(),
+                //     &function_env,
+                //     |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                //      status: u32|
+                //      -> Result<(), execution::Error> {
+                //         let error = env.data_mut().runtime.casper_revert(status).unwrap_err();
+                //         Err(error)
+                //     },
+                // );
+
+                // let mem2 = memory.clone();
+                // let new_uref_func = wasmer::Function::new_typed_with_env(
+                //     &mut wasmer_store.as_store_mut(),
+                //     &function_env,
+                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                //           uref_ptr: u32,
+                //           value_ptr: u32,
+                //           value_size: u32|
+                //           -> Result<(), execution::Error> {
+                //         // let cloned_mem = mem2;
+                //         let mut function_context =
+                // WasmerAdapter::new(mem2.view(&env.as_store_ref()));
+
+                //         env.data_mut().runtime.casper_new_uref(
+                //             function_context,
+                //             uref_ptr,
+                //             value_ptr,
+                //             value_size,
+                //         )?;
+                //         Ok(())
+                //     },
+                // );
+                // let mem2 = memory.clone();
+                // let get_main_purse_func = wasmer::Function::new_typed_with_env(
+                //     &mut wasmer_store.as_store_mut(),
+                //     &function_env,
+                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                //           dest_ptr: u32|
+                //           -> Result<(), execution::Error> {
+                //         let mut function_context =
+                // WasmerAdapter::new(mem2.view(&env.as_store_ref()));         env.
+                // data_mut()             .runtime
+                //             .casper_get_main_purse(function_context, dest_ptr)?;
+                //         Ok(())
+                //     },
+                // );
+
+                // let memory = memory.clone();
+
+                // let write_func = wasmer::Function::new_typed_with_env(
+                //     &mut wasmer_store.as_store_mut(),
+                //     &function_env,
+                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
+                //           key_ptr: u32,
+                //           key_size: u32,
+                //           value_ptr: u32,
+                //           value_size: u32|
+                //           -> Result<(), execution::Error> {
+                //         let mut function_context =
+                // WasmerAdapter::new(memory.view(&env.as_store_ref()));
+                //         env.data_mut().runtime.casper_write(
+                //             function_context,
+                //             key_ptr,
+                //             key_size,
+                //             value_ptr,
+                //             value_size,
+                //         )?;
+                //         Ok(())
+                //     },
+                // );
+
+                //                import_object.define("env", "gas",
+                // wasmer::Extern::from(gas_func));                
+                // import_object.define("env", "casper_revert", wasmer::Extern::from(revert_func));
+
+                //                import_object.define(
+                //     "env",
+                //     "casper_new_uref",
+                //     wasmer::Extern::from(new_uref_func),
+                // );
+                //                import_object.define(
+                //     "env",
+                //     "casper_get_main_purse",
+                //     wasmer::Extern::from(get_main_purse_func),
+                // );
+
+                //                import_object.define("env", "casper_write",
+                // wasmer::Extern::from(write_func));
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_read_value",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.read(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                output_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
                 );
 
-                let revert_func = wasmer::Function::new_typed_with_env(
-                    wasmer_store.deref_mut(),
-                    &function_env,
-                    |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                     status: u32|
-                     -> Result<(), execution::Error> {
-                        let error = env.data_mut().runtime.casper_revert(status).unwrap_err();
-                        Err(error)
-                    },
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_add",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              value_ptr: u32,
+                              value_size: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.casper_add(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
                 );
 
-                let mem2 = memory.clone();
-                let new_uref_func = wasmer::Function::new_typed_with_env(
-                    wasmer_store.deref_mut(),
-                    &function_env,
-                    move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                          uref_ptr: u32,
-                          value_ptr: u32,
-                          value_size: u32|
-                          -> Result<(), execution::Error> {
-                        // let cloned_mem = mem2;
-                        let function_context = WasmerAdapter::new(mem2.view(&env.as_store_ref()));
-
-                        env.data_mut().runtime.casper_new_uref(
-                            function_context,
-                            uref_ptr,
-                            value_ptr,
-                            value_size,
-                        )?;
-                        Ok(())
-                    },
-                );
-                let mem2 = memory.clone();
-                let get_main_purse_func = wasmer::Function::new_typed_with_env(
-                    wasmer_store.deref_mut(),
-                    &function_env,
-                    move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                          dest_ptr: u32|
-                          -> Result<(), execution::Error> {
-                        let function_context = WasmerAdapter::new(mem2.view(&env.as_store_ref()));
-                        env.data_mut()
-                            .runtime
-                            .casper_get_main_purse(function_context, dest_ptr)?;
-                        Ok(())
-                    },
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_revert",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              param: u32|
+                              -> Result<(), execution::Error> {
+                            caller.data_mut().runtime.casper_revert(param)?;
+                            Ok(()) //unreachable
+                        },
+                    ),
                 );
 
-                let memory = memory.clone();
-
-                let write_func = wasmer::Function::new_typed_with_env(
-                    wasmer_store.deref_mut(),
-                    &function_env,
-                    move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                          key_ptr: u32,
-                          key_size: u32,
-                          value_ptr: u32,
-                          value_size: u32|
-                          -> Result<(), execution::Error> {
-                        let function_context = WasmerAdapter::new(memory.view(&env.as_store_ref()));
-                        env.data_mut().runtime.casper_write(
-                            function_context,
-                            key_ptr,
-                            key_size,
-                            value_ptr,
-                            value_size,
-                        )?;
-                        Ok(())
-                    },
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_ret",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              value_ptr: u32,
+                              value_size: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+                            let error = caller.data_mut().runtime.ret(
+                                function_context,
+                                value_ptr,
+                                value_size,
+                            );
+                            // Result::<(), _>::Err(error.into())
+                            Err(error)
+                        },
+                    ),
                 );
 
-                import_object.define("env", "gas", wasmer::Extern::from(gas_func));
-                import_object.define("env", "casper_revert", wasmer::Extern::from(revert_func));
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_phase",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              dest_ptr: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.get_phase,
+                                [dest_ptr],
+                            )?;
+                            caller
+                                .data_mut()
+                                .runtime
+                                .get_phase(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_is_valid_uref",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              uref_ptr: u32,
+                              uref_size: u32|
+                              -> Result<_, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.is_valid_uref(
+                                function_context,
+                                uref_ptr,
+                                uref_size,
+                            )?;
+                            Ok(i32::from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_add_associated_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              account_hash_ptr: u32,
+                              account_hash_size: u32,
+                              weight: i32|
+                              -> Result<_, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.add_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_remove_associated_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              account_hash_ptr: u32,
+                              account_hash_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.remove_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                            )?;
+                            Ok(ret)
+                            // Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_update_associated_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              account_hash_ptr: u32,
+                              account_hash_size: u32,
+                              weight: i32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.update_associated_key(
+                                function_context,
+                                account_hash_ptr,
+                                account_hash_size as usize,
+                                weight as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_set_action_threshold",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              permission_level: u32,
+                              permission_threshold: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.set_action_threshold(
+                                function_context,
+                                permission_level,
+                                permission_threshold as u8,
+                            )?;
+                            Ok(ret)
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_caller",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .get_caller(function_context, output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_blocktime",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              dest_ptr: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller
+                                .data_mut()
+                                .runtime
+                                .get_blocktime(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "gas",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              param: u32|
+                              -> Result<(), execution::Error> {
+                            caller.data_mut().runtime.gas(Gas::new(U512::from(param)))?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_new_uref",
-                    wasmer::Extern::from(new_uref_func),
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              uref_ptr,
+                              value_ptr,
+                              value_size|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.casper_new_uref(
+                                function_context,
+                                uref_ptr,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
                 );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_create_purse",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              dest_ptr: u32,
+                              dest_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.casper_create_purse(
+                                function_context,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_write",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              value_ptr: u32,
+                              value_size: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.casper_write(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                value_ptr,
+                                value_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_main_purse",
-                    wasmer::Extern::from(get_main_purse_func),
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              dest_ptr: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller
+                                .data_mut()
+                                .runtime
+                                .casper_get_main_purse(function_context, dest_ptr)?;
+                            Ok(())
+                        },
+                    ),
                 );
-                import_object.define("env", "casper_write", wasmer::Extern::from(write_func));
 
-                let instance =
-                    wasmer::Instance::new(wasmer_store.deref_mut(), &wasmer_module, &import_object)
-                        .expect("should create new wasmer instance");
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_named_arg_size",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr: u32,
+                              name_size: u32,
+                              size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.casper_get_named_arg_size(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_named_arg",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr: u32,
+                              name_size: u32,
+                              dest_ptr: u32,
+                              dest_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.casper_get_named_arg(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_transfer_to_account",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              amount_ptr: u32,
+                              amount_size: u32,
+                              id_ptr: u32,
+                              id_size: u32,
+                              result_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.casper_transfer_to_account(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                amount_ptr,
+                                amount_size,
+                                id_ptr,
+                                id_size,
+                                result_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_has_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr: u32,
+                              name_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.has_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                            )?;
+                            Ok(ret)
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr: u32,
+                              name_size: u32,
+                              output_ptr: u32,
+                              output_size: u32,
+                              bytes_written: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.load_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                output_ptr,
+                                output_size as usize,
+                                bytes_written,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_put_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr,
+                              name_size,
+                              key_ptr,
+                              key_size|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.casper_put_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                                key_ptr,
+                                key_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_remove_key",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              name_ptr: u32,
+                              name_size: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.remove_key(
+                                function_context,
+                                name_ptr,
+                                name_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                #[cfg(feature = "test-support")]
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_print",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              text_ptr: u32,
+                              text_size: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.casper_print(
+                                function_context,
+                                text_ptr,
+                                text_size,
+                            )?;
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_transfer_from_purse_to_purse",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              source_ptr,
+                              source_size,
+                              target_ptr,
+                              target_size,
+                              amount_ptr,
+                              amount_size,
+                              id_ptr,
+                              id_size|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .casper_transfer_from_purse_to_purse(
+                                    function_context,
+                                    source_ptr,
+                                    source_size,
+                                    target_ptr,
+                                    target_size,
+                                    amount_ptr,
+                                    amount_size,
+                                    id_ptr,
+                                    id_size,
+                                )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_transfer_from_purse_to_account",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              source_ptr,
+                              source_size,
+                              key_ptr,
+                              key_size,
+                              amount_ptr,
+                              amount_size,
+                              id_ptr,
+                              id_size,
+                              result_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .casper_transfer_from_purse_to_account(
+                                    function_context,
+                                    source_ptr,
+                                    source_size,
+                                    key_ptr,
+                                    key_size,
+                                    amount_ptr,
+                                    amount_size,
+                                    id_ptr,
+                                    id_size,
+                                    result_ptr,
+                                )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_balance",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              ptr: u32,
+                              ptr_size: u32,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.get_balance,
+                                [ptr, ptr_size, output_size_ptr],
+                            )?;
+                            let ret = caller.data_mut().runtime.get_balance_host_buffer(
+                                function_context,
+                                ptr,
+                                ptr_size as usize,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_read_host_buffer",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              dest_ptr,
+                              dest_size,
+                              bytes_written_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.read_host_buffer,
+                                [dest_ptr, dest_size, bytes_written_ptr],
+                            )?;
+
+                            let ret = caller.data_mut().runtime.read_host_buffer(
+                                function_context,
+                                dest_ptr,
+                                dest_size as usize,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_get_system_contract",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              system_contract_index,
+                              dest_ptr,
+                              dest_size|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.get_system_contract,
+                                [system_contract_index, dest_ptr, dest_size],
+                            )?;
+                            let ret = caller.data_mut().runtime.get_system_contract(
+                                function_context,
+                                system_contract_index,
+                                dest_ptr,
+                                dest_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_load_named_keys",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              total_keys_ptr,
+                              result_size_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.load_named_keys,
+                                [total_keys_ptr, result_size_ptr],
+                            )?;
+                            let ret = caller.data_mut().runtime.load_named_keys(
+                                function_context,
+                                total_keys_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_create_contract_package_at_hash",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              hash_dest_ptr,
+                              access_dest_ptr,
+                              is_locked: u32|
+                              -> Result<(), execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.create_contract_package_at_hash,
+                                [hash_dest_ptr, access_dest_ptr],
+                            )?;
+                            let package_status = ContractPackageStatus::new(is_locked != 0);
+                            let (hash_addr, access_addr) = caller
+                                .data_mut()
+                                .runtime
+                                .create_contract_package_at_hash(package_status)?;
+
+                            caller.data_mut().runtime.function_address(
+                                &mut function_context,
+                                hash_addr,
+                                hash_dest_ptr,
+                            )?;
+                            caller.data_mut().runtime.function_address(
+                                &mut function_context,
+                                access_addr,
+                                access_dest_ptr,
+                            )?;
+
+                            Ok(())
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_create_contract_user_group",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              package_key_ptr: u32,
+                              package_key_size: u32,
+                              label_ptr: u32,
+                              label_size: u32,
+                              num_new_urefs: u32,
+                              existing_urefs_ptr: u32,
+                              existing_urefs_size: u32,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .casper_create_contract_user_group(
+                                    function_context,
+                                    package_key_ptr,
+                                    package_key_size,
+                                    label_ptr,
+                                    label_size,
+                                    num_new_urefs,
+                                    existing_urefs_ptr,
+                                    existing_urefs_size,
+                                    output_size_ptr,
+                                )?;
+
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_provision_contract_user_group_uref",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              package_ptr,
+                              package_size,
+                              label_ptr,
+                              label_size,
+                              value_size_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.provision_contract_user_group_uref,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    value_size_ptr,
+                                ],
+                            )?;
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .provision_contract_user_group_uref(
+                                    function_context,
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    value_size_ptr,
+                                )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_remove_contract_user_group",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              package_key_ptr,
+                              package_key_size,
+                              label_ptr,
+                              label_size|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .casper_remove_contract_user_group(
+                                    function_context,
+                                    package_key_ptr,
+                                    package_key_size,
+                                    label_ptr,
+                                    label_size,
+                                )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_remove_contract_user_group_urefs",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              package_ptr,
+                              package_size,
+                              label_ptr,
+                              label_size,
+                              urefs_ptr,
+                              urefs_size|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.remove_contract_user_group_urefs,
+                                [
+                                    package_ptr,
+                                    package_size,
+                                    label_ptr,
+                                    label_size,
+                                    urefs_ptr,
+                                    urefs_size,
+                                ],
+                            )?;
+                            let ret = caller.data_mut().runtime.remove_contract_user_group_urefs(
+                                function_context,
+                                package_ptr,
+                                package_size,
+                                label_ptr,
+                                label_size,
+                                urefs_ptr,
+                                urefs_size,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_call_versioned_contract",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              contract_package_hash_ptr,
+                              contract_package_hash_size,
+                              contract_version_ptr,
+                              contract_package_size,
+                              entry_point_name_ptr,
+                              entry_point_name_size,
+                              args_ptr,
+                              args_size,
+                              result_size_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.call_versioned_contract,
+                                [
+                                    contract_package_hash_ptr,
+                                    contract_package_hash_size,
+                                    contract_version_ptr,
+                                    contract_package_size,
+                                    entry_point_name_ptr,
+                                    entry_point_name_size,
+                                    args_ptr,
+                                    args_size,
+                                    result_size_ptr,
+                                ],
+                            )?;
+
+                            // TODO: Move
+
+                            let contract_package_hash: ContractPackageHash = {
+                                let contract_package_hash_bytes = function_context
+                                    .memory_read(
+                                        contract_package_hash_ptr,
+                                        contract_package_hash_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_package_hash_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let contract_version: Option<ContractVersion> = {
+                                let contract_version_bytes = function_context
+                                    .memory_read(
+                                        contract_version_ptr,
+                                        contract_package_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(contract_version_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let entry_point_name: String = {
+                                let entry_point_name_bytes = function_context
+                                    .memory_read(
+                                        entry_point_name_ptr,
+                                        entry_point_name_size as usize,
+                                    )
+                                    .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+                                bytesrepr::deserialize(entry_point_name_bytes)
+                                    .map_err(execution::Error::BytesRepr)?
+                            };
+                            let args_bytes: Vec<u8> = function_context
+                                .memory_read(args_ptr, args_size as usize)
+                                .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
+
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .call_versioned_contract_host_buffer(
+                                    function_context,
+                                    contract_package_hash,
+                                    contract_version,
+                                    entry_point_name,
+                                    args_bytes,
+                                    result_size_ptr,
+                                )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_add_contract_version",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              contract_package_hash_ptr,
+                              contract_package_hash_size,
+                              version_ptr,
+                              entry_points_ptr,
+                              entry_points_size,
+                              named_keys_ptr,
+                              named_keys_size,
+                              output_ptr,
+                              output_size,
+                              bytes_written_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+
+                            let ret = caller.data_mut().runtime.casper_add_contract_version(
+                                function_context,
+                                contract_package_hash_ptr,
+                                contract_package_hash_size,
+                                version_ptr,
+                                entry_points_ptr,
+                                entry_points_size,
+                                named_keys_ptr,
+                                named_keys_size,
+                                output_ptr,
+                                output_size,
+                                bytes_written_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_call_contract",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              contract_hash_ptr,
+                              contract_hash_size,
+                              entry_point_name_ptr,
+                              entry_point_name_size,
+                              args_ptr,
+                              args_size,
+                              result_size_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let ret = caller.data_mut().runtime.casper_call_contract(
+                                function_context,
+                                contract_hash_ptr,
+                                contract_hash_size,
+                                entry_point_name_ptr,
+                                entry_point_name_size,
+                                args_ptr,
+                                args_size,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_load_call_stack",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              call_stack_len_ptr,
+                              result_size_ptr|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs::HostFunction::fixed(10_000),
+                                [call_stack_len_ptr, result_size_ptr],
+                            )?;
+                            let ret = caller.data_mut().runtime.load_call_stack(
+                                function_context,
+                                call_stack_len_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_new_dictionary",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs::DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
+                                [output_size_ptr],
+                            )?;
+                            let ret = caller
+                                .data_mut()
+                                .runtime
+                                .new_dictionary(function_context, output_size_ptr)?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_dictionary_get",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              uref_ptr: u32,
+                              uref_size: u32,
+                              key_bytes_ptr: u32,
+                              key_bytes_size: u32,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.dictionary_get,
+                                [key_bytes_ptr, key_bytes_size, output_size_ptr],
+                            )?;
+                            let ret = caller.data_mut().runtime.dictionary_get(
+                                function_context,
+                                uref_ptr,
+                                uref_size,
+                                key_bytes_ptr,
+                                key_bytes_size,
+                                output_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_dictionary_put",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              uref_ptr,
+                              uref_size,
+                              key_bytes_ptr,
+                              key_bytes_size,
+                              value_ptr,
+                              value_ptr_size|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let ret = caller.data_mut().runtime.dictionary_put(
+                                function_context,
+                                uref_ptr,
+                                uref_size,
+                                key_bytes_ptr,
+                                key_bytes_size,
+                                value_ptr,
+                                value_ptr_size,
+                            )?;
+                            let host_function_costs =
+                                runtime.config().wasm_config().take_host_function_costs();
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.dictionary_put,
+                                [key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size],
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_blake2b",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              in_ptr: u32,
+                              in_size: u32,
+                              out_ptr: u32,
+                              out_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let host_function_costs = caller
+                                .data_mut()
+                                .runtime
+                                .config()
+                                .wasm_config()
+                                .take_host_function_costs();
+                            caller.data_mut().runtime.charge_host_function_call(
+                                &host_function_costs.blake2b,
+                                [in_ptr, in_size, out_ptr, out_size],
+                            )?;
+                            let digest = account::blake2b(
+                                function_context
+                                    .memory_read(in_ptr, in_size as usize)
+                                    .map_err(|e| execution::Error::Interpreter(e.into()))?,
+                            );
+                            if digest.len() != out_size as usize {
+                                let err_value =
+                                    u32::from(api_error::ApiError::BufferTooSmall) as i32;
+                                return Ok(err_value);
+                            }
+                            function_context
+                                .memory_write(out_ptr, &digest)
+                                .map_err(|e| execution::Error::Interpreter(e.into()))?;
+                            Ok(0_i32)
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_load_authorization_keys",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              len_ptr: u32,
+                              result_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let ret = caller.data_mut().runtime.casper_load_authorization_keys(
+                                function_context,
+                                len_ptr,
+                                result_size_ptr,
+                            )?;
+                            Ok(api_error::i32_from(ret))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_disable_contract_version",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              package_key_ptr: u32,
+                              package_key_size: u32,
+                              contract_hash_ptr: u32,
+                              contract_hash_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+
+                            let result =
+                                caller.data_mut().runtime.casper_disable_contract_version(
+                                    function_context,
+                                    package_key_ptr,
+                                    package_key_size,
+                                    contract_hash_ptr,
+                                    contract_hash_size,
+                                )?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_dictionary_read",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              key_ptr: u32,
+                              key_size: u32,
+                              output_size_ptr: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let result = caller.data_mut().runtime.casper_dictionary_read(
+                                function_context,
+                                key_ptr,
+                                key_size,
+                                output_size_ptr,
+                            )?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    ),
+                );
+
+                let memory = memory_obj.clone();
+                import_object.define(
+                    "env",
+                    "casper_random_bytes",
+                    wasmer::Function::new_typed_with_env(
+                        &mut wasmer_store.as_store_mut(),
+                        &function_env,
+                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                              out_ptr: u32,
+                              out_size: u32|
+                              -> Result<i32, execution::Error> {
+                            let mut function_context =
+                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let result = caller.data_mut().runtime.casper_random_bytes(
+                                function_context,
+                                out_ptr,
+                                out_size,
+                            )?;
+
+                            Ok(api_error::i32_from(result))
+                        },
+                    ),
+                );
+
+                let instance = wasmer::Instance::new(
+                    &mut wasmer_store.as_store_mut(),
+                    &wasmer_module,
+                    &import_object,
+                )?;
 
                 let call_func: TypedFunction<(), ()> = instance
                     .exports
-                    .get_typed_function(wasmer_store.deref_mut(), "call")
+                    .get_typed_function(&wasmer_store.as_store_ref(), func_name)
                     .expect("should get wasmer call func");
 
-                call_func.call(wasmer_store.deref_mut())?;
+                call_func.call(&mut wasmer_store.as_store_mut())?;
 
                 Ok(Some(RuntimeValue::I64(0)))
             }
@@ -2324,7 +3879,6 @@ pub struct WasmEngine {
     wasm_config: WasmConfig,
     execution_mode: ExecutionMode,
     compiled_engine: Arc<WasmtimeEngine>,
-    wasmer_store: Arc<RwLock<wasmer::Store>>,
 }
 
 fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
@@ -2388,15 +3942,18 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     WasmtimeEngine(wasmtime_engine)
 }
 
+fn make_wasmer_store() -> wasmer::Store {
+    let singlepass = Singlepass::new();
+    wasmer::Store::new(singlepass)
+}
+
 impl WasmEngine {
     /// Creates a new instance of the preprocessor.
     pub fn new(wasm_config: WasmConfig) -> Self {
-        let singlepass = Singlepass::new();
         Self {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
             compiled_engine: Arc::new(new_compiled_engine(&wasm_config)),
-            wasmer_store: Arc::new(RwLock::new(wasmer::Store::new(singlepass))),
         }
     }
 
@@ -2510,17 +4067,18 @@ impl WasmEngine {
 
                 let start = Instant::now();
 
-                let wasmer_module = wasmer::Module::from_binary(
-                    self.wasmer_store.write().unwrap().deref_mut(),
-                    &preprocessed_wasm_bytes,
-                )
-                .expect("should create wasmer module");
+                let mut store = make_wasmer_store();
+
+                let wasmer_module =
+                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)
+                        .expect("should create wasmer module");
 
                 let stop = start.elapsed();
 
                 Ok(Module::Singlepass {
                     original_bytes: module_bytes.to_vec(),
                     wasmi_module: module,
+                    store,
                     wasmer_module: wasmer_module,
                 })
             }
@@ -2574,7 +4132,23 @@ impl WasmEngine {
                     module,
                 }
             }
-            ExecutionMode::Singlepass => todo!(),
+            ExecutionMode::Singlepass => {
+                let start = Instant::now();
+
+                let wasmer_store = make_wasmer_store();
+
+                let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
+                    .expect("should create wasmer module");
+
+                let stop = start.elapsed();
+
+                Module::Singlepass {
+                    original_bytes: wasm_bytes.to_vec(),
+                    wasmi_module: parity_module,
+                    wasmer_module: wasmer_module,
+                    store: wasmer_store,
+                }
+            }
         };
         Ok(module)
     }
@@ -2609,7 +4183,7 @@ impl WasmEngine {
                 original_bytes,
                 wasmi_module,
             } => {
-                let module = wasmi::Module::from_parity_wasm_module(wasmi_module)?;
+                let module = wasmi::Module::from_parity_wasm_module(wasmi_module.clone())?;
                 let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
                 let mut imports = ImportsBuilder::new();
                 imports.push_resolver("env", &resolver);
@@ -2620,7 +4194,7 @@ impl WasmEngine {
                 let instance = not_started_module.not_started_instance().clone();
                 let memory = resolver.memory_ref()?;
                 Ok(Instance::Interpreted {
-                    original_bytes,
+                    original_bytes: original_bytes.clone(),
                     module: instance,
                     memory,
                     runtime,
@@ -2638,10 +4212,10 @@ impl WasmEngine {
                 let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
 
                 Ok(Instance::Compiled {
-                    original_bytes,
-                    module: wasmi_module,
+                    original_bytes: original_bytes.clone(),
+                    module: wasmi_module.clone(),
                     compiled_module,
-                    precompile_time,
+                    precompile_time: precompile_time.clone(),
                     runtime,
                 })
             }
@@ -2668,10 +4242,10 @@ impl WasmEngine {
 
                 // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
                 Ok(Instance::Compiled {
-                    original_bytes,
-                    module: wasmi_module,
-                    compiled_module,
-                    precompile_time,
+                    original_bytes: original_bytes.clone(),
+                    module: wasmi_module.clone(),
+                    compiled_module: compiled_module.clone(),
+                    precompile_time: precompile_time.clone(),
                     runtime,
                 })
             }
@@ -2679,15 +4253,17 @@ impl WasmEngine {
                 original_bytes,
                 wasmi_module,
                 wasmer_module,
+                store,
             } => {
                 if wasmi_module.start_section().is_some() {
                     return Err(execution::Error::UnsupportedWasmStart);
                 }
                 Ok(Instance::Singlepass {
-                    original_bytes,
-                    module: wasmi_module,
-                    wasmer_module,
+                    original_bytes: original_bytes.clone(),
+                    module: wasmi_module.clone(),
+                    wasmer_module: wasmer_module.clone(),
                     runtime,
+                    store: store,
                 })
             }
         }

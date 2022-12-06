@@ -149,7 +149,7 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                runtime.module = Some(module.clone());
+                runtime.module = Some(module.get_wasmi_module());
 
                 let instance = match self.wasm_engine.instance_and_memory(
                     module,
