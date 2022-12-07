@@ -483,6 +483,7 @@ dependencies = [
  "assert_matches",
  "base16",
  "bincode",
+ "bytes",
  "casper-hashing",
  "casper-types 1.5.0",
  "criterion",

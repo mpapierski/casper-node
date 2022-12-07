@@ -3,6 +3,7 @@ use std::{
     convert::{TryFrom, TryInto},
     env,
     ffi::OsStr,
+    fmt,
     fs::{self, File, OpenOptions},
     io::Write,
     ops::Deref,
@@ -78,8 +79,8 @@ use once_cell::sync::Lazy;
 
 use crate::{
     chainspec_config::{ChainspecConfig, PRODUCTION_PATH},
-    utils, ExecuteRequestBuilder, StepRequestBuilder, DEFAULT_PROPOSER_ADDR,
-    DEFAULT_PROTOCOL_VERSION, SYSTEM_ADDR,
+    instrumented, utils, ExecuteRequestBuilder, Instrumented, StepRequestBuilder,
+    DEFAULT_PROPOSER_ADDR, DEFAULT_PROTOCOL_VERSION, SYSTEM_ADDR,
 };
 
 /// LMDB initial map size is calculated based on DEFAULT_LMDB_PAGES and systems page size.
@@ -159,29 +160,6 @@ impl<S> Clone for WasmTestBuilder<S> {
     }
 }
 
-/// Wraps an expression with details useful for instrumentation.
-#[macro_export]
-macro_rules! instrumented {
-    ( $x:expr) => {{
-        (
-            $x,
-            module_path!(),
-            file!(),
-            line!(),
-            Option::<(&str, &str)>::None,
-        )
-    }};
-    ( $x:expr, $val:expr) => {{
-        (
-            $x,
-            module_path!(),
-            file!(),
-            line!(),
-            Some((stringify!($val), $val)),
-        )
-    }};
-}
-
 impl InMemoryWasmTestBuilder {
     /// Returns an [`InMemoryWasmTestBuilder`] initialized with an engine config instance.
     pub fn new_with_config(engine_config: EngineConfig) -> Self {
@@ -239,18 +217,13 @@ impl InMemoryWasmTestBuilder {
         let chainspec_config = ChainspecConfig::from_chainspec_path(chainspec_path)
             .expect("must build chainspec configuration");
 
-        let vesting_schedule_period_millis =
-            humantime::parse_duration(&chainspec_config.core_config.vesting_schedule_period)
-                .expect("should parse a vesting schedule period")
-                .as_millis() as u64;
-
         let engine_config = EngineConfig::new(
             DEFAULT_MAX_QUERY_DEPTH,
             chainspec_config.core_config.max_associated_keys,
             chainspec_config.core_config.max_runtime_call_stack_height,
             chainspec_config.core_config.minimum_delegation_amount,
             chainspec_config.core_config.strict_argument_checking,
-            vesting_schedule_period_millis,
+            chainspec_config.core_config.vesting_schedule_period,
             chainspec_config.wasm_config,
             chainspec_config.system_costs_config,
         );
@@ -311,10 +284,6 @@ impl LmdbWasmTestBuilder {
     ) -> Self {
         let chainspec_config = ChainspecConfig::from_chainspec_path(chainspec_path)
             .expect("must build chainspec configuration");
-        let vesting_schedule_period_millis =
-            humantime::parse_duration(&chainspec_config.core_config.vesting_schedule_period)
-                .expect("should parse a vesting schedule period")
-                .as_millis() as u64;
 
         let engine_config = EngineConfig::new(
             DEFAULT_MAX_QUERY_DEPTH,
@@ -322,7 +291,7 @@ impl LmdbWasmTestBuilder {
             chainspec_config.core_config.max_runtime_call_stack_height,
             chainspec_config.core_config.minimum_delegation_amount,
             chainspec_config.core_config.strict_argument_checking,
-            vesting_schedule_period_millis,
+            chainspec_config.core_config.vesting_schedule_period,
             chainspec_config.wasm_config,
             chainspec_config.system_costs_config,
         );
@@ -714,17 +683,14 @@ where
     /// Runs an instrumented [`ExecuteRequest`]. See also [`instrumented`] macro.
     ///
     /// # Usage
-    pub fn exec_instrumented<T>(
+    pub fn exec_instrumented<'a>(
         &mut self,
-        mut instrumented_request: (ExecuteRequest, &str, &str, u32, Option<(&str, T)>),
-    ) -> &mut Self
-    where
-        T: std::fmt::Display,
-    {
+        (mut execute_request, instrumented): (ExecuteRequest, Instrumented<'a>),
+    ) -> &mut Self {
         let exec_request = {
             let hash = self.post_state_hash.expect("expected post_state_hash");
-            instrumented_request.0.parent_state_hash = hash;
-            instrumented_request.0
+            execute_request.parent_state_hash = hash;
+            execute_request
         };
 
         let start = Instant::now();
@@ -764,14 +730,15 @@ where
             // let file = File::append("execution_results.txt");
 
             // module,file,line,elapsed,result,gas,expr,value
-            match instrumented_request.4 {
+            match instrumented.data {
                 Some((expr, value)) => {
                     writeln!(
                         file,
-                        r#""{module}","{file}","{line}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
-                        module = instrumented_request.1,
-                        file = instrumented_request.2,
-                        line = instrumented_request.3, // line
+                        r#""{module}","{file}","{line}","{function}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        module = instrumented.module_name,
+                        file = instrumented.file,
+                        line = instrumented.line, // line
+                        function = instrumented.function,
                         elapsed = end.as_micros(),
                         error = match exec_error {
                             Some(error) => error.to_string(),
@@ -789,10 +756,11 @@ where
                 None => {
                     writeln!(
                         file,
-                        r#""{module}","{file}","{line}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
-                        module = instrumented_request.1,
-                        file = instrumented_request.2,
-                        line = instrumented_request.3, // line
+                        r#""{module}","{file}","{line}","{function}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        module = instrumented.module_name,
+                        file = instrumented.file,
+                        line = instrumented.line,
+                        function = instrumented.function,
                         elapsed = end.as_micros(),
                         error = match exec_error {
                             Some(error) => error.to_string(),
@@ -919,6 +887,29 @@ where
         )
         .build();
         self.exec_instrumented(instrumented!(run_request))
+            .commit()
+            .expect_success()
+    }
+
+    /// Executes a request to call the system auction contract.
+    pub fn run_auction_instrumented<'a>(
+        &mut self,
+        era_end_timestamp_millis: u64,
+        evicted_validators: Vec<PublicKey>,
+        instrumented: Instrumented<'a>,
+    ) -> &mut Self {
+        let auction = self.get_auction_contract_hash();
+        let run_request = ExecuteRequestBuilder::contract_call_by_hash(
+            *SYSTEM_ADDR,
+            auction,
+            METHOD_RUN_AUCTION,
+            runtime_args! {
+                ARG_ERA_END_TIMESTAMP_MILLIS => era_end_timestamp_millis,
+                ARG_EVICTED_VALIDATORS => evicted_validators,
+            },
+        )
+        .build();
+        self.exec_instrumented((run_request, instrumented))
             .commit()
             .expect_success()
     }

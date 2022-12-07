@@ -1,6 +1,6 @@
 use casper_engine_test_support::{
-    instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumentation_data, instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    Instrumented, DEFAULT_ACCOUNT_ADDR, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::core::{engine_state, execution};
 use casper_types::{runtime_args, system::mint, AccessRights, ApiError, RuntimeArgs};
@@ -24,7 +24,7 @@ fn regression_20220204_as_contract() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::READ_ADD_WRITE;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_2 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         contract,
@@ -60,7 +60,7 @@ fn regression_20220204_as_contract_attenuated() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::READ;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_2 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         contract,
@@ -91,7 +91,7 @@ fn regression_20220204_as_contract_attenuated() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::WRITE;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_2 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         contract,
@@ -126,7 +126,7 @@ fn regression_20220204_as_contract_by_hash() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::READ_ADD_WRITE;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -163,7 +163,7 @@ fn regression_20220204_nontrivial_arg_as_contract() {
     let entrypoint = NONTRIVIAL_ARG_AS_CONTRACT;
     let new_access_rights = AccessRights::READ_ADD_WRITE;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_2 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         contract,
@@ -198,7 +198,7 @@ fn regression_20220204_as_contract_by_hash_attenuated() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::READ;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -229,7 +229,7 @@ fn regression_20220204_as_contract_by_hash_attenuated() {
     let entrypoint = TRANSFER_AS_CONTRACT;
     let new_access_rights = AccessRights::WRITE;
     let expected = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -265,7 +265,7 @@ fn regression_20220204_as_session() {
     // Demonstrates that a stored session cannot transfer funds.
     let entrypoint = TRANSFER_AS_SESSION;
     let new_access_rights = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         REGRESSION_20220204_CALL_CONTRACT,
@@ -296,7 +296,7 @@ fn regression_20220204_as_session_attenuated() {
     let contract = REGRESSION_20220204_CALL_CONTRACT;
     let entrypoint = TRANSFER_AS_SESSION;
     let new_access_rights = AccessRights::ADD;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let exec_request_2 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
         contract,
@@ -327,7 +327,7 @@ fn regression_20220204_as_session_attenuated() {
 fn regression_20220204_as_session_by_hash() {
     let entrypoint = TRANSFER_AS_SESSION;
     let new_access_rights = AccessRights::READ_ADD_WRITE;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -362,7 +362,7 @@ fn regression_20220204_as_session_by_hash() {
 fn regression_20220204_as_session_by_hash_attenuated() {
     let entrypoint = TRANSFER_AS_SESSION;
     let new_access_rights = AccessRights::READ;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -392,7 +392,7 @@ fn regression_20220204_as_session_by_hash_attenuated() {
     );
     let entrypoint = TRANSFER_AS_SESSION;
     let new_access_rights = AccessRights::ADD;
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
     let account = builder
         .get_account(*DEFAULT_ACCOUNT_ADDR)
         .expect("should have account");
@@ -425,7 +425,7 @@ fn regression_20220204_as_session_by_hash_attenuated() {
 #[ignore]
 #[test]
 fn regression_20220204_main_purse_as_session() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
@@ -460,7 +460,7 @@ fn regression_20220204_main_purse_as_session() {
 #[ignore]
 #[test]
 fn regression_20220204_main_purse_as_session_by_hash() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request = ExecuteRequestBuilder::contract_call_by_name(
         *DEFAULT_ACCOUNT_ADDR,
@@ -490,7 +490,7 @@ fn regression_20220204_main_purse_as_session_by_hash() {
     );
 }
 
-fn setup() -> InMemoryWasmTestBuilder {
+fn setup<'a>(instrumentation: Instrumented<'a>) -> InMemoryWasmTestBuilder {
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
     let install_request = ExecuteRequestBuilder::standard(
@@ -500,7 +500,7 @@ fn setup() -> InMemoryWasmTestBuilder {
     )
     .build();
     builder
-        .exec_instrumented(instrumented!(install_request))
+        .exec_instrumented((install_request, instrumentation))
         .expect_success()
         .commit();
 

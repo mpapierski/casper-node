@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use rand::Rng;
 
 use casper_engine_test_support::{
-    instrumented, DeployItemBuilder, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_PAYMENT, PRODUCTION_RUN_GENESIS_REQUEST,
+    function, instrumentation_data, instrumented, DeployItemBuilder, ExecuteRequestBuilder,
+    InMemoryWasmTestBuilder, DEFAULT_ACCOUNT_ADDR, DEFAULT_PAYMENT, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::core::{runtime_context::RANDOM_BYTES_COUNT, ADDRESS_LENGTH};
 use casper_types::{crypto, runtime_args, RuntimeArgs, BLAKE2B_DIGEST_LENGTH};
@@ -85,7 +85,7 @@ fn should_return_different_random_bytes_on_each_call() {
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let all_addresses: HashSet<_> = (0..RUNS)
-        .map(|_| {
+        .map(|run| {
             let exec_request = ExecuteRequestBuilder::standard(
                 *DEFAULT_ACCOUNT_ADDR,
                 RANDOM_BYTES_WASM,
@@ -94,7 +94,7 @@ fn should_return_different_random_bytes_on_each_call() {
             .build();
 
             builder
-                .exec_instrumented(instrumented!(exec_request))
+                .exec_instrumented(instrumented!(exec_request, run))
                 .commit()
                 .expect_success();
 
@@ -117,7 +117,7 @@ fn should_hash() {
 
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
-    for _ in 0..RUNS {
+    for run in 0..RUNS {
         let input: [u8; INPUT_LENGTH] = rng.gen();
 
         let exec_request = ExecuteRequestBuilder::standard(
@@ -130,7 +130,7 @@ fn should_hash() {
         .build();
 
         builder
-            .exec_instrumented(instrumented!(exec_request))
+            .exec_instrumented(instrumented!(exec_request, run))
             .commit()
             .expect_success();
 

@@ -152,7 +152,13 @@ fn should_pass_elem_section() {
         matches!(
             elem_does_not_fit_err,
             Some(engine_state::Error::Exec(execution::Error::Interpreter(ref msg)))
-            if msg == "elements segment does not fit"
+            if
+            // wasmi
+            msg == "elements segment does not fit"
+            // wasmer
+            || msg.contains("out of bounds table access")
+            // wasmtime
+            || msg == "Failed to link module"
         ),
         "{:?}",
         elem_does_not_fit_err
@@ -566,7 +572,7 @@ fn should_verify_max_param_count() {
     // Here we pass the preprocess stage, but we fail at stack height limiter as we do have very
     // restrictive default stack height.
     assert!(
-        matches!(&error, Error::Exec(execution::Error::Interpreter(s)) if s.contains("Unreachable")),
+        matches!(&error, Error::Exec(execution::Error::Interpreter(s)) if s.to_lowercase().contains("unreachable")),
         "{:?}",
         error
     );

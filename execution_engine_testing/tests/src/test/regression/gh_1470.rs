@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use casper_engine_test_support::{
-    instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder, LmdbWasmTestBuilder,
-    UpgradeRequestBuilder, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_PUBLIC_KEY,
-    DEFAULT_MAX_ASSOCIATED_KEYS, MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_RUN_GENESIS_REQUEST,
+    instrumentation_data, instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    Instrumented, LmdbWasmTestBuilder, UpgradeRequestBuilder, DEFAULT_ACCOUNT_ADDR,
+    DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_MAX_ASSOCIATED_KEYS, MINIMUM_ACCOUNT_CREATION_BALANCE,
+    PRODUCTION_ENGINE_CONFIG, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::{
@@ -44,7 +45,7 @@ const ARG_TARGET: &str = "target";
 
 const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion::V1_0_0;
 
-fn setup() -> InMemoryWasmTestBuilder {
+fn setup<'a>(instrumentation: Instrumented<'a>) -> InMemoryWasmTestBuilder {
     let mut builder = InMemoryWasmTestBuilder::default();
     builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
@@ -59,7 +60,7 @@ fn setup() -> InMemoryWasmTestBuilder {
     .build();
 
     builder
-        .exec_instrumented(instrumented!(transfer))
+        .exec_instrumented((transfer, instrumentation))
         .expect_success()
         .commit();
 
@@ -83,9 +84,9 @@ fn setup() -> InMemoryWasmTestBuilder {
         DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT,
         DEFAULT_MINIMUM_DELEGATION_AMOUNT,
         strict_argument_checking,
-        DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
-        WasmConfig::default(),
-        SystemConfig::default(),
+        PRODUCTION_ENGINE_CONFIG.vesting_schedule_period_millis(),
+        PRODUCTION_ENGINE_CONFIG.wasm_config().clone(),
+        PRODUCTION_ENGINE_CONFIG.system_config().clone(),
     );
 
     builder
@@ -123,7 +124,7 @@ fn apply_global_state_update(
 #[ignore]
 #[test]
 fn gh_1470_call_contract_should_verify_group_access() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
@@ -223,7 +224,7 @@ fn gh_1470_call_contract_should_verify_group_access() {
 // #[ignore]
 // #[test]
 // fn gh_1470_call_contract_should_verify_invalid_arguments_length() {
-//     let mut builder = setup();
+//     let mut builder = setup(instrumentation_data!());
 
 //     let exec_request_1 = ExecuteRequestBuilder::standard(
 //         *DEFAULT_ACCOUNT_ADDR,
@@ -335,7 +336,7 @@ fn gh_1470_call_contract_should_verify_group_access() {
 #[ignore]
 #[test]
 fn gh_1470_call_contract_should_ignore_optional_args() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
@@ -405,7 +406,7 @@ fn gh_1470_call_contract_should_ignore_optional_args() {
 #[ignore]
 #[test]
 fn gh_1470_call_contract_should_not_accept_extra_args() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
@@ -475,7 +476,7 @@ fn gh_1470_call_contract_should_not_accept_extra_args() {
 #[ignore]
 #[test]
 fn gh_1470_call_contract_should_verify_wrong_argument_types() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,
@@ -589,7 +590,7 @@ fn gh_1470_call_contract_should_verify_wrong_argument_types() {
 #[ignore]
 #[test]
 fn gh_1470_call_contract_should_verify_wrong_optional_argument_types() {
-    let mut builder = setup();
+    let mut builder = setup(instrumentation_data!());
 
     let exec_request_1 = ExecuteRequestBuilder::standard(
         *DEFAULT_ACCOUNT_ADDR,

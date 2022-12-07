@@ -668,6 +668,8 @@ fn should_apply_global_state_upgrade() {
 fn should_increase_max_associated_keys_after_upgrade() {
     let mut builder = InMemoryWasmTestBuilder::default();
 
+    let prod_wasm_config = *PRODUCTION_RUN_GENESIS_REQUEST.ee_config().wasm_config();
+
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     let sem_ver = PROTOCOL_VERSION.value();
@@ -689,7 +691,7 @@ fn should_increase_max_associated_keys_after_upgrade() {
         DEFAULT_MINIMUM_DELEGATION_AMOUNT,
         DEFAULT_STRICT_ARGUMENT_CHECKING,
         DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
-        *DEFAULT_WASM_CONFIG,
+        prod_wasm_config.clone(),
         new_system_config,
     );
 

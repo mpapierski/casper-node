@@ -8,7 +8,7 @@ use fs_extra::dir;
 use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
-use casper_engine_test_support::LmdbWasmTestBuilder;
+use casper_engine_test_support::{LmdbWasmTestBuilder, PRODUCTION_ENGINE_CONFIG};
 use casper_execution_engine::core::engine_state::{
     run_genesis_request::RunGenesisRequest, EngineConfig,
 };
@@ -78,7 +78,7 @@ pub fn builder_from_global_state_fixture(
     (
         LmdbWasmTestBuilder::open(
             &path_to_gs,
-            EngineConfig::default(),
+            PRODUCTION_ENGINE_CONFIG.clone(),
             lmdb_fixture_state.post_state_hash,
         ),
         lmdb_fixture_state,

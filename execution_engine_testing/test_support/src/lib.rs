@@ -20,12 +20,15 @@ mod upgrade_request_builder;
 pub mod utils;
 mod wasm_test_builder;
 
+use std::fmt::Display;
+
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
 
 use casper_execution_engine::{
     core::engine_state::{
-        ChainspecRegistry, ExecConfig, GenesisAccount, GenesisConfig, RunGenesisRequest,
+        ChainspecRegistry, EngineConfig, ExecConfig, ExecuteRequest, GenesisAccount, GenesisConfig,
+        RunGenesisRequest, DEFAULT_MAX_QUERY_DEPTH,
     },
     shared::{system_config::SystemConfig, wasm_config::WasmConfig, wasm_engine::ExecutionMode},
 };
@@ -41,6 +44,91 @@ pub use execute_request_builder::ExecuteRequestBuilder;
 pub use step_request_builder::StepRequestBuilder;
 pub use upgrade_request_builder::UpgradeRequestBuilder;
 pub use wasm_test_builder::{InMemoryWasmTestBuilder, LmdbWasmTestBuilder, WasmTestBuilder};
+
+#[macro_export]
+macro_rules! function {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(f);
+
+        let mut tokens = name.rsplit("::");
+        assert_eq!(tokens.next(), Some("f"));
+        tokens.next().unwrap()
+    }};
+}
+
+#[derive(Clone)]
+pub struct Instrumented<'a> {
+    module_name: &'a str,
+    file: &'a str,
+    line: u32,
+    function: &'a str,
+    data: Option<(&'a str, String)>,
+}
+
+impl<'a> Instrumented<'a> {
+    pub fn new<T: Display>(
+        module_name: &'a str,
+        file: &'a str,
+        line: u32,
+        function: &'a str,
+        data: Option<(&'a str, T)>,
+    ) -> Self {
+        Self {
+            module_name,
+            file,
+            line,
+            function,
+            data: data.map(|(key, value)| (key, value.to_string())),
+        }
+    }
+
+    pub fn with_function(&self, new_function: &'a str) -> Self {
+        Self {
+            module_name: self.module_name,
+            file: self.file,
+            line: self.line,
+            function: new_function,
+            data: self.data.clone(),
+        }
+    }
+}
+
+#[macro_export]
+macro_rules! instrumentation_data {
+    ( ) => {{
+        $crate::Instrumented::new(
+            module_path!(),
+            file!(),
+            line!(),
+            $crate::function!(),
+            Option::<(&str, &str)>::None,
+        )
+    }};
+    ($val:expr) => {{
+        $crate::Instrumented::new(
+            module_path!(),
+            file!(),
+            line!(),
+            $crate::function!(),
+            Some((stringify!($val), $val)),
+        )
+    }};
+}
+
+/// Wraps an expression with details useful for instrumentation.
+#[macro_export]
+macro_rules! instrumented {
+    ( $x:expr) => {{
+        ($x, $crate::instrumentation_data!())
+    }};
+    ( $x:expr, $val:expr) => {{
+        ($x, $crate::instrumentation_data!($val))
+    }};
+}
 
 const DAY_MILLIS: u64 = 24 * 60 * 60 * 1000;
 
@@ -192,5 +280,32 @@ pub static PRODUCTION_ROUND_SEIGNIORAGE_RATE: Lazy<Ratio<u64>> = Lazy::new(|| {
         .expect("must create chainspec_config");
     chainspec.core_config.round_seigniorage_rate
 });
+pub static PRODUCTION_ENGINE_CONFIG: Lazy<EngineConfig> = Lazy::new(|| {
+    let chainspec = ChainspecConfig::from_chainspec_path(&*PRODUCTION_PATH)
+        .expect("must create chainspec_config");
+    EngineConfig::new(
+        DEFAULT_MAX_QUERY_DEPTH,
+        chainspec.core_config.max_associated_keys,
+        chainspec.core_config.max_runtime_call_stack_height,
+        chainspec.core_config.minimum_delegation_amount,
+        chainspec.core_config.strict_argument_checking,
+        chainspec.core_config.vesting_schedule_period,
+        chainspec.wasm_config,
+        chainspec.system_costs_config,
+    )
+});
 /// System address.
 pub static SYSTEM_ADDR: Lazy<AccountHash> = Lazy::new(|| PublicKey::System.to_account_hash());
+
+#[cfg(test)]
+mod tests {
+    use crate::function;
+
+    #[test]
+    fn testname() {
+        let name = function!();
+        assert_eq!(name, "testname");
+        let closure = || function!();
+        assert_eq!(closure(), "{{closure}}");
+    }
+}

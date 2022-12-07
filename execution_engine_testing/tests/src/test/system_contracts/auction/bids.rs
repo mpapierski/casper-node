@@ -5,11 +5,11 @@ use num_traits::{One, Zero};
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    instrumented, utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder, DEFAULT_ACCOUNTS,
-    DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_EXEC_CONFIG,
+    instrumentation_data, instrumented, utils, ExecuteRequestBuilder, InMemoryWasmTestBuilder,
+    DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_EXEC_CONFIG,
     DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_UNBONDING_DELAY,
-    MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_RUN_GENESIS_REQUEST, SYSTEM_ADDR,
-    TIMESTAMP_MILLIS_INCREMENT,
+    MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_ENGINE_CONFIG, PRODUCTION_RUN_GENESIS_REQUEST,
+    SYSTEM_ADDR, TIMESTAMP_MILLIS_INCREMENT,
 };
 use casper_execution_engine::{
     core::{
@@ -626,9 +626,10 @@ fn should_calculate_era_validators() {
     let pre_era_id: EraId = builder.get_value(auction_hash, ERA_ID_KEY);
     assert_eq!(pre_era_id, EraId::from(0));
 
-    builder.run_auction(
+    builder.run_auction_instrumented(
         DEFAULT_GENESIS_TIMESTAMP_MILLIS + DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
         Vec::new(),
+        instrumentation_data!(),
     );
 
     let post_era_id: EraId = builder.get_value(auction_hash, ERA_ID_KEY);
@@ -764,9 +765,10 @@ fn should_get_first_seigniorage_recipients() {
         .expect_success();
 
     // run_auction should be executed first
-    builder.run_auction(
+    builder.run_auction_instrumented(
         DEFAULT_GENESIS_TIMESTAMP_MILLIS + DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
         Vec::new(),
+        instrumentation_data!(),
     );
 
     let mut era_validators: EraValidators = builder.get_era_validators();
@@ -820,53 +822,55 @@ fn should_release_founder_stake() {
         .map(U512::from)
         .collect();
 
-    let expect_unbond_success = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
-        let partial_unbond = ExecuteRequestBuilder::standard(
-            *ACCOUNT_1_ADDR,
-            CONTRACT_WITHDRAW_BID,
-            runtime_args! {
-                ARG_PUBLIC_KEY => ACCOUNT_1_PK.clone(),
-                ARG_AMOUNT => U512::from(amount),
-            },
-        )
-        .build();
+    let expect_unbond_success =
+        |builder: &mut InMemoryWasmTestBuilder, amount: u64, instrumentation| {
+            let partial_unbond = ExecuteRequestBuilder::standard(
+                *ACCOUNT_1_ADDR,
+                CONTRACT_WITHDRAW_BID,
+                runtime_args! {
+                    ARG_PUBLIC_KEY => ACCOUNT_1_PK.clone(),
+                    ARG_AMOUNT => U512::from(amount),
+                },
+            )
+            .build();
 
-        builder
-            .exec_instrumented(instrumented!(partial_unbond))
-            .commit()
-            .expect_success();
-    };
-
-    let expect_unbond_failure = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
-        let full_unbond = ExecuteRequestBuilder::standard(
-            *ACCOUNT_1_ADDR,
-            CONTRACT_WITHDRAW_BID,
-            runtime_args! {
-                ARG_PUBLIC_KEY => ACCOUNT_1_PK.clone(),
-                ARG_AMOUNT => U512::from(amount),
-            },
-        )
-        .build();
-
-        builder
-            .exec_instrumented(instrumented!(full_unbond))
-            .commit();
-
-        let error = {
-            let response = builder
-                .get_last_exec_results()
-                .expect("should have last exec result");
-            let exec_response = response.last().expect("should have response");
-            exec_response
-                .as_error()
-                .cloned()
-                .expect("should have error")
+            builder
+                .exec_instrumented((partial_unbond, instrumentation))
+                .commit()
+                .expect_success();
         };
-        assert_matches!(
-            error,
-            engine_state::Error::Exec(execution::Error::Revert(ApiError::AuctionError(15)))
-        );
-    };
+
+    let expect_unbond_failure =
+        |builder: &mut InMemoryWasmTestBuilder, amount: u64, instrumentation| {
+            let full_unbond = ExecuteRequestBuilder::standard(
+                *ACCOUNT_1_ADDR,
+                CONTRACT_WITHDRAW_BID,
+                runtime_args! {
+                    ARG_PUBLIC_KEY => ACCOUNT_1_PK.clone(),
+                    ARG_AMOUNT => U512::from(amount),
+                },
+            )
+            .build();
+
+            builder
+                .exec_instrumented((full_unbond, instrumentation))
+                .commit();
+
+            let error = {
+                let response = builder
+                    .get_last_exec_results()
+                    .expect("should have last exec result");
+                let exec_response = response.last().expect("should have response");
+                exec_response
+                    .as_error()
+                    .cloned()
+                    .expect("should have error")
+            };
+            assert_matches!(
+                error,
+                engine_state::Error::Exec(execution::Error::Revert(ApiError::AuctionError(15)))
+            );
+        };
 
     let accounts = {
         let mut tmp: Vec<GenesisAccount> = DEFAULT_ACCOUNTS.clone();
@@ -918,14 +922,18 @@ fn should_release_founder_stake() {
         assert!(locked_amounts.is_none());
     }
 
-    builder.run_auction(DEFAULT_GENESIS_TIMESTAMP_MILLIS, Vec::new());
+    builder.run_auction_instrumented(
+        DEFAULT_GENESIS_TIMESTAMP_MILLIS,
+        Vec::new(),
+        instrumentation_data!(),
+    );
 
     {
         // Attempt unbond of one mote
-        expect_unbond_failure(&mut builder, u64::one());
+        expect_unbond_failure(&mut builder, u64::one(), instrumentation_data!());
     }
 
-    builder.run_auction(WEEK_TIMESTAMPS[0], Vec::new());
+    builder.run_auction_instrumented(WEEK_TIMESTAMPS[0], Vec::new(), instrumentation_data!());
 
     // Check bid and its vesting schedule
     {
@@ -946,10 +954,14 @@ fn should_release_founder_stake() {
 
     {
         // Attempt full unbond
-        expect_unbond_failure(&mut builder, ACCOUNT_1_BOND);
+        expect_unbond_failure(&mut builder, ACCOUNT_1_BOND, instrumentation_data!());
 
         // Attempt unbond of released amount
-        expect_unbond_success(&mut builder, EXPECTED_WEEKLY_RELEASE);
+        expect_unbond_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE,
+            instrumentation_data!(),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE;
 
@@ -958,19 +970,31 @@ fn should_release_founder_stake() {
 
     for i in 1..13 {
         // Run auction forward by almost a week
-        builder.run_auction(WEEK_TIMESTAMPS[i] - 1, Vec::new());
+        builder.run_auction_instrumented(
+            WEEK_TIMESTAMPS[i] - 1,
+            Vec::new(),
+            instrumentation_data!(i),
+        );
 
         // Attempt unbond of 1 mote
-        expect_unbond_failure(&mut builder, u64::one());
+        expect_unbond_failure(&mut builder, u64::one(), instrumentation_data!());
 
         // Run auction forward by one millisecond
-        builder.run_auction(WEEK_TIMESTAMPS[i], Vec::new());
+        builder.run_auction_instrumented(WEEK_TIMESTAMPS[i], Vec::new(), instrumentation_data!(i));
 
         // Attempt unbond of more than weekly release
-        expect_unbond_failure(&mut builder, EXPECTED_WEEKLY_RELEASE + 1);
+        expect_unbond_failure(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE + 1,
+            instrumentation_data!(),
+        );
 
         // Attempt unbond of released amount
-        expect_unbond_success(&mut builder, EXPECTED_WEEKLY_RELEASE);
+        expect_unbond_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE,
+            instrumentation_data!(),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE;
 
@@ -979,16 +1003,24 @@ fn should_release_founder_stake() {
 
     {
         // Run auction forward by almost a week
-        builder.run_auction(WEEK_TIMESTAMPS[13] - 1, Vec::new());
+        builder.run_auction_instrumented(
+            WEEK_TIMESTAMPS[13] - 1,
+            Vec::new(),
+            instrumentation_data!(),
+        );
 
         // Attempt unbond of 1 mote
-        expect_unbond_failure(&mut builder, u64::one());
+        expect_unbond_failure(&mut builder, u64::one(), instrumentation_data!());
 
         // Run auction forward by one millisecond
-        builder.run_auction(WEEK_TIMESTAMPS[13], Vec::new());
+        builder.run_auction_instrumented(WEEK_TIMESTAMPS[13], Vec::new(), instrumentation_data!());
 
         // Attempt unbond of released amount + remainder
-        expect_unbond_success(&mut builder, EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER);
+        expect_unbond_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER,
+            instrumentation_data!(),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER;
 
@@ -1183,9 +1215,10 @@ fn should_calculate_era_validators_multiple_new_bids() {
         .expect_success();
 
     // run auction and compute validators for new era
-    builder.run_auction(
+    builder.run_auction_instrumented(
         DEFAULT_GENESIS_TIMESTAMP_MILLIS + DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
         Vec::new(),
+        instrumentation_data!(),
     );
     // Verify first era validators
     let new_validator_weights: ValidatorWeights = builder
@@ -1295,8 +1328,8 @@ fn undelegated_funds_should_be_released() {
             .expect_success();
     }
 
-    for _ in 0..5 {
-        builder.run_auction(timestamp_millis, Vec::new());
+    for i in 0..5 {
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!(i));
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1333,7 +1366,7 @@ fn undelegated_funds_should_be_released() {
             delegator_1_undelegate_purse_balance
         );
 
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1425,7 +1458,7 @@ fn fully_undelegated_funds_should_be_released() {
     }
 
     for _ in 0..5 {
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1461,7 +1494,7 @@ fn fully_undelegated_funds_should_be_released() {
             delegator_1_undelegate_purse_balance,
             delegator_1_purse_balance_before
         );
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1589,7 +1622,7 @@ fn should_undelegate_delegators_when_validator_unbonds() {
     }
 
     for _ in 0..5 {
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1706,7 +1739,7 @@ fn should_undelegate_delegators_when_validator_unbonds() {
     let delegator_2_balance_before = builder.get_purse_balance(delegator_2.main_purse());
 
     for _ in 0..=DEFAULT_UNBONDING_DELAY {
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1901,7 +1934,7 @@ fn should_undelegate_delegators_when_validator_fully_unbonds() {
     let delegator_2_balance_before = builder.get_purse_balance(delegator_2.main_purse());
 
     for _ in 0..=DEFAULT_UNBONDING_DELAY {
-        builder.run_auction(timestamp_millis, Vec::new());
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 
@@ -1926,7 +1959,9 @@ fn should_undelegate_delegators_when_validator_fully_unbonds() {
 #[ignore]
 #[test]
 fn should_handle_evictions() {
-    let activate_bid = |builder: &mut InMemoryWasmTestBuilder, validator_public_key: PublicKey| {
+    let activate_bid = |builder: &mut InMemoryWasmTestBuilder,
+                        validator_public_key: PublicKey,
+                        instrumentation| {
         const ARG_VALIDATOR_PUBLIC_KEY: &str = "validator_public_key";
         let run_request = ExecuteRequestBuilder::standard(
             AccountHash::from(&validator_public_key),
@@ -1937,7 +1972,7 @@ fn should_handle_evictions() {
         )
         .build();
         builder
-            .exec_instrumented(instrumented!(run_request))
+            .exec_instrumented((run_request, instrumentation))
             .commit()
             .expect_success();
     };
@@ -2018,7 +2053,7 @@ fn should_handle_evictions() {
         .expect_success();
 
     // No evictions
-    builder.run_auction(timestamp, Vec::new());
+    builder.run_auction_instrumented(timestamp, Vec::new(), instrumentation_data!());
     timestamp += WEEK_MILLIS;
 
     assert_eq!(
@@ -2032,9 +2067,10 @@ fn should_handle_evictions() {
     );
 
     // Evict BID_ACCOUNT_1_PK and BID_ACCOUNT_2_PK
-    builder.run_auction(
+    builder.run_auction_instrumented(
         timestamp,
         vec![BID_ACCOUNT_1_PK.clone(), BID_ACCOUNT_2_PK.clone()],
+        instrumentation_data!(),
     );
     timestamp += WEEK_MILLIS;
 
@@ -2044,8 +2080,12 @@ fn should_handle_evictions() {
     );
 
     // Activate BID_ACCOUNT_1_PK
-    activate_bid(&mut builder, BID_ACCOUNT_1_PK.clone());
-    builder.run_auction(timestamp, Vec::new());
+    activate_bid(
+        &mut builder,
+        BID_ACCOUNT_1_PK.clone(),
+        instrumentation_data!(),
+    );
+    builder.run_auction_instrumented(timestamp, Vec::new(), instrumentation_data!());
     timestamp += WEEK_MILLIS;
 
     assert_eq!(
@@ -2058,8 +2098,12 @@ fn should_handle_evictions() {
     );
 
     // Activate BID_ACCOUNT_2_PK
-    activate_bid(&mut builder, BID_ACCOUNT_2_PK.clone());
-    builder.run_auction(timestamp, Vec::new());
+    activate_bid(
+        &mut builder,
+        BID_ACCOUNT_2_PK.clone(),
+        instrumentation_data!(),
+    );
+    builder.run_auction_instrumented(timestamp, Vec::new(), instrumentation_data!());
     timestamp += WEEK_MILLIS;
 
     assert_eq!(
@@ -2073,7 +2117,7 @@ fn should_handle_evictions() {
     );
 
     // Evict all validators
-    builder.run_auction(
+    builder.run_auction_instrumented(
         timestamp,
         vec![
             ACCOUNT_1_PK.clone(),
@@ -2081,6 +2125,7 @@ fn should_handle_evictions() {
             BID_ACCOUNT_1_PK.clone(),
             BID_ACCOUNT_2_PK.clone(),
         ],
+        instrumentation_data!(),
     );
     timestamp += WEEK_MILLIS;
 
@@ -2093,9 +2138,13 @@ fn should_handle_evictions() {
         BID_ACCOUNT_1_PK.clone(),
         BID_ACCOUNT_2_PK.clone(),
     ] {
-        activate_bid(&mut builder, validator.clone());
+        activate_bid(
+            &mut builder,
+            validator.clone(),
+            instrumentation_data!(validator),
+        );
     }
-    builder.run_auction(timestamp, Vec::new());
+    builder.run_auction_instrumented(timestamp, Vec::new(), instrumentation_data!());
 
     assert_eq!(
         latest_validators(&mut builder),
@@ -2559,7 +2608,7 @@ fn should_not_undelegate_vfta_holder_stake() {
         assert_eq!(vesting_schedule.locked_amounts(), None);
     }
 
-    builder.run_auction(WEEK_TIMESTAMPS[0], Vec::new());
+    builder.run_auction_instrumented(WEEK_TIMESTAMPS[0], Vec::new(), instrumentation_data!());
 
     let partial_unbond = ExecuteRequestBuilder::standard(
         *DELEGATOR_1_ADDR,
@@ -2626,25 +2675,28 @@ fn should_release_vfta_holder_stake() {
         .map(U512::from)
         .collect();
 
-    let expect_undelegate_success = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
-        let partial_unbond = ExecuteRequestBuilder::standard(
-            *DELEGATOR_1_ADDR,
-            CONTRACT_UNDELEGATE,
-            runtime_args! {
-                auction::ARG_VALIDATOR => ACCOUNT_1_PK.clone(),
-                auction::ARG_DELEGATOR => DELEGATOR_1.clone(),
-                ARG_AMOUNT => U512::from(amount),
-            },
-        )
-        .build();
+    let expect_undelegate_success =
+        |builder: &mut InMemoryWasmTestBuilder, amount: u64, instrumentation| {
+            let partial_unbond = ExecuteRequestBuilder::standard(
+                *DELEGATOR_1_ADDR,
+                CONTRACT_UNDELEGATE,
+                runtime_args! {
+                    auction::ARG_VALIDATOR => ACCOUNT_1_PK.clone(),
+                    auction::ARG_DELEGATOR => DELEGATOR_1.clone(),
+                    ARG_AMOUNT => U512::from(amount),
+                },
+            )
+            .build();
 
-        builder
-            .exec_instrumented(instrumented!(partial_unbond))
-            .commit()
-            .expect_success();
-    };
+            builder
+                .exec_instrumented((partial_unbond, instrumentation))
+                .commit()
+                .expect_success();
+        };
 
-    let expect_undelegate_failure = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
+    let expect_undelegate_failure = |builder: &mut InMemoryWasmTestBuilder,
+                                     amount: u64,
+                                     instrumentation| {
         let full_undelegate = ExecuteRequestBuilder::standard(
             *DELEGATOR_1_ADDR,
             CONTRACT_UNDELEGATE,
@@ -2657,7 +2709,7 @@ fn should_release_vfta_holder_stake() {
         .build();
 
         builder
-            .exec_instrumented(instrumented!(full_undelegate))
+            .exec_instrumented((full_undelegate, instrumentation))
             .commit();
 
         let error = {
@@ -2712,8 +2764,8 @@ fn should_release_vfta_holder_stake() {
         NEW_MINIMUM_DELEGATION_AMOUNT,
         DEFAULT_STRICT_ARGUMENT_CHECKING,
         DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
-        WasmConfig::default(),
-        SystemConfig::default(),
+        PRODUCTION_ENGINE_CONFIG.wasm_config().clone(),
+        PRODUCTION_ENGINE_CONFIG.system_config().clone(),
     );
 
     let global_state = InMemoryGlobalState::empty().expect("should create global state");
@@ -2768,14 +2820,18 @@ fn should_release_vfta_holder_stake() {
         assert!(locked_amounts.is_none());
     }
 
-    builder.run_auction(DEFAULT_GENESIS_TIMESTAMP_MILLIS, Vec::new());
+    builder.run_auction_instrumented(
+        DEFAULT_GENESIS_TIMESTAMP_MILLIS,
+        Vec::new(),
+        instrumentation_data!(),
+    );
 
     {
         // Attempt unbond of one mote
-        expect_undelegate_failure(&mut builder, u64::one());
+        expect_undelegate_failure(&mut builder, u64::one(), instrumentation_data!());
     }
 
-    builder.run_auction(WEEK_TIMESTAMPS[0], Vec::new());
+    builder.run_auction_instrumented(WEEK_TIMESTAMPS[0], Vec::new(), instrumentation_data!());
 
     // Check bid and its vesting schedule
     {
@@ -2798,10 +2854,14 @@ fn should_release_vfta_holder_stake() {
 
     {
         // Attempt full unbond
-        expect_undelegate_failure(&mut builder, DELEGATOR_VFTA_STAKE);
+        expect_undelegate_failure(&mut builder, DELEGATOR_VFTA_STAKE, instrumentation_data!());
 
         // Attempt unbond of released amount
-        expect_undelegate_success(&mut builder, EXPECTED_WEEKLY_RELEASE);
+        expect_undelegate_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE,
+            instrumentation_data!(),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE;
 
@@ -2813,19 +2873,31 @@ fn should_release_vfta_holder_stake() {
 
     for i in 1..13 {
         // Run auction forward by almost a week
-        builder.run_auction(WEEK_TIMESTAMPS[i] - 1, Vec::new());
+        builder.run_auction_instrumented(
+            WEEK_TIMESTAMPS[i] - 1,
+            Vec::new(),
+            instrumentation_data!(i),
+        );
 
         // Attempt unbond of 1 mote
-        expect_undelegate_failure(&mut builder, u64::one());
+        expect_undelegate_failure(&mut builder, u64::one(), instrumentation_data!(i));
 
         // Run auction forward by one millisecond
-        builder.run_auction(WEEK_TIMESTAMPS[i], Vec::new());
+        builder.run_auction_instrumented(WEEK_TIMESTAMPS[i], Vec::new(), instrumentation_data!(i));
 
         // Attempt unbond of more than weekly release
-        expect_undelegate_failure(&mut builder, EXPECTED_WEEKLY_RELEASE + 1);
+        expect_undelegate_failure(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE + 1,
+            instrumentation_data!(i),
+        );
 
         // Attempt unbond of released amount
-        expect_undelegate_success(&mut builder, EXPECTED_WEEKLY_RELEASE);
+        expect_undelegate_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE,
+            instrumentation_data!(i),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE;
 
@@ -2837,16 +2909,24 @@ fn should_release_vfta_holder_stake() {
 
     {
         // Run auction forward by almost a week
-        builder.run_auction(WEEK_TIMESTAMPS[13] - 1, Vec::new());
+        builder.run_auction_instrumented(
+            WEEK_TIMESTAMPS[13] - 1,
+            Vec::new(),
+            instrumentation_data!(),
+        );
 
         // Attempt unbond of 1 mote
-        expect_undelegate_failure(&mut builder, u64::one());
+        expect_undelegate_failure(&mut builder, u64::one(), instrumentation_data!());
 
         // Run auction forward by one millisecond
-        builder.run_auction(WEEK_TIMESTAMPS[13], Vec::new());
+        builder.run_auction_instrumented(WEEK_TIMESTAMPS[13], Vec::new(), instrumentation_data!());
 
         // Attempt unbond of released amount + remainder
-        expect_undelegate_success(&mut builder, EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER);
+        expect_undelegate_success(
+            &mut builder,
+            EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER,
+            instrumentation_data!(),
+        );
 
         total_unbonded += EXPECTED_WEEKLY_RELEASE + EXPECTED_REMAINDER;
 

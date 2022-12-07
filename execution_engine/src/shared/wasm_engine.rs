@@ -1,8 +1,9 @@
 //! Preprocessing of Wasm modules.
+use bytes::Bytes;
 use casper_types::{
     account::{self, AccountHash},
-    api_error,
-    bytesrepr::{self, Bytes, FromBytes, ToBytes},
+    api_error, blake2b,
+    bytesrepr::{self, FromBytes, ToBytes},
     contracts::ContractPackageStatus,
     AccessRights, ApiError, CLValue, ContractPackageHash, ContractVersion, Gas, Key,
     ProtocolVersion, StoredValue, URef, U512,
@@ -72,35 +73,77 @@ use crate::{
 use super::wasm_config::WasmConfig;
 
 /// Mode of execution for smart contracts.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionMode {
     /// Runs Wasm modules in interpreted mode.
-    Interpreted = 1,
+    Interpreted,
     /// Runs Wasm modules in a compiled mode.
-    Compiled = 2,
+    Compiled,
     /// Runs Wasm modules in a JIT mode.
-    JustInTime = 3,
+    JustInTime,
     /// Runs Wasm modules in a compiled mode via fast ahead of time compiler.
-    Singlepass,
+    ///
+    /// NOTE: Currently cache is implemented as inmem hash table for testing purposes
+    Singlepass { cache_artifacts: bool },
+}
+
+impl ExecutionMode {
+    /// Returns `true` if the execution mode is [`Singlepass`].
+    ///
+    /// [`Singlepass`]: ExecutionMode::Singlepass
+    #[must_use]
+    pub fn is_singlepass(&self) -> bool {
+        matches!(self, Self::Singlepass { .. })
+    }
+
+    pub fn is_using_cache(&self) -> bool {
+        match self {
+            ExecutionMode::Interpreted => false,
+            ExecutionMode::Compiled => false,
+            ExecutionMode::JustInTime => false,
+            ExecutionMode::Singlepass { cache_artifacts } => *cache_artifacts,
+        }
+    }
 }
 
 impl ToBytes for ExecutionMode {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
-        self.to_u32().unwrap().to_bytes()
+        match self {
+            ExecutionMode::Interpreted => 1u32.to_bytes(),
+            ExecutionMode::Compiled => 2u32.to_bytes(),
+            ExecutionMode::JustInTime => 3u32.to_bytes(),
+            ExecutionMode::Singlepass { cache_artifacts } => (4u32, *cache_artifacts).to_bytes(),
+        }
     }
 
     fn serialized_length(&self) -> usize {
-        self.to_u32().unwrap().serialized_length()
+        match self {
+            ExecutionMode::Interpreted => 1u32.serialized_length(),
+            ExecutionMode::Compiled => 2u32.serialized_length(),
+            ExecutionMode::JustInTime => 3u32.serialized_length(),
+            ExecutionMode::Singlepass { cache_artifacts } => {
+                (4u32, *cache_artifacts).serialized_length()
+            }
+        }
     }
 }
 
 impl FromBytes for ExecutionMode {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (execution_mode, rem) = u32::from_bytes(bytes)?;
-        let execution_mode =
-            ExecutionMode::from_u32(execution_mode).ok_or(bytesrepr::Error::Formatting)?;
-        Ok((execution_mode, rem))
+        if execution_mode == 1 {
+            Ok((ExecutionMode::Interpreted, rem))
+        } else if execution_mode == 2 {
+            Ok((ExecutionMode::Compiled, rem))
+        } else if execution_mode == 3 {
+            Ok((ExecutionMode::JustInTime, rem))
+        } else if execution_mode == 4 {
+            let (flag, rem) = bool::from_bytes(rem)?;
+            Ok((ExecutionMode::Interpreted, rem))
+        } else {
+            Err(bytesrepr::Error::Formatting)
+        }
     }
 }
 
@@ -133,7 +176,7 @@ pub enum Module {
         wasmi_module: WasmiModule,
         precompile_time: Option<Duration>,
         /// Ahead of time compiled artifact.
-        compiled_artifact: Vec<u8>,
+        compiled_artifact: Bytes,
     },
     Jitted {
         original_bytes: Vec<u8>,
@@ -629,10 +672,10 @@ where
                     None => MemoryType::new(1, Some(wasm_engine.wasm_config().max_memory)),
                 };
 
-                debug_assert_eq!(
-                    memory_type.maximum(),
-                    Some(wasm_engine.wasm_config().max_memory as u64)
-                );
+                // debug_assert_eq!(
+                //     memory_type.maximum(),
+                //     Some(wasm_engine.wasm_config().max_memory as u64)
+                // );
 
                 let memory = wasmtime::Memory::new(&mut store, memory_type).unwrap();
                 store.data_mut().wasmtime_memory = Some(memory);
@@ -1860,20 +1903,25 @@ where
                 // import_object.define("env", "host_function", host_function);
                 let memory_pages = wasm_engine.wasm_config().max_memory;
 
-                let import_type = wasmer_module
-                    .imports()
-                    .find(|import_type| {
-                        (import_type.module(), import_type.name()) == ("env", "memory")
-                    })
-                    .expect("should be validated already");
-                let memory_import = import_type.ty().memory().expect("should be memory");
+                let import_type = wasmer_module.imports().find_map(|import_type| {
+                    if (import_type.module(), import_type.name()) == ("env", "memory") {
+                        import_type.ty().memory().cloned()
+                    } else {
+                        None
+                    }
+                });
+
+                let memory_import = import_type.unwrap_or_else(|| {
+                    wasmer::MemoryType::new(memory_pages, Some(memory_pages), true)
+                });
 
                 let memory =
                     wasmer::Memory::new(&mut wasmer_store.as_store_mut(), memory_import.clone())
                         .expect("should create wasmer memory");
 
-                let memory_obj = memory.clone();
+                let memory_obj = memory;
                 import_object.define("env", "memory", memory_obj.clone());
+                // import_object.mem
 
                 let function_env = FunctionEnv::new(
                     &mut wasmer_store.as_store_mut(),
@@ -1966,7 +2014,7 @@ where
                 // );
 
                 //                import_object.define("env", "gas",
-                // wasmer::Extern::from(gas_func));                
+                // wasmer::Extern::from(gas_func));
                 // import_object.define("env", "casper_revert", wasmer::Extern::from(revert_func));
 
                 //                import_object.define(
@@ -2091,6 +2139,7 @@ where
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
                               dest_ptr: u32|
                               -> Result<(), execution::Error> {
+                            // caller.
                             let mut function_context =
                                 WasmerAdapter::new(memory.view(&caller.as_store_ref()));
                             let host_function_costs = caller
@@ -3496,6 +3545,8 @@ where
                     &wasmer_module,
                     &import_object,
                 )?;
+                // instance.
+                // instance.exports.get_memory("memory").expect("mem");
 
                 let call_func: TypedFunction<(), ()> = instance
                     .exports
@@ -3604,8 +3655,34 @@ pub enum PreprocessingError {
     /// Unable to validate wasm bytes.
     #[error("Wasm validation error: {0}")]
     WasmValidation(#[from] WasmValidationError),
+    /// Wasmtime was unable to precompile a module
     #[error("Precompile error: {0}")]
     Precompile(RuntimeError),
+    /// Wasmer was unable to compile a module
+    #[error(transparent)]
+    Compile(Arc<wasmer::CompileError>),
+    #[error(transparent)]
+    DeserializeModule(Arc<wasmer::DeserializeError>),
+    #[error(transparent)]
+    SerializeModule(Arc<wasmer::SerializeError>),
+}
+
+impl From<wasmer::CompileError> for PreprocessingError {
+    fn from(v: wasmer::CompileError) -> Self {
+        Self::Compile(Arc::new(v))
+    }
+}
+
+impl From<wasmer::DeserializeError> for PreprocessingError {
+    fn from(v: wasmer::DeserializeError) -> Self {
+        Self::DeserializeModule(Arc::new(v))
+    }
+}
+
+impl From<wasmer::SerializeError> for PreprocessingError {
+    fn from(v: wasmer::SerializeError) -> Self {
+        Self::SerializeModule(Arc::new(v))
+    }
 }
 
 impl From<elements::Error> for PreprocessingError {
@@ -3871,7 +3948,7 @@ impl std::ops::Deref for WasmtimeEngine {
 }
 
 // NOTE: Imitates persistent on disk cache for precompiled artifacts
-static GLOBAL_CACHE: Lazy<Mutex<HashMap<Vec<u8>, Vec<u8>>>> = Lazy::new(Default::default);
+static GLOBAL_CACHE: Lazy<Mutex<HashMap<Vec<u8>, bytes::Bytes>>> = Lazy::new(Default::default);
 
 /// Wasm preprocessor.
 #[derive(Debug, Clone)]
@@ -3983,6 +4060,23 @@ impl WasmEngine {
     ) -> Result<Module, PreprocessingError> {
         let module = deserialize_interpreted(module_bytes)?;
 
+        if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
+            let mut global_cache = GLOBAL_CACHE.lock().unwrap();
+            if let Some(precompiled_bytes) = global_cache.get(module_bytes) {
+                // We have the artifact, and we can use headless mode to just execute binary artifact
+                let headless_engine = wasmer::Engine::headless();
+                let store = wasmer::Store::new(headless_engine);
+                let wasmer_module =
+                    unsafe { wasmer::Module::deserialize(&store, precompiled_bytes.clone()) }?;
+                return Ok(Module::Singlepass {
+                    original_bytes: module_bytes.to_vec(),
+                    wasmi_module: module,
+                    wasmer_module,
+                    store: store,
+                });
+            }
+        }
+
         ensure_valid_access(&module)?;
 
         if memory_section(&module).is_none() {
@@ -4030,14 +4124,8 @@ impl WasmEngine {
                     original_bytes: module_bytes.to_vec(),
                     wasmi_module: module,
                     precompile_time: duration,
-                    compiled_artifact: precompiled_bytes.to_owned(),
+                    compiled_artifact: precompiled_bytes,
                 })
-
-                // let compiled_module =
-                //             wasmtime::Module::new(&self.compiled_engine,
-                // &preprocessed_wasm_bytes)                 .map_err(|e|
-                // PreprocessingError::Deserialize(e.to_string()))?;
-                //     Ok(compiled_module.into())
             }
             ExecutionMode::JustInTime => {
                 let start = Instant::now();
@@ -4057,7 +4145,7 @@ impl WasmEngine {
                     module: compiled_module,
                 })
             }
-            ExecutionMode::Singlepass => {
+            ExecutionMode::Singlepass { cache_artifacts } => {
                 let preprocessed_wasm_bytes =
                     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
@@ -4070,8 +4158,13 @@ impl WasmEngine {
                 let mut store = make_wasmer_store();
 
                 let wasmer_module =
-                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)
-                        .expect("should create wasmer module");
+                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
+
+                if cache_artifacts {
+                    let serialized_bytes = wasmer_module.serialize()?;
+                    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
+                    global_cache.insert(module_bytes.to_vec(), serialized_bytes);
+                }
 
                 let stop = start.elapsed();
 
@@ -4112,14 +4205,6 @@ impl WasmEngine {
                     precompile_time: duration,
                     compiled_artifact: precompiled_bytes.to_owned(),
                 }
-                // let compiled_module =
-                //             wasmtime::Module::new(&self.compiled_engine,
-                // &preprocessed_wasm_bytes)                 .map_err(|e|
-                // PreprocessingError::Deserialize(e.to_string()))?;
-                //     Ok(compiled_module.into())
-                // let compiled_module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes)
-                //     .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
-                // Module::Compiled(compiled_module)
             }
             ExecutionMode::JustInTime => {
                 let start = Instant::now();
@@ -4132,15 +4217,40 @@ impl WasmEngine {
                     module,
                 }
             }
-            ExecutionMode::Singlepass => {
-                let start = Instant::now();
+            ExecutionMode::Singlepass { cache_artifacts } => {
+                let hash_digest = base16::encode_lower(&blake2b(wasm_bytes));
+                if cache_artifacts {
+                    let global_cache = GLOBAL_CACHE.lock().unwrap();
+                    if let Some(precompiled_bytes) = global_cache.get(wasm_bytes) {
+                        eprintln!("cache hit (module_from_bytes) {}", hash_digest);
+
+                        // We have the artifact, and we can use headless mode to just execute binary artifact
+                        let headless_engine = wasmer::Engine::headless();
+                        let store = wasmer::Store::new(headless_engine);
+                        let wasmer_module = unsafe {
+                            wasmer::Module::deserialize(&store, precompiled_bytes.clone())
+                        }?;
+                        return Ok(Module::Singlepass {
+                            original_bytes: wasm_bytes.to_vec(),
+                            wasmi_module: parity_module,
+                            wasmer_module,
+                            store: store,
+                        });
+                    }
+                }
 
                 let wasmer_store = make_wasmer_store();
 
                 let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
                     .expect("should create wasmer module");
 
-                let stop = start.elapsed();
+                if cache_artifacts {
+                    eprintln!("cache miss (module_from_bytes) {}", hash_digest);
+
+                    let serialized_bytes = wasmer_module.serialize()?;
+                    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
+                    global_cache.insert(wasm_bytes.to_vec(), serialized_bytes);
+                }
 
                 Module::Singlepass {
                     original_bytes: wasm_bytes.to_vec(),
@@ -4209,7 +4319,29 @@ impl WasmEngine {
                 if wasmi_module.start_section().is_some() {
                     return Err(execution::Error::UnsupportedWasmStart);
                 }
+
                 let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                let descriptor = compiled_module
+                    .imports()
+                    .filter_map(|import| import.ty().memory().cloned())
+                    .nth(0)
+                    .expect("should have memory");
+
+                let max_memory = self.wasm_config().max_memory as u64;
+                let descriptor_max = descriptor
+                    .maximum()
+                    .map(|pages| pages)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
 
                 Ok(Instance::Compiled {
                     original_bytes: original_bytes.clone(),
@@ -4230,6 +4362,28 @@ impl WasmEngine {
                 if wasmi_module.start_section().is_some() {
                     return Err(execution::Error::UnsupportedWasmStart);
                 }
+
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                let descriptor = compiled_module
+                    .imports()
+                    .filter_map(|import| import.ty().memory().cloned())
+                    .nth(0)
+                    .expect("should have memory");
+
+                let max_memory = self.wasm_config().max_memory as u64;
+                let descriptor_max = descriptor
+                    .maximum()
+                    .map(|pages| pages)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
+
                 // aot compile
                 // let precompiled_bytes =
                 // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
@@ -4258,6 +4412,29 @@ impl WasmEngine {
                 if wasmi_module.start_section().is_some() {
                     return Err(execution::Error::UnsupportedWasmStart);
                 }
+                let max_memory = self.wasm_config().max_memory;
+
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                let descriptor = wasmer_module
+                    .imports()
+                    .memories()
+                    .map(|import_type| import_type.ty().clone())
+                    .nth(0)
+                    .unwrap_or_else(|| wasmer::MemoryType::new(max_memory, Some(max_memory), true));
+
+                let descriptor_max = descriptor
+                    .maximum
+                    .map(|pages| pages.0)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum.0 > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
+
                 Ok(Instance::Singlepass {
                     original_bytes: original_bytes.clone(),
                     module: wasmi_module.clone(),
@@ -4279,7 +4456,7 @@ impl WasmEngine {
         &self,
         original_bytes: &[u8],
         bytes: &[u8],
-    ) -> Result<(Vec<u8>, Option<Duration>), RuntimeError> {
+    ) -> Result<(Bytes, Option<Duration>), RuntimeError> {
         // todo!("precompile; disabled because of trait issues colliding with wasmer");
         let mut cache = GLOBAL_CACHE.lock().unwrap();
         // let mut cache = cache.borrow_mut();
@@ -4294,7 +4471,7 @@ impl WasmEngine {
                     .map_err(|e| RuntimeError::Other(e.to_string()))?;
                 let stop = start.elapsed();
                 // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
-                let artifact = v.insert(precompiled_bytes).clone();
+                let artifact = v.insert(Bytes::from(precompiled_bytes)).clone();
                 (artifact, Some(stop))
             }
         };

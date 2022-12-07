@@ -26,6 +26,7 @@ use casper_execution_engine::{
         storage_costs::StorageCosts,
         system_config::SystemConfig,
         wasm_config::{WasmConfig, DEFAULT_MAX_STACK_HEIGHT, DEFAULT_WASM_MAX_MEMORY},
+        wasm_engine::PreprocessingError,
     },
 };
 use casper_types::{
@@ -129,7 +130,17 @@ fn should_run_ee_966_cant_have_too_much_initial_memory() {
         .get_exec_result_owned(0)
         .expect("should have exec response")[0];
     let error = exec_response.as_error().expect("should have error");
-    assert_matches!(error, Error::Exec(ExecError::Interpreter(_)));
+
+    // TODO: memory should have consistent representation regardless of backend
+    assert_matches!(
+        error,
+        // Wasmi
+        Error::Exec(ExecError::Interpreter(_))
+            // Wasmtime
+            | Error::WasmPreprocessing(PreprocessingError::Precompile(_))
+            // Wasmer
+            | Error::WasmPreprocessing(PreprocessingError::Compile(_))
+    );
 }
 
 #[ignore]
@@ -238,7 +249,17 @@ fn should_run_ee_966_cant_have_larger_initial_than_max_memory() {
         .expect("should have exec response")[0];
     let error = exec_response.as_error().expect("should have error");
 
-    assert_matches!(error, Error::Exec(ExecError::Interpreter(_)));
+    // TODO: memory should have consistent representation regardless of backend
+    assert_matches!(
+        error,
+        // Wasmi
+        Error::Exec(ExecError::Interpreter(_))
+
+            // Wasmtime
+            | Error::WasmPreprocessing(PreprocessingError::Precompile(_))
+            // Wasmer
+            | Error::WasmPreprocessing(PreprocessingError::Compile(_))
+    );
 }
 
 #[ignore]

@@ -6,7 +6,7 @@ use casper_engine_test_support::{
     UpgradeRequestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
     DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_MAX_ASSOCIATED_KEYS, DEFAULT_PAYMENT,
     DEFAULT_PROTOCOL_VERSION, MINIMUM_ACCOUNT_CREATION_BALANCE, PRODUCTION_CHAINSPEC,
-    PRODUCTION_RUN_GENESIS_REQUEST,
+    PRODUCTION_ENGINE_CONFIG, PRODUCTION_RUN_GENESIS_REQUEST,
 };
 use casper_execution_engine::{
     core::engine_state::{
@@ -222,7 +222,7 @@ fn upgraded_add_bid_and_withdraw_bid_have_expected_costs() {
         DEFAULT_MINIMUM_DELEGATION_AMOUNT,
         DEFAULT_STRICT_ARGUMENT_CHECKING,
         DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
-        WasmConfig::default(),
+        PRODUCTION_ENGINE_CONFIG.wasm_config().clone(),
         new_system_config,
     );
 
@@ -533,7 +533,7 @@ fn upgraded_delegate_and_undelegate_have_expected_costs() {
         DEFAULT_MINIMUM_DELEGATION_AMOUNT,
         DEFAULT_STRICT_ARGUMENT_CHECKING,
         DEFAULT_VESTING_SCHEDULE_LENGTH_MILLIS,
-        WasmConfig::default(),
+        PRODUCTION_ENGINE_CONFIG.wasm_config().clone(),
         new_system_config,
     );
 

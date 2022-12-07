@@ -77,24 +77,19 @@ enum CallContractIdentifier {
 use super::{engine_state::ExecutionResult, resolvers::v1_function_index::FunctionIndex};
 
 pub fn bytes_from_memory(
-    context: &mut impl FunctionContext,
+    context: &impl FunctionContext,
     offset: u32,
     size: u32,
 ) -> Result<Vec<u8>, Error> {
     Ok(context.memory_read(offset, size as usize)?)
 }
 
-pub fn t_from_memory<T>(
-    context: &mut impl FunctionContext,
-    offset: u32,
-    size: u32,
-) -> Result<T, Error>
+pub fn t_from_memory<T>(context: &impl FunctionContext, offset: u32, size: u32) -> Result<T, Error>
 where
     T: FromBytes,
 {
-    Ok(bytesrepr::deserialize(bytes_from_memory(
-        context, offset, size,
-    )?)?)
+    let bytes = bytes_from_memory(context, offset, size)?;
+    Ok(bytesrepr::deserialize(bytes)?)
 }
 
 /// Represents the runtime properties of a WASM execution.

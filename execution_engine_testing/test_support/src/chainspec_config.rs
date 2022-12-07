@@ -6,7 +6,7 @@ use std::{
 
 use num_rational::Ratio;
 use once_cell::sync::Lazy;
-use serde::{Deserialize, Serialize};
+use serde::{de, Deserialize, Deserializer, Serialize};
 
 use casper_execution_engine::{
     core::engine_state::{run_genesis_request::RunGenesisRequest, ExecConfig, GenesisAccount},
@@ -48,6 +48,17 @@ pub enum Error {
     FailedToParseLockedFundsPeriod,
     FailedToCreateGenesisRequest,
 }
+fn deserialize_duration<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let duration_str = String::deserialize(deserializer)?;
+    let duration_millis = humantime::parse_duration(&duration_str)
+        .map_err(|error| de::Error::custom(error))?
+        .as_millis() as u64;
+
+    Ok(duration_millis)
+}
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Debug)]
 pub struct CoreConfig {
@@ -60,7 +71,8 @@ pub struct CoreConfig {
     /// The period after genesis during which a genesis validator's bid is locked.
     pub(crate) locked_funds_period: String,
     /// The period in which genesis validator's bid is released over time
-    pub(crate) vesting_schedule_period: String,
+    #[serde(deserialize_with = "deserialize_duration")]
+    pub(crate) vesting_schedule_period: u64,
     /// The delay in number of eras for paying out the the unbonding amount.
     pub(crate) unbonding_delay: u64,
     /// Round seigniorage rate represented as a fractional number.
@@ -152,17 +164,13 @@ impl TryFrom<ChainspecConfig> for ExecConfig {
     type Error = Error;
 
     fn try_from(chainspec_config: ChainspecConfig) -> Result<Self, Self::Error> {
-        let locked_funds_period_millis =
-            humantime::parse_duration(&chainspec_config.core_config.locked_funds_period)
-                .map_err(|_| Error::FailedToCreateExecConfig)?
-                .as_millis() as u64;
         Ok(ExecConfig::new(
             DEFAULT_ACCOUNTS.clone(),
             chainspec_config.wasm_config,
             chainspec_config.system_costs_config,
             chainspec_config.core_config.validator_slots,
             chainspec_config.core_config.auction_delay,
-            locked_funds_period_millis,
+            chainspec_config.core_config.vesting_schedule_period,
             chainspec_config.core_config.round_seigniorage_rate,
             chainspec_config.core_config.unbonding_delay,
             DEFAULT_GENESIS_TIMESTAMP_MILLIS,

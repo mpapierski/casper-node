@@ -29,9 +29,10 @@ use crate::{
     instrumented, transfer, DeployItemBuilder, ExecuteRequestBuilder, LmdbWasmTestBuilder,
     StepRequestBuilder, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
     DEFAULT_ACCOUNT_PUBLIC_KEY, DEFAULT_AUCTION_DELAY, DEFAULT_GENESIS_CONFIG_HASH,
-    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS,
+    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_LOCKED_FUNDS_PERIOD_MILLIS, DEFAULT_PAYMENT,
     DEFAULT_PROPOSER_PUBLIC_KEY, DEFAULT_PROTOCOL_VERSION, DEFAULT_ROUND_SEIGNIORAGE_RATE,
-    DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG, SYSTEM_ADDR,
+    DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY, DEFAULT_WASM_CONFIG, PRODUCTION_CHAINSPEC,
+    PRODUCTION_ENGINE_CONFIG, PRODUCTION_RUN_GENESIS_REQUEST, SYSTEM_ADDR,
 };
 
 const ARG_AMOUNT: &str = "amount";
@@ -64,7 +65,8 @@ pub fn run_blocks_with_transfers_and_step(
     mut report_writer: impl Write,
 ) {
     let data_dir = TempDir::new().expect("should create temp dir");
-    let mut builder = LmdbWasmTestBuilder::new(data_dir.as_ref());
+    let mut builder =
+        LmdbWasmTestBuilder::new_with_config(data_dir.as_ref(), PRODUCTION_ENGINE_CONFIG.clone());
     let delegator_keys = generate_public_keys(delegator_count);
     let validator_keys = generate_public_keys(validator_count);
     let mut necessary_tries = HashSet::new();
@@ -292,6 +294,7 @@ pub fn run_genesis_and_create_initial_accounts(
     }
     let run_genesis_request =
         create_run_genesis_request(validator_keys.len() as u32 + 2, genesis_accounts);
+
     builder.run_genesis(&run_genesis_request);
 
     // Setup the system account with enough cspr
@@ -326,10 +329,12 @@ fn create_run_genesis_request(
     validator_slots: u32,
     genesis_accounts: Vec<GenesisAccount>,
 ) -> RunGenesisRequest {
+    let production_wasm_config = PRODUCTION_RUN_GENESIS_REQUEST.ee_config().wasm_config();
+
     let exec_config = {
         ExecConfig::new(
             genesis_accounts,
-            *DEFAULT_WASM_CONFIG,
+            production_wasm_config.clone(),
             *DEFAULT_SYSTEM_CONFIG,
             validator_slots,
             DEFAULT_AUCTION_DELAY,
@@ -366,7 +371,7 @@ pub fn create_delegate_request(
     let deploy = DeployItemBuilder::new()
         .with_address(delegator_account_hash)
         .with_stored_session_hash(contract_hash, entry_point, args)
-        .with_empty_payment_bytes(runtime_args! { ARG_AMOUNT => U512::from(100_000_000), })
+        .with_empty_payment_bytes(runtime_args! { ARG_AMOUNT => *DEFAULT_PAYMENT, })
         .with_authorization_keys(&[delegator_account_hash])
         .with_deploy_hash(deploy_hash)
         .build();
