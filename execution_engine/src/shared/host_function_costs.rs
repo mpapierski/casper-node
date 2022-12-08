@@ -85,7 +85,7 @@ pub(crate) const DEFAULT_HOST_FUNCTION_NEW_DICTIONARY: HostFunction<[Cost; 1]> =
 ///
 /// The total gas cost is equal to `cost` + sum of each argument weight multiplied by the byte size
 /// of the data.
-#[derive(Copy, Clone, PartialEq, Eq, Deserialize, Serialize, Debug, DataSize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Deserialize, Serialize, Debug, DataSize)]
 pub struct HostFunction<T> {
     /// How much the user is charged for calling the host function.
     cost: Cost,
@@ -196,7 +196,7 @@ where
 }
 
 /// Definition of a host function cost table.
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Debug, DataSize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, DataSize)]
 pub struct HostFunctionCosts {
     /// Cost of calling the `read_value` host function.
     pub read_value: HostFunction<[Cost; 3]>,

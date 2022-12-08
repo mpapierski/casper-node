@@ -70,16 +70,16 @@ use crate::{
     storage::global_state::StateReader,
 };
 
-use super::wasm_config::WasmConfig;
+use super::{opcode_costs::OpcodeCosts, wasm_config::WasmConfig};
 
 /// Mode of execution for smart contracts.
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionMode {
     /// Runs Wasm modules in interpreted mode.
     Interpreted,
     /// Runs Wasm modules in a compiled mode.
-    Compiled,
+    Compiled { cache_artifacts: bool },
     /// Runs Wasm modules in a JIT mode.
     JustInTime,
     /// Runs Wasm modules in a compiled mode via fast ahead of time compiler.
@@ -100,7 +100,7 @@ impl ExecutionMode {
     pub fn is_using_cache(&self) -> bool {
         match self {
             ExecutionMode::Interpreted => false,
-            ExecutionMode::Compiled => false,
+            ExecutionMode::Compiled { cache_artifacts } => *cache_artifacts,
             ExecutionMode::JustInTime => false,
             ExecutionMode::Singlepass { cache_artifacts } => *cache_artifacts,
         }
@@ -111,7 +111,7 @@ impl ToBytes for ExecutionMode {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         match self {
             ExecutionMode::Interpreted => 1u32.to_bytes(),
-            ExecutionMode::Compiled => 2u32.to_bytes(),
+            ExecutionMode::Compiled { cache_artifacts } => (2u32, *cache_artifacts).to_bytes(),
             ExecutionMode::JustInTime => 3u32.to_bytes(),
             ExecutionMode::Singlepass { cache_artifacts } => (4u32, *cache_artifacts).to_bytes(),
         }
@@ -120,7 +120,9 @@ impl ToBytes for ExecutionMode {
     fn serialized_length(&self) -> usize {
         match self {
             ExecutionMode::Interpreted => 1u32.serialized_length(),
-            ExecutionMode::Compiled => 2u32.serialized_length(),
+            ExecutionMode::Compiled { cache_artifacts } => {
+                (2u32, *cache_artifacts).serialized_length()
+            }
             ExecutionMode::JustInTime => 3u32.serialized_length(),
             ExecutionMode::Singlepass { cache_artifacts } => {
                 (4u32, *cache_artifacts).serialized_length()
@@ -135,7 +137,13 @@ impl FromBytes for ExecutionMode {
         if execution_mode == 1 {
             Ok((ExecutionMode::Interpreted, rem))
         } else if execution_mode == 2 {
-            Ok((ExecutionMode::Compiled, rem))
+            let (flag, rem) = bool::from_bytes(rem)?;
+            Ok((
+                ExecutionMode::Compiled {
+                    cache_artifacts: flag,
+                },
+                rem,
+            ))
         } else if execution_mode == 3 {
             Ok((ExecutionMode::JustInTime, rem))
         } else if execution_mode == 4 {
@@ -151,7 +159,9 @@ impl Distribution<ExecutionMode> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ExecutionMode {
         match rng.gen::<bool>() {
             false => ExecutionMode::Interpreted,
-            true => ExecutionMode::Compiled,
+            true => ExecutionMode::Compiled {
+                cache_artifacts: rng.gen(),
+            },
         }
     }
 }
@@ -167,25 +177,26 @@ pub enum Module {
     /// TODO: We might not need it anymore. We use "do nothing" bytes for replacing wasm modules
     Noop,
     Interpreted {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         wasmi_module: WasmiModule,
     },
     Compiled {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         /// Used to carry on original Wasm module for easy further processing.
         wasmi_module: WasmiModule,
         precompile_time: Option<Duration>,
         /// Ahead of time compiled artifact.
-        compiled_artifact: Bytes,
+        // compiled_artifact: Bytes,
+        wasmtime_module: wasmtime::Module,
     },
     Jitted {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         wasmi_module: WasmiModule,
         precompile_time: Option<Duration>,
         module: wasmtime::Module,
     },
     Singlepass {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         wasmi_module: WasmiModule,
         // store: wasmer::Store,
         wasmer_module: wasmer::Module,
@@ -244,7 +255,8 @@ impl Module {
                 original_bytes,
                 wasmi_module,
                 precompile_time,
-                compiled_artifact,
+
+                wasmtime_module,
             } => wasmi_module,
             Module::Jitted {
                 original_bytes,
@@ -426,7 +438,7 @@ where
     // TODO: We might not need it. Actually trying to execute a noop is a programming error.
     Noop,
     Interpreted {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         module: ModuleRef,
         memory: MemoryRef,
         runtime: Runtime<R>,
@@ -435,7 +447,7 @@ where
     // a lifetime and a generic R
     Compiled {
         /// For metrics
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         precompile_time: Option<Duration>,
         /// Raw Wasmi module used only for further processing.
         module: WasmiModule,
@@ -444,7 +456,7 @@ where
         runtime: Runtime<R>,
     },
     Singlepass {
-        original_bytes: Vec<u8>,
+        original_bytes: Bytes,
         module: WasmiModule,
         /// There is no separate "compile" step that turns a wasm bytes into a wasmer module
         wasmer_module: wasmer::Module,
@@ -574,8 +586,8 @@ fn caller_adapter_and_runtime<'b, 'c, 'd: 'c, R: Clone>(
 }
 
 struct WasmerEnv<R: Clone> {
-    runtime: Box<Runtime<R>>,
-    // memory: wasmer::Memory,
+    runtime: Runtime<R>,
+    memory: Option<wasmer::Memory>,
 }
 
 impl<R> Instance<R>
@@ -1903,7 +1915,8 @@ where
                 // import_object.define("env", "host_function", host_function);
                 let memory_pages = wasm_engine.wasm_config().max_memory;
 
-                let import_type = wasmer_module.imports().find_map(|import_type| {
+                let imports = wasmer_module.imports().into_iter().collect::<Vec<_>>();
+                let import_type = imports.iter().find_map(|import_type| {
                     if (import_type.module(), import_type.name()) == ("env", "memory") {
                         import_type.ty().memory().cloned()
                     } else {
@@ -1911,25 +1924,31 @@ where
                     }
                 });
 
-                let memory_import = import_type.unwrap_or_else(|| {
-                    wasmer::MemoryType::new(memory_pages, Some(memory_pages), true)
-                });
+                // let memory_import = import_type;
 
-                let memory =
-                    wasmer::Memory::new(&mut wasmer_store.as_store_mut(), memory_import.clone())
-                        .expect("should create wasmer memory");
+                let imported_memory = if let Some(imported_memory) = import_type {
+                    // dbg!(&imported_memory);
 
-                let memory_obj = memory;
-                import_object.define("env", "memory", memory_obj.clone());
-                // import_object.mem
+                    let memory = wasmer::Memory::new(
+                        &mut wasmer_store.as_store_mut(),
+                        imported_memory.clone(),
+                    )
+                    .expect("should create wasmer memory");
+                    Some(memory)
+                } else {
+                    None
+                };
 
-                let function_env = FunctionEnv::new(
-                    &mut wasmer_store.as_store_mut(),
-                    WasmerEnv {
-                        runtime: Box::new(runtime.clone()),
-                        // memory: memory.clone(),
-                    },
-                );
+                // let memory_obj = memory;
+                // // import_object.mem
+
+                let wasmer_env = WasmerEnv {
+                    runtime,
+                    memory: imported_memory.clone(),
+                };
+
+                let mut function_env =
+                    FunctionEnv::new(&mut wasmer_store.as_store_mut(), wasmer_env);
 
                 // let gas_func = wasmer::Function::new_typed_with_env(
                 //     &mut wasmer_store.as_store_mut(),
@@ -2031,20 +2050,32 @@ where
                 //                import_object.define("env", "casper_write",
                 // wasmer::Extern::from(write_func));
 
-                let memory = memory_obj.clone();
+                //
+
+                if let Some(imported_memory) = &imported_memory {
+                    import_object.define(
+                        "env",
+                        "memory",
+                        wasmer::Extern::from(imported_memory.clone()),
+                    );
+                }
                 import_object.define(
                     "env",
                     "casper_read_value",
                     wasmer::Function::new_typed_with_env(
                         &mut wasmer_store.as_store_mut(),
                         &function_env,
-                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
-                              key_ptr: u32,
-                              key_size: u32,
-                              output_size_ptr: u32|
-                              -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                        |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                         key_ptr: u32,
+                         key_size: u32,
+                         output_size_ptr: u32|
+                         -> Result<i32, execution::Error> {
+                            // let runtime = &mut ;
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.read(
                                 function_context,
                                 key_ptr,
@@ -2056,7 +2087,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_add",
@@ -2069,8 +2099,11 @@ where
                               value_ptr: u32,
                               value_size: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.casper_add(
                                 function_context,
                                 key_ptr,
@@ -2083,7 +2116,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_revert",
@@ -2099,7 +2131,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_ret",
@@ -2110,8 +2141,11 @@ where
                               value_ptr: u32,
                               value_size: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let host_function_costs = caller
                                 .data_mut()
                                 .runtime
@@ -2129,7 +2163,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_phase",
@@ -2140,8 +2173,11 @@ where
                               dest_ptr: u32|
                               -> Result<(), execution::Error> {
                             // caller.
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let host_function_costs = caller
                                 .data_mut()
                                 .runtime
@@ -2161,7 +2197,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_is_valid_uref",
@@ -2172,8 +2207,11 @@ where
                               uref_ptr: u32,
                               uref_size: u32|
                               -> Result<_, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.is_valid_uref(
                                 function_context,
                                 uref_ptr,
@@ -2184,7 +2222,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_add_associated_key",
@@ -2196,8 +2233,11 @@ where
                               account_hash_size: u32,
                               weight: i32|
                               -> Result<_, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.add_associated_key(
                                 function_context,
                                 account_hash_ptr,
@@ -2209,7 +2249,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_remove_associated_key",
@@ -2220,8 +2259,11 @@ where
                               account_hash_ptr: u32,
                               account_hash_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.remove_associated_key(
                                 function_context,
                                 account_hash_ptr,
@@ -2233,7 +2275,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_update_associated_key",
@@ -2245,8 +2286,11 @@ where
                               account_hash_size: u32,
                               weight: i32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.update_associated_key(
                                 function_context,
                                 account_hash_ptr,
@@ -2258,7 +2302,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_set_action_threshold",
@@ -2269,8 +2312,11 @@ where
                               permission_level: u32,
                               permission_threshold: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.set_action_threshold(
                                 function_context,
                                 permission_level,
@@ -2281,7 +2327,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_caller",
@@ -2291,8 +2336,11 @@ where
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller
                                 .data_mut()
                                 .runtime
@@ -2302,7 +2350,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_blocktime",
@@ -2312,8 +2359,11 @@ where
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
                               dest_ptr: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller
                                 .data_mut()
                                 .runtime
@@ -2323,7 +2373,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "gas",
@@ -2339,7 +2388,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_new_uref",
@@ -2351,8 +2399,11 @@ where
                               value_ptr,
                               value_size|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.casper_new_uref(
                                 function_context,
                                 uref_ptr,
@@ -2364,7 +2415,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_create_purse",
@@ -2375,8 +2425,11 @@ where
                               dest_ptr: u32,
                               dest_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.casper_create_purse(
                                 function_context,
                                 dest_ptr,
@@ -2387,7 +2440,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_write",
@@ -2400,8 +2452,11 @@ where
                               value_ptr: u32,
                               value_size: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.casper_write(
                                 function_context,
                                 key_ptr,
@@ -2414,7 +2469,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_main_purse",
@@ -2424,8 +2478,11 @@ where
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
                               dest_ptr: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller
                                 .data_mut()
                                 .runtime
@@ -2435,7 +2492,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_named_arg_size",
@@ -2447,8 +2503,11 @@ where
                               name_size: u32,
                               size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.casper_get_named_arg_size(
                                 function_context,
                                 name_ptr,
@@ -2460,7 +2519,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_named_arg",
@@ -2473,8 +2531,11 @@ where
                               dest_ptr: u32,
                               dest_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.casper_get_named_arg(
                                 function_context,
                                 name_ptr,
@@ -2487,7 +2548,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_transfer_to_account",
@@ -2503,8 +2563,11 @@ where
                               id_size: u32,
                               result_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.casper_transfer_to_account(
                                 function_context,
                                 key_ptr,
@@ -2520,7 +2583,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_has_key",
@@ -2531,8 +2593,11 @@ where
                               name_ptr: u32,
                               name_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.has_key(
                                 function_context,
                                 name_ptr,
@@ -2543,7 +2608,7 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
+                //
                 import_object.define(
                     "env",
                     "casper_get_key",
@@ -2551,14 +2616,17 @@ where
                         &mut wasmer_store.as_store_mut(),
                         &function_env,
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+
                               name_ptr: u32,
                               name_size: u32,
                               output_ptr: u32,
                               output_size: u32,
                               bytes_written: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+                            let function_context =
+                                WasmerAdapter::new(wasmer_memory.view(&caller.as_store_ref()));
+
                             let ret = caller.data_mut().runtime.load_key(
                                 function_context,
                                 name_ptr,
@@ -2572,7 +2640,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_put_key",
@@ -2585,8 +2652,11 @@ where
                               key_ptr,
                               key_size|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.casper_put_key(
                                 function_context,
                                 name_ptr,
@@ -2599,7 +2669,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_remove_key",
@@ -2610,8 +2679,11 @@ where
                               name_ptr: u32,
                               name_size: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.remove_key(
                                 function_context,
                                 name_ptr,
@@ -2623,7 +2695,6 @@ where
                 );
 
                 #[cfg(feature = "test-support")]
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_print",
@@ -2634,8 +2705,11 @@ where
                               text_ptr: u32,
                               text_size: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.casper_print(
                                 function_context,
                                 text_ptr,
@@ -2646,7 +2720,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_transfer_from_purse_to_purse",
@@ -2663,8 +2736,11 @@ where
                               id_ptr,
                               id_size|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller
                                 .data_mut()
                                 .runtime
@@ -2684,7 +2760,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_transfer_from_purse_to_account",
@@ -2702,8 +2777,11 @@ where
                               id_size,
                               result_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller
                                 .data_mut()
                                 .runtime
@@ -2724,7 +2802,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_balance",
@@ -2736,8 +2813,10 @@ where
                               ptr_size: u32,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -2762,7 +2841,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_read_host_buffer",
@@ -2774,8 +2852,10 @@ where
                               dest_size,
                               bytes_written_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -2800,7 +2880,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_get_system_contract",
@@ -2812,8 +2891,10 @@ where
                               dest_ptr,
                               dest_size|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -2837,7 +2918,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_load_named_keys",
@@ -2848,8 +2928,10 @@ where
                               total_keys_ptr,
                               result_size_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -2872,7 +2954,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_create_contract_package_at_hash",
@@ -2884,8 +2965,10 @@ where
                               access_dest_ptr,
                               is_locked: u32|
                               -> Result<(), execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -2920,7 +3003,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_create_contract_user_group",
@@ -2937,8 +3019,10 @@ where
                               existing_urefs_size: u32,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let ret = caller
                                 .data_mut()
@@ -2960,7 +3044,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_provision_contract_user_group_uref",
@@ -2974,8 +3057,10 @@ where
                               label_size,
                               value_size_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -3009,7 +3094,7 @@ where
                         },
                     ),
                 );
-                let memory = memory_obj.clone();
+
                 import_object.define(
                     "env",
                     "casper_remove_contract_user_group",
@@ -3022,8 +3107,11 @@ where
                               label_ptr,
                               label_size|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller
                                 .data_mut()
                                 .runtime
@@ -3039,7 +3127,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_remove_contract_user_group_urefs",
@@ -3054,8 +3141,10 @@ where
                               urefs_ptr,
                               urefs_size|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -3089,7 +3178,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_call_versioned_contract",
@@ -3107,8 +3195,10 @@ where
                               args_size,
                               result_size_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -3184,7 +3274,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_add_contract_version",
@@ -3203,8 +3292,10 @@ where
                               output_size,
                               bytes_written_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let host_function_costs = caller
                                 .data_mut()
@@ -3231,7 +3322,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_call_contract",
@@ -3247,8 +3337,10 @@ where
                               args_size,
                               result_size_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let ret = caller.data_mut().runtime.casper_call_contract(
                                 function_context,
@@ -3265,7 +3357,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_load_call_stack",
@@ -3276,8 +3367,11 @@ where
                               call_stack_len_ptr,
                               result_size_ptr|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.charge_host_function_call(
                                 &host_function_costs::HostFunction::fixed(10_000),
                                 [call_stack_len_ptr, result_size_ptr],
@@ -3292,7 +3386,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_new_dictionary",
@@ -3302,8 +3395,11 @@ where
                         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             caller.data_mut().runtime.charge_host_function_call(
                                 &host_function_costs::DEFAULT_HOST_FUNCTION_NEW_DICTIONARY,
                                 [output_size_ptr],
@@ -3317,7 +3413,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_dictionary_get",
@@ -3331,8 +3426,11 @@ where
                               key_bytes_size: u32,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let host_function_costs = caller
                                 .data_mut()
                                 .runtime
@@ -3356,7 +3454,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_dictionary_put",
@@ -3371,8 +3468,11 @@ where
                               value_ptr,
                               value_ptr_size|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let ret = caller.data_mut().runtime.dictionary_put(
                                 function_context,
                                 uref_ptr,
@@ -3382,9 +3482,11 @@ where
                                 value_ptr,
                                 value_ptr_size,
                             )?;
+
+                            let runtime = &mut caller.data_mut().runtime;
                             let host_function_costs =
                                 runtime.config().wasm_config().take_host_function_costs();
-                            caller.data_mut().runtime.charge_host_function_call(
+                            runtime.charge_host_function_call(
                                 &host_function_costs.dictionary_put,
                                 [key_bytes_ptr, key_bytes_size, value_ptr, value_ptr_size],
                             )?;
@@ -3393,7 +3495,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_blake2b",
@@ -3406,8 +3507,11 @@ where
                               out_ptr: u32,
                               out_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let host_function_costs = caller
                                 .data_mut()
                                 .runtime
@@ -3436,7 +3540,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_load_authorization_keys",
@@ -3447,8 +3550,10 @@ where
                               len_ptr: u32,
                               result_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let ret = caller.data_mut().runtime.casper_load_authorization_keys(
                                 function_context,
@@ -3460,7 +3565,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_disable_contract_version",
@@ -3473,8 +3577,10 @@ where
                               contract_hash_ptr: u32,
                               contract_hash_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
 
                             let result =
                                 caller.data_mut().runtime.casper_disable_contract_version(
@@ -3490,7 +3596,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_dictionary_read",
@@ -3502,8 +3607,11 @@ where
                               key_size: u32,
                               output_size_ptr: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let result = caller.data_mut().runtime.casper_dictionary_read(
                                 function_context,
                                 key_ptr,
@@ -3516,7 +3624,6 @@ where
                     ),
                 );
 
-                let memory = memory_obj.clone();
                 import_object.define(
                     "env",
                     "casper_random_bytes",
@@ -3527,8 +3634,11 @@ where
                               out_ptr: u32,
                               out_size: u32|
                               -> Result<i32, execution::Error> {
-                            let mut function_context =
-                                WasmerAdapter::new(memory.view(&caller.as_store_ref()));
+                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+
+                            let view = wasmer_memory.view(&caller);
+                            let mut function_context = WasmerAdapter::new(view);
+
                             let result = caller.data_mut().runtime.casper_random_bytes(
                                 function_context,
                                 out_ptr,
@@ -3545,8 +3655,21 @@ where
                     &wasmer_module,
                     &import_object,
                 )?;
+
+                // function_env.as_mut(&mut wasmer_store.as_store_mut(), )
                 // instance.
-                // instance.exports.get_memory("memory").expect("mem");
+                match instance.exports.get_memory("memory") {
+                    Ok(exported_memory) => {
+                        // dbg!(&exported_memory);
+                        function_env.as_mut(&mut wasmer_store.as_store_mut()).memory =
+                            Some(exported_memory.clone());
+                    }
+                    Err(error) => {
+                        if imported_memory.is_none() {
+                            panic!("Instance does not import/export memory which we don't currently allow {:?}", error);
+                        }
+                    }
+                }
 
                 let call_func: TypedFunction<(), ()> = instance
                     .exports
@@ -3657,7 +3780,7 @@ pub enum PreprocessingError {
     WasmValidation(#[from] WasmValidationError),
     /// Wasmtime was unable to precompile a module
     #[error("Precompile error: {0}")]
-    Precompile(RuntimeError),
+    Precompile(String),
     /// Wasmer was unable to compile a module
     #[error(transparent)]
     Compile(Arc<wasmer::CompileError>),
@@ -3947,8 +4070,31 @@ impl std::ops::Deref for WasmtimeEngine {
     }
 }
 
-// NOTE: Imitates persistent on disk cache for precompiled artifacts
-static GLOBAL_CACHE: Lazy<Mutex<HashMap<Vec<u8>, bytes::Bytes>>> = Lazy::new(Default::default);
+// NOTE: Imitates persistent on disk cache for precompiled artifacts, ideally it should be something like `Box<dyn ArtifactsCache>` and stick it to WasmEngine, so for instance while testing we can have a global cache instance to speed up testing.
+#[derive(PartialEq, Eq, Hash)]
+struct CacheKey(
+    /// When cache is implemented as persistent on disk it's important to note that wasmer can use host CPU's features that may not be present when persistent cache is moved to different CPU with missing feature sets.
+    wasmer::Triple,
+    /// We're caching instrumented binary keyed by the original wasm bytes therefore we also need to know the wasm config that's used to instrument the wasm bytes.
+    /// After chainspec will modify OpcodeCosts we need to create new cache entry to avoid incorrect execution of old binary but under new chain configuration.
+    WasmConfig,
+    /// Raw Wasm bytes without any modification.
+    Bytes,
+);
+
+static GLOBAL_CACHE: Lazy<Mutex<HashMap<CacheKey, Bytes>>> = Lazy::new(Default::default);
+
+fn cache_get(cache_key: &CacheKey) -> Option<Bytes> {
+    let hash_map = GLOBAL_CACHE.lock().unwrap();
+    let precompiled = hash_map.get(cache_key)?;
+
+    Some(precompiled.clone())
+}
+
+fn cache_set(cache_key: CacheKey, artifact: Bytes) {
+    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
+    global_cache.insert(cache_key, artifact);
+}
 
 /// Wasm preprocessor.
 #[derive(Debug, Clone)]
@@ -4025,13 +4171,15 @@ fn make_wasmer_store() -> wasmer::Store {
 }
 
 impl WasmEngine {
-    /// Creates a new instance of the preprocessor.
-    pub fn new(wasm_config: WasmConfig) -> Self {
-        Self {
-            wasm_config,
-            execution_mode: wasm_config.execution_mode,
-            compiled_engine: Arc::new(new_compiled_engine(&wasm_config)),
-        }
+    /// Get a reference to the wasm engine's compiled engine.
+    pub fn compiled_engine(&self) -> &wasmtime::Engine {
+        &self.compiled_engine
+    }
+
+    fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
+        let compiled_module =
+            unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), bytes) }.unwrap();
+        Ok(compiled_module)
     }
 
     pub fn execution_mode(&self) -> &ExecutionMode {
@@ -4042,231 +4190,6 @@ impl WasmEngine {
         &mut self.execution_mode
     }
 
-    /// Preprocesses Wasm bytes and returns a module.
-    ///
-    /// This process consists of a few steps:
-    /// - Validate that the given bytes contain a memory section, and check the memory page limit.
-    /// - Inject gas counters into the code, which makes it possible for the executed Wasm to be
-    ///   charged for opcodes; this also validates opcodes and ensures that there are no forbidden
-    ///   opcodes in use, such as floating point opcodes.
-    /// - Ensure that the code has a maximum stack height.
-    ///
-    /// In case the preprocessing rules can't be applied, an error is returned.
-    /// Otherwise, this method returns a valid module ready to be executed safely on the host.
-    pub fn preprocess(
-        &self,
-        wasm_config: WasmConfig,
-        module_bytes: &[u8],
-    ) -> Result<Module, PreprocessingError> {
-        let module = deserialize_interpreted(module_bytes)?;
-
-        if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
-            let mut global_cache = GLOBAL_CACHE.lock().unwrap();
-            if let Some(precompiled_bytes) = global_cache.get(module_bytes) {
-                // We have the artifact, and we can use headless mode to just execute binary artifact
-                let headless_engine = wasmer::Engine::headless();
-                let store = wasmer::Store::new(headless_engine);
-                let wasmer_module =
-                    unsafe { wasmer::Module::deserialize(&store, precompiled_bytes.clone()) }?;
-                return Ok(Module::Singlepass {
-                    original_bytes: module_bytes.to_vec(),
-                    wasmi_module: module,
-                    wasmer_module,
-                    store: store,
-                });
-            }
-        }
-
-        ensure_valid_access(&module)?;
-
-        if memory_section(&module).is_none() {
-            // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
-            // module, and panics otherwise.
-            return Err(PreprocessingError::MissingMemorySection);
-        }
-
-        let module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
-        ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
-        ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
-        ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
-        ensure_valid_imports(&module)?;
-
-        let module = pwasm_utils::externalize_mem(module, None, wasm_config.max_memory);
-        let module = pwasm_utils::inject_gas_counter(
-            module,
-            &wasm_config.opcode_costs().to_set(),
-            DEFAULT_GAS_MODULE_NAME,
-        )
-        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
-        let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
-            .map_err(|_| PreprocessingError::StackLimiter)?;
-
-        match self.execution_mode {
-            ExecutionMode::Interpreted => Ok(Module::Interpreted {
-                original_bytes: module_bytes.to_vec(),
-                wasmi_module: module,
-            }),
-            ExecutionMode::Compiled => {
-                // TODO: Gas injected module is used here but we might want to use `module` instead
-                // with other preprocessing done.
-                let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
-
-                // aot compile
-                let (precompiled_bytes, duration) = self
-                    .precompile(module_bytes, &preprocessed_wasm_bytes)
-                    .map_err(PreprocessingError::Precompile)?;
-
-                // let wasmtime_module =
-                //     wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
-                //         .expect("should process");
-                Ok(Module::Compiled {
-                    original_bytes: module_bytes.to_vec(),
-                    wasmi_module: module,
-                    precompile_time: duration,
-                    compiled_artifact: precompiled_bytes,
-                })
-            }
-            ExecutionMode::JustInTime => {
-                let start = Instant::now();
-
-                let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
-                let compiled_module =
-                    wasmtime::Module::new(&self.compiled_engine, preprocessed_wasm_bytes)
-                        .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
-
-                let stop = start.elapsed();
-
-                Ok(Module::Jitted {
-                    original_bytes: module_bytes.to_vec(),
-                    wasmi_module: module,
-                    precompile_time: Some(stop),
-                    module: compiled_module,
-                })
-            }
-            ExecutionMode::Singlepass { cache_artifacts } => {
-                let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
-
-                // let singlepass = Singlepass::new();
-                // let store = wasmer::Store::new(singlepass);
-                // wasmer::Module::new
-
-                let start = Instant::now();
-
-                let mut store = make_wasmer_store();
-
-                let wasmer_module =
-                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
-
-                if cache_artifacts {
-                    let serialized_bytes = wasmer_module.serialize()?;
-                    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
-                    global_cache.insert(module_bytes.to_vec(), serialized_bytes);
-                }
-
-                let stop = start.elapsed();
-
-                Ok(Module::Singlepass {
-                    original_bytes: module_bytes.to_vec(),
-                    wasmi_module: module,
-                    store,
-                    wasmer_module: wasmer_module,
-                })
-            }
-        }
-        // let module = deserialize_interpreted(module_bytes)?;
-    }
-
-    /// Get a reference to the wasm engine's wasm config.
-    pub fn wasm_config(&self) -> &WasmConfig {
-        &self.wasm_config
-    }
-
-    /// Creates module specific for execution mode.
-    pub fn module_from_bytes(&self, wasm_bytes: &[u8]) -> Result<Module, PreprocessingError> {
-        let parity_module = deserialize_interpreted(wasm_bytes)?;
-
-        let module = match self.execution_mode {
-            ExecutionMode::Interpreted => Module::Interpreted {
-                wasmi_module: parity_module,
-                original_bytes: wasm_bytes.to_vec(),
-            },
-            ExecutionMode::Compiled => {
-                // aot compile
-                let (precompiled_bytes, duration) =
-                    self.precompile(wasm_bytes, wasm_bytes).unwrap();
-                // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
-                // let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
-                Module::Compiled {
-                    original_bytes: wasm_bytes.to_vec(),
-                    wasmi_module: parity_module,
-                    precompile_time: duration,
-                    compiled_artifact: precompiled_bytes.to_owned(),
-                }
-            }
-            ExecutionMode::JustInTime => {
-                let start = Instant::now();
-                let module = wasmtime::Module::new(&self.compiled_engine, wasm_bytes).unwrap();
-                let stop = start.elapsed();
-                Module::Jitted {
-                    original_bytes: wasm_bytes.to_vec(),
-                    wasmi_module: parity_module,
-                    precompile_time: Some(stop),
-                    module,
-                }
-            }
-            ExecutionMode::Singlepass { cache_artifacts } => {
-                let hash_digest = base16::encode_lower(&blake2b(wasm_bytes));
-                if cache_artifacts {
-                    let global_cache = GLOBAL_CACHE.lock().unwrap();
-                    if let Some(precompiled_bytes) = global_cache.get(wasm_bytes) {
-                        eprintln!("cache hit (module_from_bytes) {}", hash_digest);
-
-                        // We have the artifact, and we can use headless mode to just execute binary artifact
-                        let headless_engine = wasmer::Engine::headless();
-                        let store = wasmer::Store::new(headless_engine);
-                        let wasmer_module = unsafe {
-                            wasmer::Module::deserialize(&store, precompiled_bytes.clone())
-                        }?;
-                        return Ok(Module::Singlepass {
-                            original_bytes: wasm_bytes.to_vec(),
-                            wasmi_module: parity_module,
-                            wasmer_module,
-                            store: store,
-                        });
-                    }
-                }
-
-                let wasmer_store = make_wasmer_store();
-
-                let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
-                    .expect("should create wasmer module");
-
-                if cache_artifacts {
-                    eprintln!("cache miss (module_from_bytes) {}", hash_digest);
-
-                    let serialized_bytes = wasmer_module.serialize()?;
-                    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
-                    global_cache.insert(wasm_bytes.to_vec(), serialized_bytes);
-                }
-
-                Module::Singlepass {
-                    original_bytes: wasm_bytes.to_vec(),
-                    wasmi_module: parity_module,
-                    wasmer_module: wasmer_module,
-                    store: wasmer_store,
-                }
-            }
-        };
-        Ok(module)
-    }
-
-    /// Get a reference to the wasm engine's compiled engine.
-    pub fn compiled_engine(&self) -> &wasmtime::Engine {
-        &self.compiled_engine
-    }
     /// Creates an WASM module instance and a memory instance.
     ///
     /// This ensures that a memory instance is properly resolved into a pre-allocated memory area,
@@ -4313,14 +4236,16 @@ impl WasmEngine {
             Module::Compiled {
                 original_bytes,
                 wasmi_module,
-                compiled_artifact,
+                // compiled_artifact,
+                wasmtime_module: compiled_module,
                 precompile_time,
+                // precompile_time,
             } => {
                 if wasmi_module.start_section().is_some() {
                     return Err(execution::Error::UnsupportedWasmStart);
                 }
 
-                let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
 
                 // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
                 // "Module requested too much memory" is not runtime error it should be a validation pass.
@@ -4438,7 +4363,7 @@ impl WasmEngine {
                 Ok(Instance::Singlepass {
                     original_bytes: original_bytes.clone(),
                     module: wasmi_module.clone(),
-                    wasmer_module: wasmer_module.clone(),
+                    wasmer_module: wasmer_module,
                     runtime,
                     store: store,
                 })
@@ -4446,36 +4371,335 @@ impl WasmEngine {
         }
     }
 
-    fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
-        let compiled_module =
-            unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), bytes) }.unwrap();
-        Ok(compiled_module)
+    fn make_cache_key(&self, original_bytes: Bytes) -> CacheKey {
+        CacheKey(wasmer::Triple::host(), self.wasm_config, original_bytes)
     }
 
-    fn precompile(
-        &self,
-        original_bytes: &[u8],
-        bytes: &[u8],
-    ) -> Result<(Bytes, Option<Duration>), RuntimeError> {
-        // todo!("precompile; disabled because of trait issues colliding with wasmer");
-        let mut cache = GLOBAL_CACHE.lock().unwrap();
-        // let mut cache = cache.borrow_mut();
-        // let mut cache = GLOBAL_CACHE.lborrow_mut();
-        let (bytes, maybe_duration) = match cache.entry(bytes.to_vec()) {
-            Entry::Occupied(o) => (o.get().clone(), None),
-            Entry::Vacant(v) => {
+    fn cache_get(&self, original_bytes: Bytes) -> Option<Bytes> {
+        cache_get(&self.make_cache_key(original_bytes))
+    }
+
+    fn cache_set(&self, clone: Bytes, serialized_bytes: Bytes) {
+        cache_set(self.make_cache_key(clone), serialized_bytes)
+    }
+
+    /// Creates module specific for execution mode.
+    pub fn module_from_bytes(&self, wasm_bytes: &[u8]) -> Result<Module, PreprocessingError> {
+        // NOTE: We should consider using `bytes::Bytes` instead of `bytesrepr::Bytes`
+        let wasm_bytes = Bytes::copy_from_slice(wasm_bytes);
+
+        let parity_module = deserialize_interpreted(&wasm_bytes)?;
+
+        let module = match self.execution_mode {
+            ExecutionMode::Interpreted => Module::Interpreted {
+                wasmi_module: parity_module,
+                original_bytes: wasm_bytes,
+            },
+            ExecutionMode::Compiled { cache_artifacts } => {
+                if cache_artifacts {
+                    if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
+                        let wasmtime_module = self
+                            .deserialize_compiled(&precompiled_bytes)
+                            .expect("Should deserialize");
+                        return Ok(Module::Compiled {
+                            original_bytes: wasm_bytes,
+                            wasmi_module: parity_module,
+                            precompile_time: None,
+                            wasmtime_module: wasmtime_module,
+                        });
+                    }
+                }
+                // aot compile
+                // let (precompiled_bytes, duration) = self
+                //     .precompile(wasm_bytes.clone(), wasm_bytes.clone(), cache_artifacts)
+                //     .unwrap();
+                // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
+
+                let module = wasmtime::Module::new(&self.compiled_engine, &wasm_bytes).unwrap();
+
+                if cache_artifacts {
+                    let serialized_bytes = module
+                        .serialize()
+                        .expect("should serialize wasmtime module");
+                    self.cache_set(wasm_bytes.clone(), serialized_bytes.into());
+                }
+
+                Module::Compiled {
+                    original_bytes: wasm_bytes,
+                    wasmi_module: parity_module,
+                    precompile_time: None,
+                    wasmtime_module: module,
+                    // compiled_artifact: precompiled_bytes.to_owned(),
+                }
+            }
+            ExecutionMode::JustInTime => {
                 let start = Instant::now();
-                let precompiled_bytes = self
-                    .compiled_engine
-                    .precompile_module(bytes)
-                    .map_err(|e| RuntimeError::Other(e.to_string()))?;
+                let module =
+                    wasmtime::Module::new(&self.compiled_engine, wasm_bytes.clone()).unwrap();
                 let stop = start.elapsed();
-                // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
-                let artifact = v.insert(Bytes::from(precompiled_bytes)).clone();
-                (artifact, Some(stop))
+                Module::Jitted {
+                    original_bytes: wasm_bytes,
+                    wasmi_module: parity_module,
+                    precompile_time: Some(stop),
+                    module,
+                }
+            }
+            ExecutionMode::Singlepass { cache_artifacts } => {
+                let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
+                if cache_artifacts {
+                    if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
+                        // We have the artifact, and we can use headless mode to just execute binary artifact
+                        let headless_engine = wasmer::Engine::headless();
+                        let store = wasmer::Store::new(headless_engine);
+                        let wasmer_module = unsafe {
+                            wasmer::Module::deserialize(&store, precompiled_bytes.clone())
+                        }?;
+                        let wasmer_imports_from_cache =
+                            wasmer_module.imports().into_iter().collect::<Vec<_>>();
+
+                        return Ok(Module::Singlepass {
+                            original_bytes: wasm_bytes,
+                            wasmi_module: parity_module,
+                            wasmer_module,
+                            store: store,
+                        });
+                    }
+                }
+
+                let wasmer_store = make_wasmer_store();
+
+                let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
+                    .expect("should create wasmer module");
+
+                if cache_artifacts {
+                    let serialized_bytes = wasmer_module.serialize()?;
+                    self.cache_set(wasm_bytes.clone(), serialized_bytes);
+                }
+
+                // TODO: Cache key should be the one from StoredValue::ContractWasm which is random, there's probably collision and somehow unmodified module is cached?
+
+                Module::Singlepass {
+                    original_bytes: wasm_bytes,
+                    wasmi_module: parity_module,
+                    wasmer_module: wasmer_module,
+                    store: wasmer_store,
+                }
             }
         };
-        Ok((bytes, maybe_duration))
+        Ok(module)
+    }
+
+    /// Creates a new instance of the preprocessor.
+    pub fn new(wasm_config: WasmConfig) -> Self {
+        Self {
+            wasm_config,
+            execution_mode: wasm_config.execution_mode,
+            compiled_engine: Arc::new(new_compiled_engine(&wasm_config)),
+        }
+    }
+    // fn precompile(
+    //     &self,
+    //     original_bytes: Bytes,
+    //     bytes: Bytes,
+    //     cache_artifacts: bool,
+    // ) -> Result<(Bytes, Option<Duration>), RuntimeError> {
+    //     // if cache_artifacts {
+    //     //     if let Some(precompiled) = self.cache_get(original_bytes.clone()) {
+    //     //         let deserialized_module =
+    //     //             unsafe { wasmtime::Module::deserialize(&self.compiled_engine, &precompiled) }
+    //     //                 .expect("should deserialize wasmtime module");
+    //     //         return Ok(());
+    //     //     }
+    //     // }
+    //     // todo!("precompile; disabled because of trait issues colliding with wasmer");
+    //     // let mut cache = GLOBAL_CACHE.lock().unwrap();
+    //     // let mut cache = cache.borrow_mut();
+    //     // let mut cache = GLOBAL_CACHE.lborrow_mut();
+    //     // match self.cache_get(bytes)
+
+    //     // let (bytes, maybe_duration) = match cache.entry(CacheKey(bytes.clone())) {
+    //     //     Entry::Occupied(o) => (o.get().clone(), None),
+    //     //     Entry::Vacant(v) => {
+    //     let start = Instant::now();
+    //     let precompiled_bytes = self
+    //         .compiled_engine
+    //         .precompile_module(&bytes)
+    //         .map_err(|e| RuntimeError::Other(e.to_string()))?;
+    //     let stop = start.elapsed();
+    //     //         // record_performance_log(original_bytes, LogProperty::PrecompileTime(stop));
+    //     //         let artifact = v.insert(Bytes::from(precompiled_bytes)).clone();
+    //     //         (artifact, Some(stop))
+    //     //     }
+    //     // }
+    //     Ok((precompiled_bytes.into(), Some(stop)))
+    // }
+
+    /// Preprocesses Wasm bytes and returns a module.
+    ///
+    /// This process consists of a few steps:
+    /// - Validate that the given bytes contain a memory section, and check the memory page limit.
+    /// - Inject gas counters into the code, which makes it possible for the executed Wasm to be
+    ///   charged for opcodes; this also validates opcodes and ensures that there are no forbidden
+    ///   opcodes in use, such as floating point opcodes.
+    /// - Ensure that the code has a maximum stack height.
+    ///
+    /// In case the preprocessing rules can't be applied, an error is returned.
+    /// Otherwise, this method returns a valid module ready to be executed safely on the host.
+    pub fn preprocess(
+        &self,
+        wasm_config: WasmConfig,
+        module_bytes: &[u8],
+    ) -> Result<Module, PreprocessingError> {
+        // NOTE: Consider using `bytes::Bytes` instead of `bytesrepr::Bytes` as its cheaper
+        let module_bytes = Bytes::copy_from_slice(module_bytes);
+
+        let module = deserialize_interpreted(&module_bytes)?;
+
+        ensure_valid_access(&module)?;
+
+        if memory_section(&module).is_none() {
+            // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
+            // module, and panics otherwise.
+            return Err(PreprocessingError::MissingMemorySection);
+        }
+
+        let module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
+        ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
+        ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
+        ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
+        ensure_valid_imports(&module)?;
+
+        let module = pwasm_utils::externalize_mem(module, None, wasm_config.max_memory);
+        let module = pwasm_utils::inject_gas_counter(
+            module,
+            &wasm_config.opcode_costs().to_set(),
+            DEFAULT_GAS_MODULE_NAME,
+        )
+        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
+        let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
+            .map_err(|_| PreprocessingError::StackLimiter)?;
+
+        if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
+            if let Some(precompiled_bytes) = self.cache_get(module_bytes.clone()) {
+                // We have the artifact, and we can use headless mode to just execute binary artifact
+                let headless_engine = wasmer::Engine::headless();
+                let store = wasmer::Store::new(headless_engine);
+                let wasmer_module =
+                    unsafe { wasmer::Module::deserialize(&store, precompiled_bytes.clone()) }?;
+                return Ok(Module::Singlepass {
+                    original_bytes: module_bytes,
+                    wasmi_module: module,
+                    wasmer_module,
+                    store: store,
+                });
+            }
+        }
+        match self.execution_mode {
+            ExecutionMode::Interpreted => Ok(Module::Interpreted {
+                original_bytes: module_bytes,
+                wasmi_module: module,
+            }),
+            ExecutionMode::Compiled { cache_artifacts } => {
+                // TODO: Gas injected module is used here but we might want to use `module` instead
+                // with other preprocessing done.
+                let preprocessed_wasm_bytes = Bytes::from(
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes"),
+                );
+
+                if cache_artifacts {
+                    if let Some(precompiled_bytes) = self.cache_get(module_bytes.clone()) {
+                        let wasmtime_module = unsafe {
+                            wasmtime::Module::deserialize(&self.compiled_engine, &precompiled_bytes)
+                        }
+                        .expect("should deserialize wasmtime module");
+                        return Ok(Module::Compiled {
+                            original_bytes: module_bytes,
+                            wasmi_module: module,
+                            precompile_time: None,
+                            wasmtime_module,
+                        });
+                    }
+                }
+
+                let wasmtime_module =
+                    wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
+                        .map_err(|error| PreprocessingError::Precompile(error.to_string()))?;
+
+                if cache_artifacts {
+                    let serialized_bytes = wasmtime::Module::serialize(&wasmtime_module).unwrap();
+                    self.cache_set(module_bytes.clone(), serialized_bytes.into());
+                }
+                // aot compile
+                // let (precompiled_bytes, duration) = self
+                //     .precompile(
+                //         module_bytes.clone(),
+                //         preprocessed_wasm_bytes,
+                //         cache_artifacts,
+                //     )
+                //     .map_err(PreprocessingError::Precompile)?;
+
+                Ok(Module::Compiled {
+                    original_bytes: module_bytes,
+                    wasmi_module: module,
+                    precompile_time: None,
+                    wasmtime_module,
+                    // compiled_artifact: precompiled_bytes,
+                })
+            }
+            ExecutionMode::JustInTime => {
+                let start = Instant::now();
+
+                let preprocessed_wasm_bytes =
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+                let compiled_module =
+                    wasmtime::Module::new(&self.compiled_engine, preprocessed_wasm_bytes)
+                        .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+
+                let stop = start.elapsed();
+
+                Ok(Module::Jitted {
+                    original_bytes: module_bytes,
+                    wasmi_module: module,
+                    precompile_time: Some(stop),
+                    module: compiled_module,
+                })
+            }
+            ExecutionMode::Singlepass { cache_artifacts } => {
+                let preprocessed_wasm_bytes =
+                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+
+                // let singlepass = Singlepass::new();
+                // let store = wasmer::Store::new(singlepass);
+                // wasmer::Module::new
+
+                let start = Instant::now();
+
+                let mut store = make_wasmer_store();
+
+                let wasmer_module =
+                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
+
+                if cache_artifacts {
+                    let serialized_bytes = wasmer_module.serialize()?;
+                    self.cache_set(module_bytes.clone(), serialized_bytes);
+                }
+
+                let stop = start.elapsed();
+
+                Ok(Module::Singlepass {
+                    original_bytes: module_bytes,
+                    wasmi_module: module,
+                    store,
+                    wasmer_module: wasmer_module,
+                })
+            }
+        }
+        // let module = deserialize_interpreted(module_bytes)?;
+    }
+
+    /// Get a reference to the wasm engine's wasm config.
+    pub fn wasm_config(&self) -> &WasmConfig {
+        &self.wasm_config
     }
 }
 

@@ -44,7 +44,7 @@ thiserror = "1.0.18"
 tracing = "0.1.18"
 uint = "0.9.0"
 uuid = { version = "0.8.1", features = ["serde", "v4"] }
-# By depending on wasmi 0.8.0 we are stuck with parity-wasm 0.41.0
+# By depending on § 0.8.0 we are stuck with parity-wasm 0.41.0
 # and pwasm-utils 0.16 as upstream wasmi still depends on 0.41.0.
 # https://github.com/paritytech/wasmi/commit/f5fd480260490ff0de455017229caf7baee68195
 wasmi = "0.8.0"

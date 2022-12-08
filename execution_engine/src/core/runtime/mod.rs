@@ -224,11 +224,16 @@ where
     ) -> Result<Vec<u8>, Error> {
         let mut parity_wasm = self.module.clone().unwrap();
 
+        // let memory = parity_wasm
+        //     .memory_section()
+        //     .ok_or_else(|| Error::FunctionNotFound(String::from("Missing Import Section")))?;
+
         let export_section = parity_wasm
             .export_section()
             .ok_or_else(|| Error::FunctionNotFound(String::from("Missing Export Section")))?;
 
         let entry_point_names: Vec<&str> = entry_points.keys().map(|s| s.as_str()).collect();
+        let imports = parity_wasm.import_section();
 
         let maybe_missing_name: Option<String> = entry_point_names
             .iter()
@@ -245,6 +250,24 @@ where
         } else {
             let mut module = self.module.clone().unwrap();
             pwasm_utils::optimize(&mut module, entry_point_names)?;
+
+            match module.import_section() {
+                Some(imports) => {
+                    let memories = imports
+                        .entries()
+                        .iter()
+                        .filter_map(|entry| match entry.external() {
+                            parity_wasm::elements::External::Function(_) => None,
+                            parity_wasm::elements::External::Table(_) => None,
+                            parity_wasm::elements::External::Memory(mem) => Some(mem),
+                            parity_wasm::elements::External::Global(_) => None,
+                        })
+                        .collect::<Vec<_>>();
+                    assert!(!memories.is_empty());
+                }
+                None => todo!(),
+            }
+            // debug_assert!(module.import_section().unwrap_or_default().map(|import| import.)
             parity_wasm::serialize(module).map_err(Error::ParityWasm)
         }
     }

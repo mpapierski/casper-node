@@ -50,7 +50,7 @@ const OPCODE_COSTS_SERIALIZED_LENGTH: usize = NUM_FIELDS * U32_SERIALIZED_LENGTH
 /// Definition of a cost table for Wasm opcodes.
 ///
 /// This is taken (partially) from parity-ethereum.
-#[derive(Copy, Clone, PartialEq, Eq, Serialize, Deserialize, Debug, DataSize)]
+#[derive(Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, DataSize)]
 pub struct OpcodeCosts {
     /// Bit operations multiplier.
     pub bit: u32,

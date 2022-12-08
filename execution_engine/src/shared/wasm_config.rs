@@ -20,7 +20,7 @@ pub(crate) const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Interpre
 ///
 /// This structure contains various Wasm execution configuration options, such as memory limits,
 /// stack limits and costs.
-#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug, DataSize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Debug, DataSize)]
 pub struct WasmConfig {
     /// Maximum amount of heap memory (represented in 64kB pages) each contract can use.
     pub max_memory: u32,
