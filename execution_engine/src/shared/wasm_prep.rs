@@ -459,11 +459,16 @@ pub fn deserialize(module_bytes: &[u8]) -> Result<Module, PreprocessingError> {
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs};
+
     use casper_types::contracts::DEFAULT_ENTRY_POINT_NAME;
     use parity_wasm_v0_42_2::{
         builder,
         elements::{CodeSection, Instructions},
     };
+    use pwasm_utils::rules::{Metering, Set};
+
+    use crate::shared::opcode_costs::OpcodeCosts;
 
     use super::*;
 
@@ -635,5 +640,75 @@ mod tests {
             "{:?}",
             error,
         );
+    }
+
+    #[test]
+    fn compare() {
+        let wasm_bytes = fs::read("/Users/michal/Dev/casperlabs-node/target/wasm32-unknown-unknown/release/withdraw_bid.wasm").unwrap();
+
+        let module: parity_wasm_v0_42_2::elements::Module =
+            parity_wasm_v0_42_2::deserialize_buffer(&wasm_bytes).unwrap();
+
+        let opcode_costs = OpcodeCosts::default();
+        let meterings = {
+            use pwasm_utils::rules::*;
+            // use pwasm_utils::Metering;
+
+            let mut tmp = BTreeMap::new();
+            tmp.insert(InstructionType::Bit, Metering::Fixed(opcode_costs.bit));
+            tmp.insert(InstructionType::Add, Metering::Fixed(opcode_costs.add));
+            tmp.insert(InstructionType::Mul, Metering::Fixed(opcode_costs.mul));
+            tmp.insert(InstructionType::Div, Metering::Fixed(opcode_costs.div));
+            tmp.insert(InstructionType::Load, Metering::Fixed(opcode_costs.load));
+            tmp.insert(InstructionType::Store, Metering::Fixed(opcode_costs.store));
+            tmp.insert(
+                InstructionType::Const,
+                Metering::Fixed(opcode_costs.op_const),
+            );
+            tmp.insert(InstructionType::Local, Metering::Fixed(opcode_costs.local));
+            tmp.insert(
+                InstructionType::Global,
+                Metering::Fixed(opcode_costs.global),
+            );
+            tmp.insert(
+                InstructionType::ControlFlow,
+                Metering::Fixed(opcode_costs.control_flow),
+            );
+            tmp.insert(
+                InstructionType::IntegerComparison,
+                Metering::Fixed(opcode_costs.integer_comparison),
+            );
+            tmp.insert(
+                InstructionType::Conversion,
+                Metering::Fixed(opcode_costs.conversion),
+            );
+            tmp.insert(
+                InstructionType::Unreachable,
+                Metering::Fixed(opcode_costs.unreachable),
+            );
+            tmp.insert(InstructionType::Nop, Metering::Fixed(opcode_costs.nop));
+            tmp.insert(
+                InstructionType::CurrentMemory,
+                Metering::Fixed(opcode_costs.current_memory),
+            );
+            tmp.insert(
+                InstructionType::GrowMemory,
+                Metering::Fixed(opcode_costs.grow_memory),
+            );
+
+            // Instructions Float, FloatComparison, FloatConst, FloatConversion are omitted here
+            // because we're using `with_forbidden_floats` below.
+
+            tmp
+        };
+
+        // let old = parity_wasm_v0_42_2::serialize(module.clone()).unwrap();
+        // let new: Module = super::deserialize(&old).unwrap();
+
+        let rules = Set::new(opcode_costs.regular, meterings)
+            .with_grow_cost(opcode_costs.grow_memory)
+            .with_forbidden_floats();
+        let old_gas_counter =
+            pwasm_utils::inject_gas_counter(module.clone(), &rules, "env").unwrap();
     }
 }
