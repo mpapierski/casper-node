@@ -1,10 +1,13 @@
 //! Support for Wasm opcode costs.
-use std::collections::BTreeMap;
+use std::num::NonZeroU32;
 
 use datasize::DataSize;
-use pwasm_utils::rules::{InstructionType, Metering, Set};
 use rand::{distributions::Standard, prelude::*, Rng};
 use serde::{Deserialize, Serialize};
+use wasm_instrument::{
+    gas_metering::{self, MemoryGrowCost, Rules},
+    parity_wasm::elements::Instruction,
+};
 
 use casper_types::bytesrepr::{self, FromBytes, ToBytes, U32_SERIALIZED_LENGTH};
 
@@ -89,54 +92,213 @@ pub struct OpcodeCosts {
     pub regular: u32,
 }
 
-impl OpcodeCosts {
-    /// Creates a set of charging rules for the Wasm executor.
-    pub(crate) fn to_set(self) -> Set {
-        let meterings = {
-            let mut tmp = BTreeMap::new();
-            tmp.insert(InstructionType::Bit, Metering::Fixed(self.bit));
-            tmp.insert(InstructionType::Add, Metering::Fixed(self.add));
-            tmp.insert(InstructionType::Mul, Metering::Fixed(self.mul));
-            tmp.insert(InstructionType::Div, Metering::Fixed(self.div));
-            tmp.insert(InstructionType::Load, Metering::Fixed(self.load));
-            tmp.insert(InstructionType::Store, Metering::Fixed(self.store));
-            tmp.insert(InstructionType::Const, Metering::Fixed(self.op_const));
-            tmp.insert(InstructionType::Local, Metering::Fixed(self.local));
-            tmp.insert(InstructionType::Global, Metering::Fixed(self.global));
-            tmp.insert(
-                InstructionType::ControlFlow,
-                Metering::Fixed(self.control_flow),
-            );
-            tmp.insert(
-                InstructionType::IntegerComparison,
-                Metering::Fixed(self.integer_comparison),
-            );
-            tmp.insert(
-                InstructionType::Conversion,
-                Metering::Fixed(self.conversion),
-            );
-            tmp.insert(
-                InstructionType::Unreachable,
-                Metering::Fixed(self.unreachable),
-            );
-            tmp.insert(InstructionType::Nop, Metering::Fixed(self.nop));
-            tmp.insert(
-                InstructionType::CurrentMemory,
-                Metering::Fixed(self.current_memory),
-            );
-            tmp.insert(
-                InstructionType::GrowMemory,
-                Metering::Fixed(self.grow_memory),
-            );
+// struct GasMeteringRules;
 
-            // Instructions Float, FloatComparison, FloatConst, FloatConversion are omitted here
-            // because we're using `with_forbidden_floats` below.
+impl Rules for OpcodeCosts {
+    fn instruction_cost(&self, instruction: &Instruction) -> Option<u32> {
+        // Based on https://github.com/paritytech/wasm-utils/blob/c20633c4b4b8dc7c6101bb25a435ed6f05d3c4a5/src/rules.rs#L111-L303
 
-            tmp
-        };
-        Set::new(self.regular, meterings)
-            .with_grow_cost(self.grow_memory)
-            .with_forbidden_floats()
+        use Instruction::*;
+
+        match instruction {
+            Unreachable => Some(self.unreachable),
+            Nop => Some(self.nop),
+            Block(_) => Some(self.control_flow),
+            Loop(_) => Some(self.control_flow),
+            If(_) => Some(self.control_flow),
+            Else => Some(self.control_flow),
+            End => Some(self.control_flow),
+            Br(_) => Some(self.control_flow),
+            BrIf(_) => Some(self.control_flow),
+            BrTable(_) => Some(self.control_flow),
+            Return => Some(self.control_flow),
+            Call(_) => Some(self.control_flow),
+            CallIndirect(_, _) => Some(self.control_flow),
+            Drop => Some(self.control_flow),
+            Select => Some(self.control_flow),
+
+            GetLocal(_) => Some(self.local),
+            SetLocal(_) => Some(self.local),
+            TeeLocal(_) => Some(self.local),
+            GetGlobal(_) => Some(self.global),
+            SetGlobal(_) => Some(self.global),
+
+            I32Load(_, _) => Some(self.load),
+            I64Load(_, _) => Some(self.load),
+            F32Load(_, _) => Some(self.load),
+            F64Load(_, _) => Some(self.load),
+            I32Load8S(_, _) => Some(self.load),
+            I32Load8U(_, _) => Some(self.load),
+            I32Load16S(_, _) => Some(self.load),
+            I32Load16U(_, _) => Some(self.load),
+            I64Load8S(_, _) => Some(self.load),
+            I64Load8U(_, _) => Some(self.load),
+            I64Load16S(_, _) => Some(self.load),
+            I64Load16U(_, _) => Some(self.load),
+            I64Load32S(_, _) => Some(self.load),
+            I64Load32U(_, _) => Some(self.load),
+
+            I32Store(_, _) => Some(self.store),
+            I64Store(_, _) => Some(self.store),
+            F32Store(_, _) => Some(self.store),
+            F64Store(_, _) => Some(self.store),
+            I32Store8(_, _) => Some(self.store),
+            I32Store16(_, _) => Some(self.store),
+            I64Store8(_, _) => Some(self.store),
+            I64Store16(_, _) => Some(self.store),
+            I64Store32(_, _) => Some(self.store),
+
+            CurrentMemory(_) => Some(self.current_memory),
+            GrowMemory(_) => Some(self.grow_memory),
+
+            I32Const(_) => Some(self.op_const),
+            I64Const(_) => Some(self.op_const),
+
+            F32Const(_) => None, // InstructionType::FloatConst
+            F64Const(_) => None, // InstructionType::FloatConst
+
+            I32Eqz => Some(self.integer_comparison),
+            I32Eq => Some(self.integer_comparison),
+            I32Ne => Some(self.integer_comparison),
+            I32LtS => Some(self.integer_comparison),
+            I32LtU => Some(self.integer_comparison),
+            I32GtS => Some(self.integer_comparison),
+            I32GtU => Some(self.integer_comparison),
+            I32LeS => Some(self.integer_comparison),
+            I32LeU => Some(self.integer_comparison),
+            I32GeS => Some(self.integer_comparison),
+            I32GeU => Some(self.integer_comparison),
+
+            I64Eqz => Some(self.integer_comparison),
+            I64Eq => Some(self.integer_comparison),
+            I64Ne => Some(self.integer_comparison),
+            I64LtS => Some(self.integer_comparison),
+            I64LtU => Some(self.integer_comparison),
+            I64GtS => Some(self.integer_comparison),
+            I64GtU => Some(self.integer_comparison),
+            I64LeS => Some(self.integer_comparison),
+            I64LeU => Some(self.integer_comparison),
+            I64GeS => Some(self.integer_comparison),
+            I64GeU => Some(self.integer_comparison),
+
+            F32Eq => None, // InstructionType::FloatComparison
+            F32Ne => None, // InstructionType::FloatComparison
+            F32Lt => None, // InstructionType::FloatComparison
+            F32Gt => None, // InstructionType::FloatComparison
+            F32Le => None, // InstructionType::FloatComparison
+            F32Ge => None, // InstructionType::FloatComparison
+
+            F64Eq => None, // InstructionType::FloatComparison
+            F64Ne => None, // InstructionType::FloatComparison
+            F64Lt => None, // InstructionType::FloatComparison
+            F64Gt => None, // InstructionType::FloatComparison
+            F64Le => None, // InstructionType::FloatComparison
+            F64Ge => None, // InstructionType::FloatComparison
+
+            I32Clz => Some(self.bit),
+            I32Ctz => Some(self.bit),
+            I32Popcnt => Some(self.bit),
+            I32Add => Some(self.add),
+            I32Sub => Some(self.add),
+            I32Mul => Some(self.mul),
+            I32DivS => Some(self.div),
+            I32DivU => Some(self.div),
+            I32RemS => Some(self.div),
+            I32RemU => Some(self.div),
+            I32And => Some(self.bit),
+            I32Or => Some(self.bit),
+            I32Xor => Some(self.bit),
+            I32Shl => Some(self.bit),
+            I32ShrS => Some(self.bit),
+            I32ShrU => Some(self.bit),
+            I32Rotl => Some(self.bit),
+            I32Rotr => Some(self.bit),
+
+            I64Clz => Some(self.bit),
+            I64Ctz => Some(self.bit),
+            I64Popcnt => Some(self.bit),
+            I64Add => Some(self.add),
+            I64Sub => Some(self.add),
+            I64Mul => Some(self.mul),
+            I64DivS => Some(self.div),
+            I64DivU => Some(self.div),
+            I64RemS => Some(self.div),
+            I64RemU => Some(self.div),
+            I64And => Some(self.bit),
+            I64Or => Some(self.bit),
+            I64Xor => Some(self.bit),
+            I64Shl => Some(self.bit),
+            I64ShrS => Some(self.bit),
+            I64ShrU => Some(self.bit),
+            I64Rotl => Some(self.bit),
+            I64Rotr => Some(self.bit),
+
+            F32Abs => None,      // InstructionType::Float
+            F32Neg => None,      // InstructionType::Float
+            F32Ceil => None,     // InstructionType::Float
+            F32Floor => None,    // InstructionType::Float
+            F32Trunc => None,    // InstructionType::Float
+            F32Nearest => None,  // InstructionType::Float
+            F32Sqrt => None,     // InstructionType::Float
+            F32Add => None,      // InstructionType::Float
+            F32Sub => None,      // InstructionType::Float
+            F32Mul => None,      // InstructionType::Float
+            F32Div => None,      // InstructionType::Float
+            F32Min => None,      // InstructionType::Float
+            F32Max => None,      // InstructionType::Float
+            F32Copysign => None, // InstructionType::Float
+            F64Abs => None,      // InstructionType::Float
+            F64Neg => None,      // InstructionType::Float
+            F64Ceil => None,     // InstructionType::Float
+            F64Floor => None,    // InstructionType::Float
+            F64Trunc => None,    // InstructionType::Float
+            F64Nearest => None,  // InstructionType::Float
+            F64Sqrt => None,     // InstructionType::Float
+            F64Add => None,      // InstructionType::Float
+            F64Sub => None,      // InstructionType::Float
+            F64Mul => None,      // InstructionType::Float
+            F64Div => None,      // InstructionType::Float
+            F64Min => None,      // InstructionType::Float
+            F64Max => None,      // InstructionType::Float
+            F64Copysign => None, // InstructionType::Float
+
+            I32WrapI64 => Some(self.conversion),
+            I64ExtendSI32 => Some(self.conversion),
+            I64ExtendUI32 => Some(self.conversion),
+
+            I32TruncSF32 => None,   // InstructionType::FloatConversion,
+            I32TruncUF32 => None,   // InstructionType::FloatConversion,
+            I32TruncSF64 => None,   // InstructionType::FloatConversion,
+            I32TruncUF64 => None,   // InstructionType::FloatConversion,
+            I64TruncSF32 => None,   // InstructionType::FloatConversion,
+            I64TruncUF32 => None,   // InstructionType::FloatConversion,
+            I64TruncSF64 => None,   // InstructionType::FloatConversion,
+            I64TruncUF64 => None,   // InstructionType::FloatConversion,
+            F32ConvertSI32 => None, // InstructionType::FloatConversion,
+            F32ConvertUI32 => None, // InstructionType::FloatConversion,
+            F32ConvertSI64 => None, // InstructionType::FloatConversion,
+            F32ConvertUI64 => None, // InstructionType::FloatConversion,
+            F32DemoteF64 => None,   // InstructionType::FloatConversion,
+            F64ConvertSI32 => None, // InstructionType::FloatConversion,
+            F64ConvertUI32 => None, // InstructionType::FloatConversion,
+            F64ConvertSI64 => None, // InstructionType::FloatConversion,
+            F64ConvertUI64 => None, // InstructionType::FloatConversion,
+            F64PromoteF32 => None,  // InstructionType::FloatConversion,
+
+            I32ReinterpretF32 => None, // InstructionType::Reinterpretation
+            I64ReinterpretF64 => None, // InstructionType::Reinterpretation
+            F32ReinterpretI32 => None, // InstructionType::Reinterpretation
+            F64ReinterpretI64 => None, // InstructionType::Reinterpretation
+        }
+    }
+
+    fn memory_grow_cost(&self) -> MemoryGrowCost {
+        NonZeroU32::new(self.grow_memory).map_or(MemoryGrowCost::Free, MemoryGrowCost::Linear)
+    }
+
+    fn call_per_local_cost(&self) -> u32 {
+        // NOTE: We currently don't charge per amount of locals defined in each function block.l
+        0
     }
 }
 

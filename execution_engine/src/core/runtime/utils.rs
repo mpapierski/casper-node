@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use parity_wasm::elements::Module;
+use parity_wasm_v0_42_2::elements::Module;
 use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
 
 use casper_types::{

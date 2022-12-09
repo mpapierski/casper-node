@@ -1,5 +1,5 @@
 //! Execution error and supporting code.
-use parity_wasm::elements;
+use parity_wasm_v0_42_2::elements;
 use thiserror::Error;
 
 use casper_types::{
@@ -181,11 +181,11 @@ impl From<wasm_prep::PreprocessingError> for Error {
     }
 }
 
-impl From<pwasm_utils::OptimizerError> for Error {
-    fn from(_optimizer_error: pwasm_utils::OptimizerError) -> Self {
-        Error::WasmOptimizer
-    }
-}
+// impl From<pwasm_utils::OptimizerError> for Error {
+//     fn from(_optimizer_error: pwasm_utils::OptimizerError) -> Self {
+//         Error::WasmOptimizer
+//     }
+// }
 
 impl Error {
     /// Returns new type mismatch error.

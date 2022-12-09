@@ -58,18 +58,8 @@ fn should_fail_to_overflow_gas_counter() {
 
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
-    builder.exec(exec_request).commit();
-
-    let responses = builder
-        .get_exec_result_owned(0)
-        .expect("should have response");
-    let response = responses.get(0).expect("should have first element");
-
-    let lhs = response.as_error().expect("should have error");
-    assert_matches!(
-        lhs,
-        Error::WasmPreprocessing(PreprocessingError::OperationForbiddenByGasRules)
-    );
+    // After upgrading wasm-utils to wasm-instrument the gas counter is measured in i64 therefore making this exploit unfeasible as said payload would exceed the allowed Wasm payload size.
+    builder.exec(exec_request).commit().expect_success();
 }
 
 #[ignore]

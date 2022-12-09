@@ -70,10 +70,9 @@ fn should_create_usable_purse() {
         .run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST)
         .exec(exec_request_1)
         .expect_success()
-        .commit()
-        .exec(exec_request_2)
-        .expect_success()
         .commit();
+
+    builder.exec(exec_request_2).expect_success().commit();
 
     let account_1 = builder
         .get_account(ACCOUNT_1_ADDR)

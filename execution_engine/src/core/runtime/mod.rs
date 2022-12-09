@@ -16,7 +16,7 @@ use std::{
     iter::FromIterator,
 };
 
-use parity_wasm::elements::Module;
+use parity_wasm_v0_42_2::elements::Module;
 use tracing::error;
 use wasmi::{MemoryRef, Trap, TrapKind};
 
@@ -248,8 +248,8 @@ where
             Err(Error::FunctionNotFound(missing_name))
         } else {
             let mut module = self.try_get_module()?.clone();
-            pwasm_utils::optimize(&mut module, entry_point_names)?;
-            parity_wasm::serialize(module).map_err(Error::ParityWasm)
+            // pwasm_utils::optimize(&mut module, entry_point_names)?;
+            parity_wasm_v0_42_2::serialize(module).map_err(Error::ParityWasm)
         }
     }
 
@@ -1339,7 +1339,7 @@ where
                 None => return Err(Error::KeyNotFound(context_key)),
             };
 
-            parity_wasm::deserialize_buffer(contract_wasm.bytes())?
+            parity_wasm_v0_42_2::deserialize_buffer(contract_wasm.bytes())?
         };
 
         let context = self.context.new_from_self(

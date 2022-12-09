@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::{borrow::Cow, cell::RefCell};
 
 use wasmi::{
     memory_units::Pages, Error as InterpreterError, FuncInstance, FuncRef, MemoryDescriptor,
@@ -37,7 +37,7 @@ impl ModuleImportResolver for RuntimeModuleImportResolver {
     fn resolve_func(
         &self,
         field_name: &str,
-        _signature: &Signature,
+        signature: &Signature,
     ) -> Result<FuncRef, InterpreterError> {
         let func_ref = match field_name {
             "casper_read_value" => FuncInstance::alloc_host(
@@ -76,10 +76,27 @@ impl ModuleImportResolver for RuntimeModuleImportResolver {
                 Signature::new(&[ValueType::I32; 4][..], None),
                 FunctionIndex::PutKeyFuncIndex.into(),
             ),
-            "gas" => FuncInstance::alloc_host(
-                Signature::new(&[ValueType::I32; 1][..], None),
-                FunctionIndex::GasFuncIndex.into(),
-            ),
+            "gas" => {
+                // While migrating wasm-utils to wasm-instrument the signature was changed for
+                // internal gas metering function from `gas(i32)` into `gas(i64)` and we need to
+                // support both signatures.
+                if signature.params() == &[ValueType::I32]
+                    || signature.params() == &[ValueType::I64]
+                {
+                    FuncInstance::alloc_host(
+                        Signature::new(signature.params().to_owned(), None),
+                        FunctionIndex::GasFuncIndex.into(),
+                    )
+                } else {
+                    // We shouldn't arrive here as we validate Wasm modules and reject ones that
+                    // import internal gas function, but anyway for pretend like it does not exists
+                    // for correctness.
+                    return Err(InterpreterError::Function(format!(
+                        "host module doesn't export function with name {}",
+                        field_name
+                    )));
+                }
+            }
             "casper_is_valid_uref" => FuncInstance::alloc_host(
                 Signature::new(&[ValueType::I32; 2][..], Some(ValueType::I32)),
                 FunctionIndex::IsValidURefFnIndex.into(),

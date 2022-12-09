@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, convert::TryFrom};
 
-use wasmi::{Externals, RuntimeArgs, RuntimeValue, Trap};
+use wasmi::{Externals, RuntimeArgs, RuntimeValue, Trap, TrapKind};
 
 use casper_types::{
     account::AccountHash,
@@ -186,7 +186,16 @@ where
             }
 
             FunctionIndex::GasFuncIndex => {
-                let (gas_arg,): (u32,) = Args::parse(args)?;
+                let arg = args.nth_value_checked(0)?;
+
+                let gas_arg = match arg {
+                    RuntimeValue::I32(value) => value as u64,
+                    RuntimeValue::I64(value) => value as u64,
+                    RuntimeValue::F32(_) | RuntimeValue::F64(_) => {
+                        return Err(Trap::new(TrapKind::UnexpectedSignature))
+                    }
+                };
+
                 // Gas is special cased internal host function and for accounting purposes it isn't
                 // represented in protocol data.
                 self.gas(Gas::new(gas_arg.into()))?;

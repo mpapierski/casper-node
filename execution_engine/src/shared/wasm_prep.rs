@@ -1,8 +1,10 @@
 //! Preprocessing of Wasm modules.
-use parity_wasm::elements::{
-    self, External, Instruction, Internal, MemorySection, Module, Section, TableType, Type,
+use parity_wasm_v0_42_2::{
+    builder,
+    elements::{
+        self, External, Instruction, Internal, MemorySection, Module, Section, TableType, Type,
+    },
 };
-use pwasm_utils::{self, stack_height};
 use thiserror::Error;
 
 use super::wasm_config::WasmConfig;
@@ -122,6 +124,12 @@ impl From<elements::Error> for PreprocessingError {
     }
 }
 
+impl From<wasm_instrument::parity_wasm::elements::Error> for PreprocessingError {
+    fn from(error: wasm_instrument::parity_wasm::elements::Error) -> Self {
+        PreprocessingError::Deserialize(error.to_string())
+    }
+}
+
 /// Ensures that all the references to functions and global variables in the wasm bytecode are
 /// properly declared.
 ///
@@ -221,8 +229,8 @@ fn ensure_valid_function_index(index: u32, function_count: u32) -> Result<(), Wa
 }
 
 /// Checks if given wasm module contains a non-empty memory section.
-fn memory_section(module: &Module) -> Option<&MemorySection> {
-    for section in module.sections() {
+fn memory_section(module: &mut Module) -> Option<&mut MemorySection> {
+    for section in module.sections_mut() {
         if let Section::Memory(section) = section {
             return if section.entries().is_empty() {
                 None
@@ -232,6 +240,35 @@ fn memory_section(module: &Module) -> Option<&MemorySection> {
         }
     }
     None
+}
+
+/// This function adds an entry in the wasm module instance to import a memory for these modules that don't do that.
+///
+/// This is to simplify module resolver so a memory instance can be 'injected' through imports rather than querying exported memory.
+pub fn externalize_mem(mut module: Module, adjust_pages: Option<u32>, max_pages: u32) -> Module {
+    let mut entry = memory_section(&mut module)
+        .expect("Memory section to exist")
+        .entries_mut()
+        .pop()
+        .expect("Own memory entry to exist in memory section");
+
+    if let Some(adjust_pages) = adjust_pages {
+        assert!(adjust_pages <= max_pages);
+        entry = elements::MemoryType::new(adjust_pages, Some(max_pages));
+    }
+
+    if entry.limits().maximum().is_none() {
+        entry = elements::MemoryType::new(entry.limits().initial(), Some(max_pages));
+    }
+
+    let mut builder = builder::from_module(module);
+    builder.push_import(elements::ImportEntry::new(
+        "env".to_owned(),
+        "memory".to_owned(),
+        elements::External::Memory(entry),
+    ));
+
+    builder.build()
 }
 
 /// Ensures (table) section has at most one table entry, and initial, and maximum values are
@@ -374,11 +411,11 @@ pub fn preprocess(
     wasm_config: WasmConfig,
     module_bytes: &[u8],
 ) -> Result<Module, PreprocessingError> {
-    let module = deserialize(module_bytes)?;
+    let mut module = deserialize(module_bytes)?;
 
     ensure_valid_access(&module)?;
 
-    if memory_section(&module).is_none() {
+    if memory_section(&mut module).is_none() {
         // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the module,
         // and panics otherwise.
         return Err(PreprocessingError::MissingMemorySection);
@@ -390,27 +427,40 @@ pub fn preprocess(
     ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
     ensure_valid_imports(&module)?;
 
-    let module = pwasm_utils::externalize_mem(module, None, wasm_config.max_memory);
-    let module = pwasm_utils::inject_gas_counter(
-        module,
-        &wasm_config.opcode_costs().to_set(),
-        DEFAULT_GAS_MODULE_NAME,
-    )
-    .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
-    let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
-        .map_err(|_| PreprocessingError::StackLimiter)?;
+    let module = externalize_mem(module, None, wasm_config.max_memory);
+    let module = {
+        // Wasm bytes serialized by wasmi's compatible parity-wasm crate.
+        let new_module = {
+            let wasm_bytes = parity_wasm_v0_42_2::serialize(module)?;
+            wasm_instrument::parity_wasm::deserialize_buffer(&wasm_bytes)?
+        };
+
+        let new_module = wasm_instrument::gas_metering::inject(
+            new_module,
+            wasm_instrument::gas_metering::host_function::Injector::new("env", "gas"),
+            &wasm_config.opcode_costs(),
+        )
+        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
+        let new_module =
+            wasm_instrument::inject_stack_limiter(new_module, wasm_config.max_stack_height)
+                .map_err(|_| PreprocessingError::StackLimiter)?;
+
+        let new_bytes = wasm_instrument::parity_wasm::serialize(new_module)?;
+        parity_wasm_v0_42_2::deserialize_buffer(&new_bytes)?
+    };
+
     Ok(module)
 }
 
 /// Returns a parity Module from the given bytes without making modifications or checking limits.
 pub fn deserialize(module_bytes: &[u8]) -> Result<Module, PreprocessingError> {
-    parity_wasm::deserialize_buffer::<Module>(module_bytes).map_err(Into::into)
+    parity_wasm_v0_42_2::deserialize_buffer::<Module>(module_bytes).map_err(Into::into)
 }
 
 #[cfg(test)]
 mod tests {
     use casper_types::contracts::DEFAULT_ENTRY_POINT_NAME;
-    use parity_wasm::{
+    use parity_wasm_v0_42_2::{
         builder,
         elements::{CodeSection, Instructions},
     };
@@ -454,7 +504,7 @@ mod tests {
             .memory()
             .build()
             .build();
-        let module_bytes = parity_wasm::serialize(module).expect("should serialize");
+        let module_bytes = parity_wasm_v0_42_2::serialize(module).expect("should serialize");
         let error = preprocess(WasmConfig::default(), &module_bytes)
             .expect_err("should fail with an error");
         assert!(
@@ -493,7 +543,7 @@ mod tests {
             .memory()
             .build()
             .build();
-        let module_bytes = parity_wasm::serialize(module).expect("should serialize");
+        let module_bytes = parity_wasm_v0_42_2::serialize(module).expect("should serialize");
         let error = preprocess(WasmConfig::default(), &module_bytes)
             .expect_err("should fail with an error");
         assert!(
@@ -529,7 +579,7 @@ mod tests {
             .memory()
             .build()
             .build();
-        let module_bytes = parity_wasm::serialize(module).expect("should serialize");
+        let module_bytes = parity_wasm_v0_42_2::serialize(module).expect("should serialize");
         let error = preprocess(WasmConfig::default(), &module_bytes)
             .expect_err("should fail with an error");
         assert!(
@@ -550,7 +600,7 @@ mod tests {
             .memory()
             .build()
             .build();
-        let module_bytes = parity_wasm::serialize(module).expect("should serialize");
+        let module_bytes = parity_wasm_v0_42_2::serialize(module).expect("should serialize");
 
         let error = preprocess(WasmConfig::default(), &module_bytes)
             .expect_err("should fail with an error");
@@ -573,7 +623,7 @@ mod tests {
             .memory()
             .build()
             .build();
-        let module_bytes = parity_wasm::serialize(module).expect("should serialize");
+        let module_bytes = parity_wasm_v0_42_2::serialize(module).expect("should serialize");
         let error = preprocess(WasmConfig::default(), &module_bytes)
             .expect_err("should fail with an error");
         assert!(
