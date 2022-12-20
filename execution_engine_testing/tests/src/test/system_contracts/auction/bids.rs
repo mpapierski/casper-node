@@ -1933,8 +1933,8 @@ fn should_undelegate_delegators_when_validator_fully_unbonds() {
         .expect("should have delegator 1 account");
     let delegator_2_balance_before = builder.get_purse_balance(delegator_2.main_purse());
 
-    for _ in 0..=DEFAULT_UNBONDING_DELAY {
-        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!());
+    for n in 0..=DEFAULT_UNBONDING_DELAY {
+        builder.run_auction_instrumented(timestamp_millis, Vec::new(), instrumentation_data!(n));
         timestamp_millis += TIMESTAMP_MILLIS_INCREMENT;
     }
 

@@ -3752,6 +3752,9 @@ pub enum WasmValidationError {
         /// Provided index.
         index: u32,
     },
+    /// Unsupported WASM start section.
+    #[error("Unsupported WASM start")]
+    UnsupportedWasmStart,
 }
 
 /// An error emitted by the Wasm preprocessor.
@@ -4070,13 +4073,19 @@ impl std::ops::Deref for WasmtimeEngine {
     }
 }
 
-// NOTE: Imitates persistent on disk cache for precompiled artifacts, ideally it should be something like `Box<dyn ArtifactsCache>` and stick it to WasmEngine, so for instance while testing we can have a global cache instance to speed up testing.
+// NOTE: Imitates persistent on disk cache for precompiled artifacts, ideally it should be something
+// like `Box<dyn ArtifactsCache>` and stick it to WasmEngine, so for instance while testing we can
+// have a global cache instance to speed up testing.
 #[derive(PartialEq, Eq, Hash)]
 struct CacheKey(
-    /// When cache is implemented as persistent on disk it's important to note that wasmer can use host CPU's features that may not be present when persistent cache is moved to different CPU with missing feature sets.
+    /// When cache is implemented as persistent on disk it's important to note that wasmer can use
+    /// host CPU's features that may not be present when persistent cache is moved to different CPU
+    /// with missing feature sets.
     wasmer::Triple,
-    /// We're caching instrumented binary keyed by the original wasm bytes therefore we also need to know the wasm config that's used to instrument the wasm bytes.
-    /// After chainspec will modify OpcodeCosts we need to create new cache entry to avoid incorrect execution of old binary but under new chain configuration.
+    /// We're caching instrumented binary keyed by the original wasm bytes therefore we also need
+    /// to know the wasm config that's used to instrument the wasm bytes. After chainspec will
+    /// modify OpcodeCosts we need to create new cache entry to avoid incorrect execution of old
+    /// binary but under new chain configuration.
     WasmConfig,
     /// Raw Wasm bytes without any modification.
     Bytes,
@@ -4241,14 +4250,11 @@ impl WasmEngine {
                 precompile_time,
                 // precompile_time,
             } => {
-                if wasmi_module.start_section().is_some() {
-                    return Err(execution::Error::UnsupportedWasmStart);
-                }
-
                 // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
 
                 // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
                 let descriptor = compiled_module
                     .imports()
                     .filter_map(|import| import.ty().memory().cloned())
@@ -4284,12 +4290,9 @@ impl WasmEngine {
                 module: compiled_module,
                 // runtime,
             } => {
-                if wasmi_module.start_section().is_some() {
-                    return Err(execution::Error::UnsupportedWasmStart);
-                }
-
                 // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
                 let descriptor = compiled_module
                     .imports()
                     .filter_map(|import| import.ty().memory().cloned())
@@ -4334,13 +4337,11 @@ impl WasmEngine {
                 wasmer_module,
                 store,
             } => {
-                if wasmi_module.start_section().is_some() {
-                    return Err(execution::Error::UnsupportedWasmStart);
-                }
                 let max_memory = self.wasm_config().max_memory;
 
                 // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation pass.
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
                 let descriptor = wasmer_module
                     .imports()
                     .memories()
@@ -4448,7 +4449,8 @@ impl WasmEngine {
                 let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
                     if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
-                        // We have the artifact, and we can use headless mode to just execute binary artifact
+                        // We have the artifact, and we can use headless mode to just execute binary
+                        // artifact
                         let headless_engine = wasmer::Engine::headless();
                         let store = wasmer::Store::new(headless_engine);
                         let wasmer_module = unsafe {
@@ -4476,7 +4478,8 @@ impl WasmEngine {
                     self.cache_set(wasm_bytes.clone(), serialized_bytes);
                 }
 
-                // TODO: Cache key should be the one from StoredValue::ContractWasm which is random, there's probably collision and somehow unmodified module is cached?
+                // TODO: Cache key should be the one from StoredValue::ContractWasm which is random,
+                // there's probably collision and somehow unmodified module is cached?
 
                 Module::Singlepass {
                     original_bytes: wasm_bytes,
@@ -4506,8 +4509,8 @@ impl WasmEngine {
     //     // if cache_artifacts {
     //     //     if let Some(precompiled) = self.cache_get(original_bytes.clone()) {
     //     //         let deserialized_module =
-    //     //             unsafe { wasmtime::Module::deserialize(&self.compiled_engine, &precompiled) }
-    //     //                 .expect("should deserialize wasmtime module");
+    //     //             unsafe { wasmtime::Module::deserialize(&self.compiled_engine,
+    // &precompiled) }     //                 .expect("should deserialize wasmtime module");
     //     //         return Ok(());
     //     //     }
     //     // }
@@ -4557,6 +4560,15 @@ impl WasmEngine {
 
         ensure_valid_access(&module)?;
 
+        if module.start_section().is_some() {
+            // Remove execution::Error::UnsupportedWasmStart as previously with wasmi it was raised
+            // when we have module instance to run, but with other backends we'd have to expend a
+            // lot of resource to first compile artifact just to validate it - we can safely exit
+            // early without doing extra work.
+            return Err(WasmValidationError::UnsupportedWasmStart.into());
+            // return Err(execution::Error::UnsupportedWasmStart);
+        }
+
         if memory_section(&module).is_none() {
             // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
             // module, and panics otherwise.
@@ -4581,7 +4593,8 @@ impl WasmEngine {
 
         if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
             if let Some(precompiled_bytes) = self.cache_get(module_bytes.clone()) {
-                // We have the artifact, and we can use headless mode to just execute binary artifact
+                // We have the artifact, and we can use headless mode to just execute binary
+                // artifact
                 let headless_engine = wasmer::Engine::headless();
                 let store = wasmer::Store::new(headless_engine);
                 let wasmer_module =

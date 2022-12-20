@@ -109,9 +109,9 @@ max_memory = 64
 max_stack_height = 188
 #execution_mode = { type = "interpreted" }
 #execution_mode = { type = "singlepass", "cache_artifacts" = false }
-#execution_mode = { type = "singlepass", "cache_artifacts" = true }
+execution_mode = { type = "singlepass", "cache_artifacts" = true }
 #execution_mode = { type = "compiled", "cache_artifacts" = false }
-execution_mode = { type = "compiled", "cache_artifacts" = true }
+#execution_mode = { type = "compiled", "cache_artifacts" = true }
 
 [wasm.storage_costs]
 # Gas charged per byte stored in the global state.
