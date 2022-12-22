@@ -495,6 +495,7 @@ dependencies = [
  "itertools",
  "libc",
  "linked-hash-map",
+ "llvm-sys",
  "lmdb",
  "log",
  "num",
@@ -517,6 +518,8 @@ dependencies = [
  "uint",
  "uuid",
  "wasmer",
+ "wasmer-compiler-cranelift",
+ "wasmer-compiler-llvm",
  "wasmer-compiler-singlepass",
  "wasmi",
  "wasmtime",
@@ -2891,6 +2894,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "inkwell"
+version = "0.1.0-beta.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2223d0eba0ae6d40a3e4680c6a3209143471e1f38b41746ea309aa36dde9f90b"
+dependencies = [
+ "either",
+ "inkwell_internals",
+ "libc",
+ "llvm-sys",
+ "once_cell",
+ "parking_lot",
+ "regex",
+]
+
+[[package]]
+name = "inkwell_internals"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c7090af3d300424caa81976b8c97bca41cd70e861272c072e188ae082fb49f9"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "instant"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2946,9 +2975,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.59"
+version = "0.3.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "258451ab10b34f8af53416d1fdab72c22e805f0c92a1136d59470ec0b11138b2"
+checksum = "49409df3e3bf0856b916e2ceaca09ee28e6871cf7d9ce97a692cacfdb2a25a47"
 dependencies = [
  "wasm-bindgen",
 ]
@@ -3046,6 +3075,19 @@ version = "0.1.0"
 dependencies = [
  "casper-contract 1.4.4",
  "casper-types 1.5.0",
+]
+
+[[package]]
+name = "llvm-sys"
+version = "120.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1c9655eec036faf512507746ce70765bda72ed98e52b4328f0d7b93e970c6d8"
+dependencies = [
+ "cc",
+ "lazy_static",
+ "libc",
+ "regex",
+ "semver 0.11.0",
 ]
 
 [[package]]
@@ -3495,6 +3537,15 @@ dependencies = [
 
 [[package]]
 name = "object"
+version = "0.28.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e42c982f2d955fac81dd7e1d0e1426a7d702acd9c98d19ab01083a6a0328c424"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
+name = "object"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "21158b2c33aa6d4561f1c0a6ea283ca92bc54802a93b263e910746d679a7eb53"
@@ -3504,9 +3555,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.13.0"
+version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18a6dbe30758c9f83eb00cbea4ac95966305f5a7772f3f42ebfc7fc7eddbd8e1"
+checksum = "86f0b0d4bf799edbc74508c1e8bf170ff5f41238e5f8225603ca7caaae2b7860"
 
 [[package]]
 name = "oorandom"
@@ -3659,6 +3710,16 @@ name = "percent-encoding"
 version = "2.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d4fd5641d01c8f18a23da7b6fe29298ff4b55afcccdf78973b24cf3175fee32e"
+
+[[package]]
+name = "pest"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbc7bc69c062e492337d74d59b120c274fd3d261b6bf6d3207d499b4b379c41a"
+dependencies = [
+ "thiserror",
+ "ucd-trie",
+]
 
 [[package]]
 name = "pin-project"
@@ -4579,7 +4640,7 @@ version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bfa0f585226d2e68097d4f95d113b15b83a82e819ab25717ec0590d9584ef366"
 dependencies = [
- "semver",
+ "semver 1.0.13",
 ]
 
 [[package]]
@@ -4699,9 +4760,27 @@ dependencies = [
 
 [[package]]
 name = "semver"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f301af10236f6df4160f7c3f04eec6dbc70ace82d23326abad5edee88801c6b6"
+dependencies = [
+ "semver-parser",
+]
+
+[[package]]
+name = "semver"
 version = "1.0.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93f6841e709003d68bb2deee8c343572bf446003ec20a583e76f7b15cebf3711"
+
+[[package]]
+name = "semver-parser"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "00b0bef5b7f9e0df16536d3961cfb6e84331c065b4066afb39768d0e319411f7"
+dependencies = [
+ "pest",
+]
 
 [[package]]
 name = "serde"
@@ -5625,6 +5704,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dcf81ac59edc17cc8697ff311e8f5ef2d99fcbd9817b34cec66f90b6c3dfd987"
 
 [[package]]
+name = "ucd-trie"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9e79c4d996edb816c91e4308506774452e55e95c3c9de07b6729e17e15a5ef81"
+
+[[package]]
 name = "uint"
 version = "0.9.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5779,7 +5864,7 @@ dependencies = [
  "proc-macro2",
  "pulldown-cmark",
  "regex",
- "semver",
+ "semver 1.0.13",
  "syn",
  "toml",
  "url",
@@ -5907,6 +5992,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "wasm-bindgen-downcast"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5dac026d43bcca6e7ce1c0956ba68f59edf6403e8e930a5d891be72c31a44340"
+dependencies = [
+ "js-sys",
+ "once_cell",
+ "wasm-bindgen",
+ "wasm-bindgen-downcast-macros",
+]
+
+[[package]]
+name = "wasm-bindgen-downcast-macros"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c5020cfa87c7cecefef118055d44e3c1fc122c7ec25701d528ee458a0b45f38f"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "wasm-bindgen-futures"
 version = "0.4.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5958,9 +6066,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc9ca317eaf4f7cb33b71dc83ec17035b4f79b5dfe11e05923d1c970ddaad067"
+checksum = "740f96c9e5d49f0056d716977657f3f7f8eea9923b41f46d1046946707aa038f"
 dependencies = [
  "bytes",
  "cfg-if 1.0.0",
@@ -5972,6 +6080,7 @@ dependencies = [
  "target-lexicon",
  "thiserror",
  "wasm-bindgen",
+ "wasm-bindgen-downcast",
  "wasmer-compiler",
  "wasmer-compiler-cranelift",
  "wasmer-derive",
@@ -5983,9 +6092,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer-compiler"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8edede9cce529bee8756ab0c351901174d21c5983efbc74c9c878e37fea895e8"
+checksum = "001d072dd9823e5a06052621eadb531627b4a508d74b67da4590a3d5d9332dc8"
 dependencies = [
  "backtrace",
  "cfg-if 1.0.0",
@@ -6007,9 +6116,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer-compiler-cranelift"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "318c8d9abc63e0a1b450ce4bd221f46a651b067d9abad9d02ee87cc09ccae037"
+checksum = "2974856a7ce40eb033efc9db3d480845385c27079b6e33ce51751f2f3c67e9bd"
 dependencies = [
  "cranelift-codegen 0.86.1",
  "cranelift-entity 0.86.1",
@@ -6025,14 +6134,39 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasmer-compiler-singlepass"
-version = "3.0.1"
+name = "wasmer-compiler-llvm"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e78ffc2ad96b456e7787c53c537a606e39025591864f343156f1ed42910704f"
+checksum = "b8354256545d5832658267b490948c8559dadaf6d60c5d3dde650acd84505624"
+dependencies = [
+ "byteorder",
+ "cc",
+ "inkwell",
+ "itertools",
+ "lazy_static",
+ "libc",
+ "object 0.28.4",
+ "rayon",
+ "regex",
+ "rustc_version",
+ "semver 1.0.13",
+ "smallvec",
+ "target-lexicon",
+ "wasmer-compiler",
+ "wasmer-types",
+ "wasmer-vm",
+]
+
+[[package]]
+name = "wasmer-compiler-singlepass"
+version = "3.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c6baae9a0b87050564178fc34138411682aeb725b57255b9b03735d6620d065"
 dependencies = [
  "byteorder",
  "dynasm",
  "dynasmrt",
+ "enumset",
  "gimli 0.26.2",
  "lazy_static",
  "more-asserts",
@@ -6044,9 +6178,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer-derive"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c5f6c50efd19123f6375c450c6eca394455611b0a58c64b66b52838a7c9ec70c"
+checksum = "36b23b52272494369a1f96428f0056425a85a66154610c988d971bbace8230f1"
 dependencies = [
  "proc-macro-error",
  "proc-macro2",
@@ -6056,9 +6190,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer-types"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "44304e6818526936b151f4c66ba76b31cfa42df7d455f413fbcac81bc926f117"
+checksum = "3bc6cd7a2d2d3bd901ff491f131188c1030694350685279e16e1233b9922846b"
 dependencies = [
  "enum-iterator 0.7.0",
  "enumset",
@@ -6071,9 +6205,9 @@ dependencies = [
 
 [[package]]
 name = "wasmer-vm"
-version = "3.0.1"
+version = "3.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fff5fbdbe19a7fee8870a84857c8378ec88a2bd1feaef52b7b89104dfe2a6d45"
+checksum = "e67d0cd6c0ef4985d1ce9c7d7cccf34e910804417a230fa16ab7ee904efb4c34"
 dependencies = [
  "backtrace",
  "cc",

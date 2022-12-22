@@ -34,7 +34,10 @@ use std::{
 };
 use thiserror::Error;
 use tracing::Subscriber;
-use wasmer::{imports, AsStoreMut, AsStoreRef, FunctionEnv, FunctionEnvMut, TypedFunction};
+use wasmer::{
+    imports, AsStoreMut, AsStoreRef, Cranelift, FunctionEnv, FunctionEnvMut, TypedFunction,
+};
+use wasmer_compiler_llvm::LLVM;
 use wasmer_compiler_singlepass::Singlepass;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
@@ -72,6 +75,22 @@ use crate::{
 
 use super::{opcode_costs::OpcodeCosts, wasm_config::WasmConfig};
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CraneliftOptLevel {
+    None,
+    Speed,
+    SpeedAndSize,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum WasmerBackend {
+    Singlepass,
+    Cranelift { optimize: CraneliftOptLevel },
+    LLVM,
+}
+
 /// Mode of execution for smart contracts.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -85,7 +104,10 @@ pub enum ExecutionMode {
     /// Runs Wasm modules in a compiled mode via fast ahead of time compiler.
     ///
     /// NOTE: Currently cache is implemented as inmem hash table for testing purposes
-    Singlepass { cache_artifacts: bool },
+    Wasmer {
+        backend: WasmerBackend,
+        cache_artifacts: bool,
+    },
 }
 
 impl ExecutionMode {
@@ -94,7 +116,7 @@ impl ExecutionMode {
     /// [`Singlepass`]: ExecutionMode::Singlepass
     #[must_use]
     pub fn is_singlepass(&self) -> bool {
-        matches!(self, Self::Singlepass { .. })
+        matches!(self, Self::Wasmer { .. })
     }
 
     pub fn is_using_cache(&self) -> bool {
@@ -102,7 +124,9 @@ impl ExecutionMode {
             ExecutionMode::Interpreted => false,
             ExecutionMode::Compiled { cache_artifacts } => *cache_artifacts,
             ExecutionMode::JustInTime => false,
-            ExecutionMode::Singlepass { cache_artifacts } => *cache_artifacts,
+            ExecutionMode::Wasmer {
+                cache_artifacts, ..
+            } => *cache_artifacts,
         }
     }
 }
@@ -113,7 +137,9 @@ impl ToBytes for ExecutionMode {
             ExecutionMode::Interpreted => 1u32.to_bytes(),
             ExecutionMode::Compiled { cache_artifacts } => (2u32, *cache_artifacts).to_bytes(),
             ExecutionMode::JustInTime => 3u32.to_bytes(),
-            ExecutionMode::Singlepass { cache_artifacts } => (4u32, *cache_artifacts).to_bytes(),
+            ExecutionMode::Wasmer {
+                cache_artifacts, ..
+            } => (4u32, *cache_artifacts).to_bytes(),
         }
     }
 
@@ -124,9 +150,11 @@ impl ToBytes for ExecutionMode {
                 (2u32, *cache_artifacts).serialized_length()
             }
             ExecutionMode::JustInTime => 3u32.serialized_length(),
-            ExecutionMode::Singlepass { cache_artifacts } => {
-                (4u32, *cache_artifacts).serialized_length()
-            }
+            ExecutionMode::Wasmer {
+                backend,
+                cache_artifacts,
+                ..
+            } => (4u32, *cache_artifacts).serialized_length(),
         }
     }
 }
@@ -147,6 +175,8 @@ impl FromBytes for ExecutionMode {
         } else if execution_mode == 3 {
             Ok((ExecutionMode::JustInTime, rem))
         } else if execution_mode == 4 {
+            // let (backend, rem) = u32::from_bytes(rem)?;
+            // let backend = WasmerBackend::from_u32(backend).ok_or(bytesrepr::Error::Formatting)?;
             let (flag, rem) = bool::from_bytes(rem)?;
             Ok((ExecutionMode::Interpreted, rem))
         } else {
@@ -4174,9 +4204,27 @@ fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
     WasmtimeEngine(wasmtime_engine)
 }
 
-fn make_wasmer_store() -> wasmer::Store {
-    let singlepass = Singlepass::new();
-    wasmer::Store::new(singlepass)
+fn make_wasmer_store(backend: WasmerBackend) -> wasmer::Store {
+    let engine: wasmer::Engine = match backend {
+        WasmerBackend::Singlepass => Singlepass::new().into(),
+        WasmerBackend::Cranelift { optimize } => {
+            let mut cranelift = Cranelift::new();
+            match optimize {
+                CraneliftOptLevel::None => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::None);
+                }
+                CraneliftOptLevel::Speed => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::Speed);
+                }
+                CraneliftOptLevel::SpeedAndSize => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::SpeedAndSize);
+                }
+            }
+            cranelift.into()
+        }
+        WasmerBackend::LLVM => LLVM::new().into(),
+    };
+    wasmer::Store::new(engine)
 }
 
 impl WasmEngine {
@@ -4445,7 +4493,10 @@ impl WasmEngine {
                     module,
                 }
             }
-            ExecutionMode::Singlepass { cache_artifacts } => {
+            ExecutionMode::Wasmer {
+                backend,
+                cache_artifacts,
+            } => {
                 let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
                     if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
@@ -4468,7 +4519,7 @@ impl WasmEngine {
                     }
                 }
 
-                let wasmer_store = make_wasmer_store();
+                let wasmer_store = make_wasmer_store(backend);
 
                 let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
                     .expect("should create wasmer module");
@@ -4677,7 +4728,10 @@ impl WasmEngine {
                     module: compiled_module,
                 })
             }
-            ExecutionMode::Singlepass { cache_artifacts } => {
+            ExecutionMode::Wasmer {
+                backend,
+                cache_artifacts,
+            } => {
                 let preprocessed_wasm_bytes =
                     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
@@ -4687,7 +4741,7 @@ impl WasmEngine {
 
                 let start = Instant::now();
 
-                let mut store = make_wasmer_store();
+                let mut store = make_wasmer_store(backend);
 
                 let wasmer_module =
                     wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;

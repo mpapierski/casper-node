@@ -109,10 +109,13 @@ max_memory = 64
 max_stack_height = 188
 #execution_mode = { type = "interpreted" }
 #execution_mode = { type = "singlepass", "cache_artifacts" = false }
-execution_mode = { type = "singlepass", "cache_artifacts" = true }
+execution_mode = { type = "wasmer", backend = {type = "singlepass" }, "cache_artifacts" = true }
+#execution_mode = { type = "wasmer", backend = {type = "cranelift", optimize = {type = "speed"} }, "cache_artifacts" = true }
+#execution_mode = { type = "wasmer", backend = "cranelift", "cache_artifacts" = false }
+#execution_mode = { type = "wasmer", backend = "llvm", "cache_artifacts" = true }
 #execution_mode = { type = "compiled", "cache_artifacts" = false }
 #execution_mode = { type = "compiled", "cache_artifacts" = true }
-
+# TODO: measure llvm, cranelift
 [wasm.storage_costs]
 # Gas charged per byte stored in the global state.
 gas_per_byte = 630_000
