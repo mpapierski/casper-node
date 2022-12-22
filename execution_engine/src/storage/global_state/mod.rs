@@ -150,8 +150,14 @@ where
         return Err(CommitError::RootNotFound(prestate_hash).into());
     };
     for (key, value) in stored_values.iter() {
-        let write_result =
-            write::<_, _, _, _, E>(correlation_id, &mut txn, store, &state_root, key, value)?;
+        let write_result = write::<_, _, _, _, E>(
+            correlation_id.clone(),
+            &mut txn,
+            store,
+            &state_root,
+            key,
+            value,
+        )?;
         match write_result {
             WriteResult::Written(root_hash) => {
                 state_root = root_hash;
@@ -192,7 +198,8 @@ where
     };
 
     for (key, transform) in effects.into_iter() {
-        let read_result = read::<_, _, _, _, E>(correlation_id, &txn, store, &state_root, &key)?;
+        let read_result =
+            read::<_, _, _, _, E>(correlation_id.clone(), &txn, store, &state_root, &key)?;
 
         let value = match (read_result, transform) {
             (ReadResult::NotFound, Transform::Write(new_value)) => new_value,
@@ -228,8 +235,14 @@ where
             }
         };
 
-        let write_result =
-            write::<_, _, _, _, E>(correlation_id, &mut txn, store, &state_root, &key, &value)?;
+        let write_result = write::<_, _, _, _, E>(
+            correlation_id.clone(),
+            &mut txn,
+            store,
+            &state_root,
+            &key,
+            &value,
+        )?;
 
         match write_result {
             WriteResult::Written(root_hash) => {

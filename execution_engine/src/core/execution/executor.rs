@@ -118,7 +118,7 @@ impl Executor {
             gas_limit,
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id.clone(),
             tracking_copy,
             phase,
             spending_limit,
@@ -141,10 +141,11 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                let module = match runtime
-                    .wasm_engine()
-                    .preprocess(self.wasm_engine().wasm_config().clone(), &module_bytes)
-                {
+                let module = match runtime.wasm_engine().preprocess(
+                    correlation_id.clone(),
+                    self.wasm_engine().wasm_config().clone(),
+                    &module_bytes,
+                ) {
                     Ok(module) => module,
                     Err(error) => return runtime.into_failure(error.into()),
                 };
@@ -160,8 +161,12 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                let result =
-                    instance.invoke_export(&self.wasm_engine, DEFAULT_ENTRY_POINT_NAME, Vec::new());
+                let result = instance.invoke_export(
+                    correlation_id,
+                    &self.wasm_engine,
+                    DEFAULT_ENTRY_POINT_NAME,
+                    Vec::new(),
+                );
 
                 match result {
                     Ok(_) => {
@@ -240,7 +245,7 @@ impl Executor {
             payment_gas_limit,
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id.clone(),
             Arc::clone(&tracking_copy),
             phase,
             spending_limit,
@@ -302,7 +307,7 @@ impl Executor {
         let system_contract_registry = tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(correlation_id)
+            .get_system_contracts(correlation_id.clone())
             .unwrap_or_else(|error| panic!("Could not retrieve system contracts: {:?}", error));
 
         // Snapshot of effects before execution, so in case of error only nonce update
@@ -338,7 +343,7 @@ impl Executor {
         let contract = match tracking_copy
             .write()
             .unwrap()
-            .get_contract(CorrelationId::default(), contract_hash)
+            .get_contract(correlation_id.clone(), contract_hash)
         {
             Ok(contract) => contract,
             Err(error) => return (None, ExecutionResult::precondition_failure(error.into())),
@@ -361,7 +366,7 @@ impl Executor {
             gas_limit,
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id.clone(),
             tracking_copy,
             phase,
             remaining_spending_limit,
@@ -446,7 +451,7 @@ impl Executor {
             gas_counter,
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id.clone(),
             phase,
             self.config,
             transfers,

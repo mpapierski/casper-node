@@ -304,7 +304,7 @@ mod empty_tries {
             _,
             in_memory::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &initial_states,
@@ -348,7 +348,7 @@ mod proptests {
         let mut states_to_check = vec![];
 
         let root_hashes = tests::write_pairs::<_, _, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &root_hash,
@@ -359,7 +359,7 @@ mod proptests {
         states_to_check.extend(root_hashes);
 
         tests::check_pairs::<_, _, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &states_to_check,
@@ -375,7 +375,7 @@ mod proptests {
         let mut states_to_check = vec![];
 
         let root_hashes = tests::write_pairs::<_, _, _, _, in_memory::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &root_hash,
@@ -386,7 +386,7 @@ mod proptests {
         states_to_check.extend(root_hashes);
 
         tests::check_pairs::<_, _, _, _, in_memory::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &states_to_check,

@@ -271,7 +271,7 @@ where
     trace!(?state_root_hash, ?effects, "commit");
     let correlation_id = CorrelationId::new();
     let start = Instant::now();
-    let result = engine_state.apply_effect(correlation_id, state_root_hash, effects);
+    let result = engine_state.apply_effect(correlation_id.clone(), state_root_hash, effects);
     if let Some(metrics) = metrics {
         metrics.apply_effect.observe(start.elapsed().as_secs_f64());
     }
@@ -336,7 +336,7 @@ where
     trace!(?execute_request, "execute");
     let correlation_id = CorrelationId::new();
     let start = Instant::now();
-    let result = engine_state.run_execute(correlation_id, execute_request);
+    let result = engine_state.run_execute(correlation_id.clone(), execute_request);
     if let Some(metrics) = metrics {
         metrics.run_execute.observe(start.elapsed().as_secs_f64());
     }
@@ -391,7 +391,7 @@ where
     // Have the EE commit the step.
     let correlation_id = CorrelationId::new();
     let start = Instant::now();
-    let result = engine_state.commit_step(correlation_id, step_request);
+    let result = engine_state.commit_step(correlation_id.clone(), step_request);
     if let Some(metrics) = maybe_metrics {
         let elapsed = start.elapsed().as_secs_f64();
         metrics.commit_step.observe(elapsed);

@@ -219,22 +219,22 @@ where
         standard_payment_hash: &ContractHash,
     ) -> Result<(), ProtocolUpgradeError> {
         self.refresh_system_contract_entry_points(
-            correlation_id,
+            correlation_id.clone(),
             *mint_hash,
             SystemContractType::Mint,
         )?;
         self.refresh_system_contract_entry_points(
-            correlation_id,
+            correlation_id.clone(),
             *auction_hash,
             SystemContractType::Auction,
         )?;
         self.refresh_system_contract_entry_points(
-            correlation_id,
+            correlation_id.clone(),
             *handle_payment_hash,
             SystemContractType::HandlePayment,
         )?;
         self.refresh_system_contract_entry_points(
-            correlation_id,
+            correlation_id.clone(),
             *standard_payment_hash,
             SystemContractType::StandardPayment,
         )?;
@@ -257,7 +257,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(correlation_id, &Key::Hash(contract_hash.value()))
+            .read(correlation_id.clone(), &Key::Hash(contract_hash.value()))
             .map_err(|_| {
                 ProtocolUpgradeError::UnableToRetrieveSystemContract(contract_name.to_string())
             })?
@@ -289,7 +289,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(correlation_id, &contract_package_key)
+            .read(correlation_id.clone(), &contract_package_key)
             .map_err(|_| {
                 ProtocolUpgradeError::UnableToRetrieveSystemContractPackage(
                     contract_name.to_string(),

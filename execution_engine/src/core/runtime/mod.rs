@@ -51,6 +51,7 @@ use crate::{
     },
     shared::{
         host_function_costs::{Cost, HostFunction},
+        newtypes::{CorrelationId, Property},
         wasm_engine::{
             self, FunctionContext, Module, PreprocessingError, RuntimeValue, WasmEngine,
             WasmiModule,
@@ -668,7 +669,7 @@ where
             .state()
             .write()
             .unwrap()
-            .get_contract(self.context.correlation_id(), mint_hash)?;
+            .get_contract(self.context.correlation_id().clone(), mint_hash)?;
         let mut named_keys = mint_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
@@ -798,7 +799,7 @@ where
             .state()
             .write()
             .unwrap()
-            .get_contract(self.context.correlation_id(), handle_payment_hash)?;
+            .get_contract(self.context.correlation_id().clone(), handle_payment_hash)?;
         let mut named_keys = handle_payment_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
@@ -898,7 +899,7 @@ where
             .state()
             .write()
             .unwrap()
-            .get_contract(self.context.correlation_id(), auction_hash)?;
+            .get_contract(self.context.correlation_id().clone(), auction_hash)?;
         let mut named_keys = auction_contract.named_keys().to_owned();
 
         let runtime_context = self.context.new_from_self(
@@ -1355,7 +1356,18 @@ where
                 None => return Err(Error::KeyNotFound(context_key)),
             };
 
-            self.wasm_engine.module_from_bytes(contract_wasm.bytes())?
+            // NOTE: We should consider using `bytes::Bytes` instead of `bytesrepr::Bytes`
+            let wasm_bytes = bytes::Bytes::copy_from_slice(contract_wasm.bytes());
+
+            self.context
+                .correlation_id()
+                .record_property(Property::Contract {
+                    contract_hash,
+                    original_bytes: wasm_bytes.clone(),
+                });
+
+            self.wasm_engine
+                .module_from_bytes(self.context.correlation_id().clone(), wasm_bytes.clone())?
         };
 
         let context = self.context.new_from_self(
@@ -1373,7 +1385,12 @@ where
             self.wasm_engine
                 .instance_and_memory(module, protocol_version, runtime.clone())?;
 
-        let result = instance.invoke_export(&self.wasm_engine, entry_point.name(), Vec::new());
+        let result = instance.invoke_export(
+            self.context.correlation_id().clone(),
+            &self.wasm_engine,
+            entry_point.name(),
+            Vec::new(),
+        );
 
         // todo!("execute_contract invoke result {:?}", result);
 

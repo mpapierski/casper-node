@@ -72,7 +72,11 @@ use crate::{
     storage::global_state::StateReader,
 };
 
-use super::{opcode_costs::OpcodeCosts, wasm_config::WasmConfig};
+use super::{
+    newtypes::{CorrelationId, Property},
+    opcode_costs::OpcodeCosts,
+    wasm_config::WasmConfig,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -207,6 +211,7 @@ pub enum Module {
     Interpreted {
         original_bytes: Bytes,
         wasmi_module: WasmiModule,
+        timestamp: Instant,
     },
     Compiled {
         original_bytes: Bytes,
@@ -226,9 +231,9 @@ pub enum Module {
     Singlepass {
         original_bytes: Bytes,
         wasmi_module: WasmiModule,
-        // store: wasmer::Store,
         wasmer_module: wasmer::Module,
         store: wasmer::Store,
+        timestamp: Instant,
     },
 }
 
@@ -265,6 +270,7 @@ impl Module {
             Module::Interpreted {
                 original_bytes,
                 wasmi_module,
+                ..
             } => wasmi_module,
             Module::Compiled { wasmi_module, .. } => wasmi_module,
             Module::Jitted { wasmi_module, .. } => wasmi_module,
@@ -278,6 +284,7 @@ impl Module {
             Module::Interpreted {
                 original_bytes,
                 wasmi_module,
+                ..
             } => wasmi_module,
             Module::Compiled {
                 original_bytes,
@@ -292,58 +299,10 @@ impl Module {
                 precompile_time,
                 module,
             } => wasmi_module,
-            Module::Singlepass {
-                original_bytes,
-                wasmi_module,
-                wasmer_module,
-                store,
-            } => wasmi_module,
+            Module::Singlepass { wasmi_module, .. } => wasmi_module,
         };
         wasmi_module_ref.clone()
     }
-}
-
-#[derive(Debug)]
-pub enum LogProperty {
-    Size(usize),
-    PrecompileTime(Duration),
-    Runtime(Duration),
-    EntryPoint(String),
-    Finish,
-}
-
-impl Display for LogProperty {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        match self {
-            LogProperty::Size(value) => write!(f, "size={}", value),
-            LogProperty::PrecompileTime(value) => {
-                write!(f, "precompile_time_us={}", value.as_micros())
-            }
-            LogProperty::Runtime(value) => write!(f, "runtime_us={}", value.as_micros()),
-            LogProperty::EntryPoint(value) => write!(f, "entrypoint={}", value),
-            LogProperty::Finish => write!(f, "finish"),
-        }
-    }
-}
-
-pub fn record_performance_log(wasm_bytes: &[u8], log_property: Vec<LogProperty>) {
-    let mut f = OpenOptions::new()
-        .read(false)
-        .append(true)
-        .create(true)
-        .open("performance_log.txt")
-        .expect("should open file");
-
-    let wasm_id = account::blake2b(wasm_bytes);
-
-    let properties = log_property
-        .into_iter()
-        .map(|prop| prop.to_string())
-        .join(",");
-
-    let data = format!("{},{}\n", base16::encode_lower(&wasm_id), properties);
-    f.write(data.as_bytes()).expect("should write");
-    f.sync_all().expect("should sync");
 }
 
 /// Common error type adapter for all Wasm engines supported.
@@ -470,6 +429,7 @@ where
         module: ModuleRef,
         memory: MemoryRef,
         runtime: Runtime<R>,
+        timestamp: Instant,
     },
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
@@ -490,6 +450,7 @@ where
         wasmer_module: wasmer::Module,
         runtime: Runtime<R>,
         store: wasmer::Store,
+        timestamp: Instant,
     },
 }
 
@@ -634,6 +595,7 @@ where
     /// Invokes exported function
     pub fn invoke_export(
         self,
+        correlation_id: CorrelationId,
         wasm_engine: &WasmEngine,
         func_name: &str,
         args: Vec<RuntimeValue>,
@@ -647,16 +609,10 @@ where
                 module,
                 memory,
                 mut runtime,
+                timestamp,
             } => {
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
                     args.into_iter().map(|value| value.into()).collect();
-
-                // record_performance_log(&original_bytes,
-                // LogProperty::EntryPoint(func_name.to_string()));
-
-                // get the runtime value
-
-                let start = Instant::now();
 
                 let mut wasmi_externals = WasmiExternals {
                     runtime: &mut runtime,
@@ -664,24 +620,25 @@ where
                     memory: memory.clone(),
                 };
 
+                let preprocess_dur = timestamp.elapsed();
+                // let exec_start = Instant::now();
+
                 let wasmi_result =
                     module.invoke_export(func_name, wasmi_args.as_slice(), &mut wasmi_externals);
 
-                let stop = start.elapsed();
-                record_performance_log(
-                    &original_bytes,
-                    vec![
-                        LogProperty::Size(original_bytes.len()),
-                        LogProperty::EntryPoint(func_name.to_string()),
-                        LogProperty::PrecompileTime(Duration::default()),
-                        LogProperty::Runtime(stop),
-                    ],
-                );
+                let invoke_dur = timestamp.elapsed();
 
                 let wasmi_result = wasmi_result?;
 
                 // wasmi's runtime value into our runtime value
                 let result = wasmi_result.map(RuntimeValue::from);
+
+                correlation_id.record_property(Property::WasmVM {
+                    original_bytes: original_bytes.clone(),
+                    preprocess_duration: preprocess_dur,
+                    invoke_duration: invoke_dur,
+                });
+
                 Ok(result)
             }
             Instance::Compiled {
@@ -1913,19 +1870,6 @@ where
 
                 let stop = start.elapsed();
 
-                record_performance_log(
-                    &original_bytes,
-                    vec![
-                        LogProperty::Size(original_bytes.len()),
-                        LogProperty::EntryPoint(func_name.to_string()),
-                        LogProperty::PrecompileTime(precompile_time.unwrap_or_default()),
-                        LogProperty::Runtime(stop),
-                    ],
-                );
-
-                // record_performance_log(&original_bytes, LogProperty::Runtime(stop));
-                // record_performance_log(&original_bytes, LogProperty::Finish);
-
                 ret?;
 
                 Ok(Some(RuntimeValue::I64(0)))
@@ -1936,7 +1880,10 @@ where
                 wasmer_module,
                 runtime,
                 store: mut wasmer_store,
+                timestamp,
             } => {
+                let preprocess_dur = timestamp.elapsed();
+
                 // let import_object = imports! {};
                 let mut import_object = wasmer::Imports::new();
                 // let memory = memory.clone();
@@ -3706,6 +3653,15 @@ where
 
                 call_func.call(&mut wasmer_store.as_store_mut())?;
 
+                let invoke_dur = timestamp.elapsed();
+
+                correlation_id.record_property(Property::WasmVM {
+                    original_bytes: original_bytes.clone(),
+                    preprocess_duration: preprocess_dur,
+                    invoke_duration: invoke_dur,
+                });
+
+
                 Ok(Some(RuntimeValue::I64(0)))
             }
         }
@@ -4121,16 +4077,17 @@ struct CacheKey(
 
 static GLOBAL_CACHE: Lazy<Mutex<HashMap<CacheKey, Bytes>>> = Lazy::new(Default::default);
 
-fn cache_get(cache_key: &CacheKey) -> Option<Bytes> {
+fn cache_get(correlation_id: &CorrelationId, cache_key: &CacheKey) -> Option<Bytes> {
     let hash_map = GLOBAL_CACHE.lock().unwrap();
     let precompiled = hash_map.get(cache_key)?;
 
     Some(precompiled.clone())
 }
 
-fn cache_set(cache_key: CacheKey, artifact: Bytes) {
+fn cache_set(correlation_id: &CorrelationId, cache_key: CacheKey, artifact: Bytes) {
     let mut global_cache = GLOBAL_CACHE.lock().unwrap();
-    global_cache.insert(cache_key, artifact);
+    let res = global_cache.insert(cache_key, artifact);
+    assert!(res.is_none())
 }
 
 /// Wasm preprocessor.
@@ -4269,6 +4226,7 @@ impl WasmEngine {
             Module::Interpreted {
                 original_bytes,
                 wasmi_module,
+                timestamp,
             } => {
                 let module = wasmi::Module::from_parity_wasm_module(wasmi_module.clone())?;
                 let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
@@ -4285,6 +4243,7 @@ impl WasmEngine {
                     module: instance,
                     memory,
                     runtime,
+                    timestamp,
                 })
             }
             Module::Compiled {
@@ -4381,6 +4340,7 @@ impl WasmEngine {
                 wasmi_module,
                 wasmer_module,
                 store,
+                timestamp,
             } => {
                 let max_memory = self.wasm_config().max_memory;
 
@@ -4412,6 +4372,7 @@ impl WasmEngine {
                     wasmer_module: wasmer_module,
                     runtime,
                     store: store,
+                    timestamp,
                 })
             }
         }
@@ -4421,29 +4382,37 @@ impl WasmEngine {
         CacheKey(wasmer::Triple::host(), self.wasm_config, original_bytes)
     }
 
-    fn cache_get(&self, original_bytes: Bytes) -> Option<Bytes> {
-        cache_get(&self.make_cache_key(original_bytes))
+    fn cache_get(&self, correlation_id: &CorrelationId, original_bytes: Bytes) -> Option<Bytes> {
+        cache_get(correlation_id, &self.make_cache_key(original_bytes))
     }
 
-    fn cache_set(&self, clone: Bytes, serialized_bytes: Bytes) {
-        cache_set(self.make_cache_key(clone), serialized_bytes)
+    fn cache_set(&self, correlation_id: &CorrelationId, clone: Bytes, serialized_bytes: Bytes) {
+        cache_set(correlation_id, self.make_cache_key(clone), serialized_bytes)
     }
 
     /// Creates module specific for execution mode.
-    pub fn module_from_bytes(&self, wasm_bytes: &[u8]) -> Result<Module, PreprocessingError> {
-        // NOTE: We should consider using `bytes::Bytes` instead of `bytesrepr::Bytes`
-        let wasm_bytes = Bytes::copy_from_slice(wasm_bytes);
-
+    pub fn module_from_bytes(
+        &self,
+        correlation_id: CorrelationId,
+        wasm_bytes: Bytes,
+    ) -> Result<Module, PreprocessingError> {
+        let start = Instant::now();
         let parity_module = deserialize_interpreted(&wasm_bytes)?;
 
         let module = match self.execution_mode {
             ExecutionMode::Interpreted => Module::Interpreted {
                 wasmi_module: parity_module,
                 original_bytes: wasm_bytes,
+                timestamp: start,
             },
             ExecutionMode::Compiled { cache_artifacts } => {
                 if cache_artifacts {
-                    if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
+                    if let Some(precompiled_bytes) =
+                        self.cache_get(&correlation_id, wasm_bytes.clone())
+                    {
+                        correlation_id.record_property(Property::VMCacheHit {
+                            original_bytes: wasm_bytes.clone(),
+                        });
                         let wasmtime_module = self
                             .deserialize_compiled(&precompiled_bytes)
                             .expect("Should deserialize");
@@ -4461,13 +4430,16 @@ impl WasmEngine {
                 //     .unwrap();
                 // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
 
+                correlation_id.record_property(Property::VMCacheMiss {
+                    original_bytes: wasm_bytes.clone(),
+                });
                 let module = wasmtime::Module::new(&self.compiled_engine, &wasm_bytes).unwrap();
 
                 if cache_artifacts {
                     let serialized_bytes = module
                         .serialize()
                         .expect("should serialize wasmtime module");
-                    self.cache_set(wasm_bytes.clone(), serialized_bytes.into());
+                    self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes.into());
                 }
 
                 Module::Compiled {
@@ -4496,7 +4468,9 @@ impl WasmEngine {
             } => {
                 let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
-                    if let Some(precompiled_bytes) = self.cache_get(wasm_bytes.clone()) {
+                    if let Some(precompiled_bytes) =
+                        self.cache_get(&correlation_id, wasm_bytes.clone())
+                    {
                         // We have the artifact, and we can use headless mode to just execute binary
                         // artifact
                         let headless_engine = wasmer::Engine::headless();
@@ -4504,14 +4478,15 @@ impl WasmEngine {
                         let wasmer_module = unsafe {
                             wasmer::Module::deserialize(&store, precompiled_bytes.clone())
                         }?;
-                        let wasmer_imports_from_cache =
-                            wasmer_module.imports().into_iter().collect::<Vec<_>>();
+                        // let wasmer_imports_from_cache =
+                        //     wasmer_module.imports().into_iter().collect::<Vec<_>>();
 
                         return Ok(Module::Singlepass {
                             original_bytes: wasm_bytes,
                             wasmi_module: parity_module,
                             wasmer_module,
                             store: store,
+                            timestamp: start,
                         });
                     }
                 }
@@ -4522,8 +4497,11 @@ impl WasmEngine {
                     .expect("should create wasmer module");
 
                 if cache_artifacts {
+                    correlation_id.record_property(Property::VMCacheMiss {
+                        original_bytes: wasm_bytes.clone(),
+                    });
                     let serialized_bytes = wasmer_module.serialize()?;
-                    self.cache_set(wasm_bytes.clone(), serialized_bytes);
+                    self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes);
                 }
 
                 // TODO: Cache key should be the one from StoredValue::ContractWasm which is random,
@@ -4534,6 +4512,7 @@ impl WasmEngine {
                     wasmi_module: parity_module,
                     wasmer_module: wasmer_module,
                     store: wasmer_store,
+                    timestamp: start,
                 }
             }
         };
@@ -4555,7 +4534,7 @@ impl WasmEngine {
     //     cache_artifacts: bool,
     // ) -> Result<(Bytes, Option<Duration>), RuntimeError> {
     //     // if cache_artifacts {
-    //     //     if let Some(precompiled) = self.cache_get(original_bytes.clone()) {
+    //     //     if let Some(precompiled) = self.cache_get(&correlation_id, original_bytes.clone()) {
     //     //         let deserialized_module =
     //     //             unsafe { wasmtime::Module::deserialize(&self.compiled_engine,
     // &precompiled) }     //                 .expect("should deserialize wasmtime module");
@@ -4566,7 +4545,7 @@ impl WasmEngine {
     //     // let mut cache = GLOBAL_CACHE.lock().unwrap();
     //     // let mut cache = cache.borrow_mut();
     //     // let mut cache = GLOBAL_CACHE.lborrow_mut();
-    //     // match self.cache_get(bytes)
+    //     // match self.cache_get(&correlation_id, bytes)
 
     //     // let (bytes, maybe_duration) = match cache.entry(CacheKey(bytes.clone())) {
     //     //     Entry::Occupied(o) => (o.get().clone(), None),
@@ -4598,11 +4577,18 @@ impl WasmEngine {
     /// Otherwise, this method returns a valid module ready to be executed safely on the host.
     pub fn preprocess(
         &self,
+        correlation_id: CorrelationId,
         wasm_config: WasmConfig,
         module_bytes: &[u8],
     ) -> Result<Module, PreprocessingError> {
+        let start = Instant::now();
+
         // NOTE: Consider using `bytes::Bytes` instead of `bytesrepr::Bytes` as its cheaper
         let module_bytes = Bytes::copy_from_slice(module_bytes);
+
+        correlation_id.record_property(Property::Preprocess {
+            original_bytes: module_bytes.clone(),
+        });
 
         let module = deserialize_interpreted(&module_bytes)?;
 
@@ -4640,18 +4626,20 @@ impl WasmEngine {
             .map_err(|_| PreprocessingError::StackLimiter)?;
 
         if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
-            if let Some(precompiled_bytes) = self.cache_get(module_bytes.clone()) {
+            if let Some(precompiled_bytes) = self.cache_get(&correlation_id, module_bytes.clone()) {
                 // We have the artifact, and we can use headless mode to just execute binary
                 // artifact
                 let headless_engine = wasmer::Engine::headless();
                 let store = wasmer::Store::new(headless_engine);
                 let wasmer_module =
                     unsafe { wasmer::Module::deserialize(&store, precompiled_bytes.clone()) }?;
+
                 return Ok(Module::Singlepass {
                     original_bytes: module_bytes,
                     wasmi_module: module,
                     wasmer_module,
                     store: store,
+                    timestamp: start,
                 });
             }
         }
@@ -4659,6 +4647,7 @@ impl WasmEngine {
             ExecutionMode::Interpreted => Ok(Module::Interpreted {
                 original_bytes: module_bytes,
                 wasmi_module: module,
+                timestamp: start,
             }),
             ExecutionMode::Compiled { cache_artifacts } => {
                 // TODO: Gas injected module is used here but we might want to use `module` instead
@@ -4668,7 +4657,12 @@ impl WasmEngine {
                 );
 
                 if cache_artifacts {
-                    if let Some(precompiled_bytes) = self.cache_get(module_bytes.clone()) {
+                    if let Some(precompiled_bytes) =
+                        self.cache_get(&correlation_id, module_bytes.clone())
+                    {
+                        correlation_id.record_property(Property::VMCacheHit {
+                            original_bytes: module_bytes.clone(),
+                        });
                         let wasmtime_module = unsafe {
                             wasmtime::Module::deserialize(&self.compiled_engine, &precompiled_bytes)
                         }
@@ -4687,8 +4681,15 @@ impl WasmEngine {
                         .map_err(|error| PreprocessingError::Precompile(error.to_string()))?;
 
                 if cache_artifacts {
+                    correlation_id.record_property(Property::VMCacheMiss {
+                        original_bytes: module_bytes.clone(),
+                    });
                     let serialized_bytes = wasmtime::Module::serialize(&wasmtime_module).unwrap();
-                    self.cache_set(module_bytes.clone(), serialized_bytes.into());
+                    self.cache_set(
+                        &correlation_id,
+                        module_bytes.clone(),
+                        serialized_bytes.into(),
+                    );
                 }
                 // aot compile
                 // let (precompiled_bytes, duration) = self
@@ -4732,10 +4733,6 @@ impl WasmEngine {
                 let preprocessed_wasm_bytes =
                     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
-                // let singlepass = Singlepass::new();
-                // let store = wasmer::Store::new(singlepass);
-                // wasmer::Module::new
-
                 let start = Instant::now();
 
                 let mut store = make_wasmer_store(backend);
@@ -4744,8 +4741,11 @@ impl WasmEngine {
                     wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
 
                 if cache_artifacts {
+                    correlation_id.record_property(Property::VMCacheMiss {
+                        original_bytes: module_bytes.clone(),
+                    });
                     let serialized_bytes = wasmer_module.serialize()?;
-                    self.cache_set(module_bytes.clone(), serialized_bytes);
+                    self.cache_set(&correlation_id, module_bytes.clone(), serialized_bytes);
                 }
 
                 let stop = start.elapsed();
@@ -4755,6 +4755,7 @@ impl WasmEngine {
                     wasmi_module: module,
                     store,
                     wasmer_module: wasmer_module,
+                    timestamp: start,
                 })
             }
         }

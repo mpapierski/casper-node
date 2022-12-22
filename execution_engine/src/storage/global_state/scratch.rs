@@ -123,7 +123,7 @@ impl StateReader<Key, StoredValue> for ScratchGlobalStateView {
         }
         let txn = self.environment.create_read_txn()?;
         let ret = match read::<Key, StoredValue, lmdb::RoTransaction, LmdbTrieStore, Self::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.trie_store.deref(),
             &self.root_hash,
@@ -153,7 +153,7 @@ impl StateReader<Key, StoredValue> for ScratchGlobalStateView {
             LmdbTrieStore,
             Self::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.trie_store.deref(),
             &self.root_hash,
@@ -174,7 +174,7 @@ impl StateReader<Key, StoredValue> for ScratchGlobalStateView {
     ) -> Result<Vec<Key>, Self::Error> {
         let txn = self.environment.create_read_txn()?;
         let keys_iter = keys_with_prefix::<Key, StoredValue, _, _>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.trie_store.deref(),
             &self.root_hash,
@@ -216,7 +216,7 @@ impl CommitProvider for ScratchGlobalState {
                         LmdbTrieStore,
                         Self::Error,
                     >(
-                        correlation_id,
+                        correlation_id.clone(),
                         &txn,
                         self.trie_store.deref(),
                         &state_hash,
@@ -333,7 +333,7 @@ impl StateProvider for ScratchGlobalState {
             lmdb::RwTransaction,
             LmdbTrieStore,
             Self::Error,
-        >(correlation_id, &mut txn, &self.trie_store, trie)?;
+        >(correlation_id.clone(), &mut txn, &self.trie_store, trie)?;
         txn.commit()?;
         Ok(trie_hash)
     }
@@ -347,7 +347,7 @@ impl StateProvider for ScratchGlobalState {
         let txn = self.environment.create_read_txn()?;
         let missing_descendants =
             missing_trie_keys::<Key, StoredValue, lmdb::RoTransaction, LmdbTrieStore, Self::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &txn,
                 self.trie_store.deref(),
                 trie_keys,
@@ -453,7 +453,7 @@ mod tests {
 
             for TestPair { key, value } in &create_test_pairs() {
                 match write::<_, _, _, LmdbTrieStore, error::Error>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &mut txn,
                     &state.trie_store,
                     &current_root,
@@ -498,7 +498,7 @@ mod tests {
         };
 
         let scratch_root_hash = scratch
-            .commit(correlation_id, root_hash, effects.clone())
+            .commit(correlation_id.clone(), root_hash, effects.clone())
             .unwrap();
 
         assert_eq!(
@@ -506,11 +506,13 @@ mod tests {
             "ScratchGlobalState should not modify the state root, as it does no hashing"
         );
 
-        let lmdb_hash = state.commit(correlation_id, root_hash, effects).unwrap();
+        let lmdb_hash = state
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
         let updated_checkout = state.checkout(lmdb_hash).unwrap().unwrap();
 
         let all_keys = updated_checkout
-            .keys_with_prefix(correlation_id, &[])
+            .keys_with_prefix(correlation_id.clone(), &[])
             .unwrap();
 
         let stored_values = scratch.into_inner();
@@ -521,7 +523,7 @@ mod tests {
             assert_eq!(
                 stored_values.get(&key),
                 updated_checkout
-                    .read(correlation_id, &key)
+                    .read(correlation_id.clone(), &key)
                     .unwrap()
                     .as_ref()
             );
@@ -530,7 +532,7 @@ mod tests {
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap()
+                updated_checkout.read(correlation_id.clone(), &key).unwrap()
             );
         }
     }
@@ -559,36 +561,36 @@ mod tests {
 
         // Commit effects to both databases.
         scratch
-            .commit(correlation_id, root_hash, effects.clone())
+            .commit(correlation_id.clone(), root_hash, effects.clone())
             .unwrap();
         let updated_hash = state2
-            .commit(correlation_id, state_2_root_hash, effects)
+            .commit(correlation_id.clone(), state_2_root_hash, effects)
             .unwrap();
 
         // Create add transforms as well
         let add_effects = create_test_transforms();
         scratch
-            .commit(correlation_id, root_hash, add_effects.clone())
+            .commit(correlation_id.clone(), root_hash, add_effects.clone())
             .unwrap();
         let updated_hash = state2
-            .commit(correlation_id, updated_hash, add_effects)
+            .commit(correlation_id.clone(), updated_hash, add_effects)
             .unwrap();
 
         let scratch_checkout = scratch.checkout(root_hash).unwrap().unwrap();
         let updated_checkout = state2.checkout(updated_hash).unwrap().unwrap();
         let all_keys = updated_checkout
-            .keys_with_prefix(correlation_id, &[])
+            .keys_with_prefix(correlation_id.clone(), &[])
             .unwrap();
 
         // Check that cache matches the contents of the second instance of lmdb
         for key in all_keys {
             assert_eq!(
                 scratch_checkout
-                    .read(correlation_id, &key)
+                    .read(correlation_id.clone(), &key)
                     .unwrap()
                     .as_ref(),
                 updated_checkout
-                    .read(correlation_id, &key)
+                    .read(correlation_id.clone(), &key)
                     .unwrap()
                     .as_ref()
             );
@@ -614,13 +616,15 @@ mod tests {
             tmp
         };
 
-        let updated_hash = scratch.commit(correlation_id, root_hash, effects).unwrap();
+        let updated_hash = scratch
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
 
         let updated_checkout = scratch.checkout(updated_hash).unwrap().unwrap();
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap(),
+                updated_checkout.read(correlation_id.clone(), &key).unwrap(),
                 "ScratchGlobalState should not yet be written to the underlying lmdb state"
             );
         }
@@ -629,13 +633,15 @@ mod tests {
         for TestPair { key, value } in create_test_pairs().iter().cloned() {
             assert_eq!(
                 Some(value),
-                original_checkout.read(correlation_id, &key).unwrap()
+                original_checkout
+                    .read(correlation_id.clone(), &key)
+                    .unwrap()
             );
         }
         assert_eq!(
             None,
             original_checkout
-                .read(correlation_id, &test_pairs_updated[2].key)
+                .read(correlation_id.clone(), &test_pairs_updated[2].key)
                 .unwrap()
         );
     }

@@ -783,7 +783,7 @@ where
 
         GenesisInstaller {
             protocol_version,
-            correlation_id,
+            correlation_id: correlation_id.clone(),
             exec_config,
             address_generator,
             tracking_copy,
@@ -1016,7 +1016,7 @@ where
         };
 
         let _ = self.tracking_copy.write().unwrap().add(
-            CorrelationId::default(),
+            self.correlation_id.clone(),
             total_supply_key,
             StoredValue::CLValue(
                 CLValue::from_t(total_staked_amount)
@@ -1316,7 +1316,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(self.correlation_id, &Key::SystemContractRegistry)
+            .read(self.correlation_id.clone(), &Key::SystemContractRegistry)
             .map_err(|_| GenesisError::FailedToCreateSystemRegistry)?
             .ok_or_else(|| {
                 GenesisError::CLValue("failed to convert registry as stored value".to_string())

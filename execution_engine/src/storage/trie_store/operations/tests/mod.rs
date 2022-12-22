@@ -595,7 +595,7 @@ where
     for leaf in leaves {
         if let Trie::Leaf { key, value } = leaf {
             let maybe_value: ReadResult<V> =
-                read::<_, _, _, _, E>(correlation_id, txn, store, root, key)?;
+                read::<_, _, _, _, E>(correlation_id.clone(), txn, store, root, key)?;
             ret.push(ReadResult::Found(*value) == maybe_value)
         } else {
             panic!("leaves should only contain leaves")
@@ -625,7 +625,7 @@ where
     for leaf in leaves {
         if let Trie::Leaf { key, value } = leaf {
             let maybe_proof: ReadResult<TrieMerkleProof<K, V>> =
-                read_with_proof::<_, _, _, _, E>(correlation_id, txn, store, root, key)?;
+                read_with_proof::<_, _, _, _, E>(correlation_id.clone(), txn, store, root, key)?;
             match maybe_proof {
                 ReadResult::Found(proof) => {
                     let hash = proof.compute_state_hash()?;
@@ -668,7 +668,7 @@ where
         tmp
     };
     let actual = {
-        let mut tmp = operations::keys::<_, _, _, _>(correlation_id, txn, store, root)
+        let mut tmp = operations::keys::<_, _, _, _>(correlation_id.clone(), txn, store, root)
             .filter_map(Result::ok)
             .collect::<Vec<K>>();
         tmp.sort();
@@ -695,32 +695,48 @@ where
 {
     let txn: R::ReadTransaction = environment.create_read_txn()?;
 
-    assert!(
-        check_leaves_exist::<_, _, _, _, E>(correlation_id, &txn, store, root, present)?
-            .into_iter()
-            .all(convert::identity)
-    );
+    assert!(check_leaves_exist::<_, _, _, _, E>(
+        correlation_id.clone(),
+        &txn,
+        store,
+        root,
+        present
+    )?
+    .into_iter()
+    .all(convert::identity));
 
-    assert!(
-        check_merkle_proofs::<_, _, _, _, E>(correlation_id, &txn, store, root, present)?
-            .into_iter()
-            .all(convert::identity)
-    );
+    assert!(check_merkle_proofs::<_, _, _, _, E>(
+        correlation_id.clone(),
+        &txn,
+        store,
+        root,
+        present
+    )?
+    .into_iter()
+    .all(convert::identity));
 
-    assert!(
-        check_leaves_exist::<_, _, _, _, E>(correlation_id, &txn, store, root, absent)?
-            .into_iter()
-            .all(bool::not)
-    );
+    assert!(check_leaves_exist::<_, _, _, _, E>(
+        correlation_id.clone(),
+        &txn,
+        store,
+        root,
+        absent
+    )?
+    .into_iter()
+    .all(bool::not));
 
-    assert!(
-        check_merkle_proofs::<_, _, _, _, E>(correlation_id, &txn, store, root, absent)?
-            .into_iter()
-            .all(bool::not)
-    );
+    assert!(check_merkle_proofs::<_, _, _, _, E>(
+        correlation_id.clone(),
+        &txn,
+        store,
+        root,
+        absent
+    )?
+    .into_iter()
+    .all(bool::not));
 
     assert!(check_keys::<_, _, _, _, E>(
-        correlation_id,
+        correlation_id.clone(),
         &txn,
         store,
         root,
@@ -755,8 +771,14 @@ where
 
     for leaf in leaves.iter() {
         if let Trie::Leaf { key, value } = leaf {
-            let write_result =
-                write::<_, _, _, _, E>(correlation_id, &mut txn, store, &root_hash, key, value)?;
+            let write_result = write::<_, _, _, _, E>(
+                correlation_id.clone(),
+                &mut txn,
+                store,
+                &root_hash,
+                key,
+                value,
+            )?;
             match write_result {
                 WriteResult::Written(hash) => {
                     root_hash = hash;
@@ -791,8 +813,13 @@ where
     let txn = environment.create_read_txn()?;
     for (index, root_hash) in root_hashes.iter().enumerate() {
         for (key, value) in &pairs[..=index] {
-            let maybe_proof =
-                read_with_proof::<_, _, _, _, E>(correlation_id, &txn, store, root_hash, key)?;
+            let maybe_proof = read_with_proof::<_, _, _, _, E>(
+                correlation_id.clone(),
+                &txn,
+                store,
+                root_hash,
+                key,
+            )?;
             match maybe_proof {
                 ReadResult::Found(proof) => {
                     let hash = proof.compute_state_hash()?;
@@ -826,7 +853,8 @@ where
     let txn = environment.create_read_txn()?;
     for (index, root_hash) in root_hashes.iter().enumerate() {
         for (key, value) in &pairs[..=index] {
-            let result = read::<_, _, _, _, E>(correlation_id, &txn, store, root_hash, key)?;
+            let result =
+                read::<_, _, _, _, E>(correlation_id.clone(), &txn, store, root_hash, key)?;
             if ReadResult::Found(*value) != result {
                 return Ok(false);
             }
@@ -841,9 +869,10 @@ where
             tmp
         };
         let actual = {
-            let mut tmp = operations::keys::<_, _, _, _>(correlation_id, &txn, store, root_hash)
-                .filter_map(Result::ok)
-                .collect::<Vec<K>>();
+            let mut tmp =
+                operations::keys::<_, _, _, _>(correlation_id.clone(), &txn, store, root_hash)
+                    .filter_map(Result::ok)
+                    .collect::<Vec<K>>();
             tmp.sort();
             tmp
         };
@@ -877,7 +906,14 @@ where
     let mut txn = environment.create_read_write_txn()?;
 
     for (key, value) in pairs.iter() {
-        match write::<_, _, _, _, E>(correlation_id, &mut txn, store, &root_hash, key, value)? {
+        match write::<_, _, _, _, E>(
+            correlation_id.clone(),
+            &mut txn,
+            store,
+            &root_hash,
+            key,
+            value,
+        )? {
             WriteResult::Written(hash) => {
                 root_hash = hash;
             }
@@ -909,7 +945,7 @@ where
 
     // Write set of leaves to the trie
     let hashes = write_leaves::<_, _, _, _, E>(
-        correlation_id,
+        correlation_id.clone(),
         environment,
         store,
         states.last().unwrap(),
@@ -928,7 +964,14 @@ where
     // state, and that the set of other leaves is not.
     for (num_leaves, state) in states.iter().enumerate() {
         let (used, unused) = test_leaves.split_at(num_leaves);
-        check_leaves::<_, _, _, _, E>(correlation_id, environment, store, state, used, unused)?;
+        check_leaves::<_, _, _, _, E>(
+            correlation_id.clone(),
+            environment,
+            store,
+            state,
+            used,
+            unused,
+        )?;
     }
 
     Ok(states)

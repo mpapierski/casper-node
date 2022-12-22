@@ -107,7 +107,7 @@ impl LmdbGlobalState {
         let new_state_root = put_stored_values::<_, _, error::Error>(
             &scratch_trie,
             &scratch_trie,
-            correlation_id,
+            correlation_id.clone(),
             prestate_hash,
             stored_values,
         )?;
@@ -143,7 +143,7 @@ impl StateReader<Key, StoredValue> for LmdbGlobalStateView {
     ) -> Result<Option<StoredValue>, Self::Error> {
         let txn = self.environment.create_read_txn()?;
         let ret = match read::<Key, StoredValue, lmdb::RoTransaction, LmdbTrieStore, Self::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -170,7 +170,7 @@ impl StateReader<Key, StoredValue> for LmdbGlobalStateView {
             LmdbTrieStore,
             Self::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -191,7 +191,7 @@ impl StateReader<Key, StoredValue> for LmdbGlobalStateView {
     ) -> Result<Vec<Key>, Self::Error> {
         let txn = self.environment.create_read_txn()?;
         let keys_iter = keys_with_prefix::<Key, StoredValue, _, _>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -219,7 +219,7 @@ impl CommitProvider for LmdbGlobalState {
         commit::<LmdbEnvironment, LmdbTrieStore, _, Self::Error>(
             &self.environment,
             &self.trie_store,
-            correlation_id,
+            correlation_id.clone(),
             prestate_hash,
             effects,
         )
@@ -297,7 +297,7 @@ impl StateProvider for LmdbGlobalState {
             lmdb::RwTransaction,
             LmdbTrieStore,
             Self::Error,
-        >(correlation_id, &mut txn, &self.trie_store, trie)?;
+        >(correlation_id.clone(), &mut txn, &self.trie_store, trie)?;
         txn.commit()?;
         Ok(trie_hash)
     }
@@ -330,7 +330,7 @@ impl StateProvider for LmdbGlobalState {
                 LmdbTrieStore,
                 Self::Error,
             >(
-                correlation_id,
+                correlation_id.clone(),
                 &txn,
                 self.trie_store.deref(),
                 trie_keys.clone(),
@@ -464,7 +464,7 @@ mod tests {
 
             for TestPair { key, value } in &(pairs_creator)() {
                 match write::<_, _, _, LmdbTrieStore, error::Error>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &mut txn,
                     &ret.trie_store,
                     &current_root,
@@ -492,7 +492,10 @@ mod tests {
         let (state, root_hash) = create_test_state(create_test_pairs);
         let checkout = state.checkout(root_hash).unwrap().unwrap();
         for TestPair { key, value } in create_test_pairs().iter().cloned() {
-            assert_eq!(Some(value), checkout.read(correlation_id, &key).unwrap());
+            assert_eq!(
+                Some(value),
+                checkout.read(correlation_id.clone(), &key).unwrap()
+            );
         }
     }
 
@@ -519,14 +522,16 @@ mod tests {
             tmp
         };
 
-        let updated_hash = state.commit(correlation_id, root_hash, effects).unwrap();
+        let updated_hash = state
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
 
         let updated_checkout = state.checkout(updated_hash).unwrap().unwrap();
 
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap()
+                updated_checkout.read(correlation_id.clone(), &key).unwrap()
             );
         }
     }
@@ -546,13 +551,15 @@ mod tests {
             tmp
         };
 
-        let updated_hash = state.commit(correlation_id, root_hash, effects).unwrap();
+        let updated_hash = state
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
 
         let updated_checkout = state.checkout(updated_hash).unwrap().unwrap();
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap()
+                updated_checkout.read(correlation_id.clone(), &key).unwrap()
             );
         }
 
@@ -560,13 +567,15 @@ mod tests {
         for TestPair { key, value } in create_test_pairs().iter().cloned() {
             assert_eq!(
                 Some(value),
-                original_checkout.read(correlation_id, &key).unwrap()
+                original_checkout
+                    .read(correlation_id.clone(), &key)
+                    .unwrap()
             );
         }
         assert_eq!(
             None,
             original_checkout
-                .read(correlation_id, &test_pairs_updated[2].key)
+                .read(correlation_id.clone(), &test_pairs_updated[2].key)
                 .unwrap()
         );
     }
@@ -578,7 +587,7 @@ mod tests {
 
         // Expect `Trie` with NodePointer when asking with a root hash.
         let trie = state
-            .get_trie(correlation_id, TrieOrChunkId(0, root_hash))
+            .get_trie(correlation_id.clone(), TrieOrChunkId(0, root_hash))
             .expect("should get trie correctly")
             .expect("should be Some()");
         assert!(matches!(trie, TrieOrChunk::Trie(_)));
@@ -586,7 +595,7 @@ mod tests {
         // Expect another `Trie` with two LeafPointers.
         let trie = state
             .get_trie(
-                correlation_id,
+                correlation_id.clone(),
                 TrieOrChunkId(0, extract_next_hash_from_trie(trie)),
             )
             .expect("should get trie correctly")
@@ -597,7 +606,7 @@ mod tests {
         // contains large data, so we expect to get `ChunkWithProof`.
         let hash = extract_next_hash_from_trie(trie);
         let chunk = match state
-            .get_trie(correlation_id, TrieOrChunkId(0, hash))
+            .get_trie(correlation_id.clone(), TrieOrChunkId(0, hash))
             .expect("should get trie correctly")
             .expect("should be Some()")
         {
@@ -612,7 +621,7 @@ mod tests {
         let mut chunks = vec![chunk];
         for i in 1..count {
             let chunk = match state
-                .get_trie(correlation_id, TrieOrChunkId(i, hash))
+                .get_trie(correlation_id.clone(), TrieOrChunkId(i, hash))
                 .expect("should get trie correctly")
                 .expect("should be Some()")
             {
@@ -624,7 +633,7 @@ mod tests {
 
         // there should be no chunk with index `count`
         assert!(matches!(
-            state.get_trie(correlation_id, TrieOrChunkId(count, hash)),
+            state.get_trie(correlation_id.clone(), TrieOrChunkId(count, hash)),
             Err(error::Error::MerkleConstruction(_))
         ));
 

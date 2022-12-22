@@ -155,7 +155,7 @@ where
             gas_counter: Arc::new(RwLock::new(gas_counter)),
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id: correlation_id.clone(),
             phase,
             engine_config,
             transfers: Arc::new(RwLock::new(transfers)),
@@ -183,7 +183,7 @@ where
         let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
-        let correlation_id = self.correlation_id;
+        let correlation_id = self.correlation_id.clone();
         let phase = self.phase;
         let engine_config = self.engine_config;
         let transfers = self.transfers.clone();
@@ -204,7 +204,7 @@ where
             gas_counter,
             address_generator,
             protocol_version,
-            correlation_id,
+            correlation_id: correlation_id.clone(),
             phase,
             engine_config,
             transfers,
@@ -271,7 +271,7 @@ where
                         .tracking_copy
                         .write()
                         .unwrap()
-                        .read(self.correlation_id, &contract_uref)
+                        .read(self.correlation_id.clone(), &contract_uref)
                         .map_err(Into::into)?
                         .ok_or(Error::KeyNotFound(contract_uref))?;
 
@@ -422,8 +422,8 @@ where
     }
 
     /// Returns the correlation id.
-    pub fn correlation_id(&self) -> CorrelationId {
-        self.correlation_id
+    pub fn correlation_id(&self) -> &CorrelationId {
+        &self.correlation_id
     }
 
     /// Returns the current phase.
@@ -484,7 +484,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(self.correlation_id, &Key::Hash(purse_uref.addr()))
+            .read(self.correlation_id.clone(), &Key::Hash(purse_uref.addr()))
             .map_err(Into::into)?
         {
             Some(stored_value) => Ok(Some(stored_value.try_into().map_err(Error::TypeMismatch)?)),
@@ -510,7 +510,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(self.correlation_id, key)
+            .read(self.correlation_id.clone(), key)
             .map_err(Into::into)?;
 
         let stored_value = match maybe_stored_value {
@@ -531,7 +531,7 @@ where
         self.tracking_copy
             .write()
             .unwrap()
-            .read(self.correlation_id, key)
+            .read(self.correlation_id.clone(), key)
             .map_err(Into::into)
     }
 
@@ -562,7 +562,7 @@ where
         self.tracking_copy
             .write()
             .unwrap()
-            .get_keys(self.correlation_id, key_tag)
+            .get_keys(self.correlation_id.clone(), key_tag)
             .map_err(Into::into)
     }
 
@@ -573,7 +573,7 @@ where
             self.tracking_copy
                 .write()
                 .unwrap()
-                .read(self.correlation_id, key)
+                .read(self.correlation_id.clone(), key)
                 .map_err(Into::into)
         } else {
             panic!("Do not use this function for reading from non-account keys")
@@ -975,7 +975,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .add(self.correlation_id, key, value)
+            .add(self.correlation_id.clone(), key, value)
         {
             Err(storage_error) => Err(storage_error.into()),
             Ok(AddResult::Success) => Ok(()),
@@ -1230,7 +1230,7 @@ where
             .tracking_copy
             .write()
             .unwrap()
-            .read(self.correlation_id, &dictionary_key)
+            .read(self.correlation_id.clone(), &dictionary_key)
             .map_err(Into::into)?;
 
         if let Some(stored_value) = maybe_stored_value {
@@ -1289,7 +1289,7 @@ where
         self.tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(self.correlation_id)
+            .get_system_contracts(self.correlation_id.clone())
             .map_err(|_| {
                 error!("Missing system contract registry");
                 Error::MissingSystemContractRegistry

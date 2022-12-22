@@ -14,7 +14,7 @@ mod empty_tries {
             let initial_states = vec![root_hash];
 
             writes_to_n_leaf_empty_trie_had_expected_results::<_, _, _, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_states,
@@ -33,7 +33,7 @@ mod empty_tries {
             let initial_states = vec![root_hash];
 
             writes_to_n_leaf_empty_trie_had_expected_results::<_, _, _, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_states,
@@ -52,7 +52,7 @@ mod empty_tries {
             let initial_states = vec![root_hash];
 
             writes_to_n_leaf_empty_trie_had_expected_results::<_, _, _, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_states,
@@ -71,7 +71,7 @@ mod empty_tries {
             let initial_states = vec![root_hash];
 
             writes_to_n_leaf_empty_trie_had_expected_results::<_, _, _, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_states,
@@ -100,7 +100,7 @@ mod empty_tries {
             let context = InMemoryTestContext::new(&tries).unwrap();
 
             write_leaves::<_, _, _, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &root_hash,
@@ -133,7 +133,7 @@ mod partial_tries {
     {
         // Check that the expected set of leaves is in the trie
         check_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             &states[0],
@@ -143,7 +143,7 @@ mod partial_tries {
 
         // Rewrite that set of leaves
         let write_results = write_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             &states[0],
@@ -156,7 +156,7 @@ mod partial_tries {
 
         // Check that the expected set of leaves is in the trie
         check_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             &states[0],
@@ -174,7 +174,7 @@ mod partial_tries {
             let states = vec![root_hash];
 
             noop_writes_to_n_leaf_partial_trie_had_expected_results::<_, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -193,7 +193,7 @@ mod partial_tries {
             let states = vec![root_hash];
 
             noop_writes_to_n_leaf_partial_trie_had_expected_results::<_, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -220,7 +220,7 @@ mod partial_tries {
 
         // Check that the expected set of leaves is in the trie
         check_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             &states[0],
@@ -242,7 +242,7 @@ mod partial_tries {
             let root_hash = {
                 let current_root = states.last().unwrap();
                 let results = write_leaves::<_, _, _, _, E>(
-                    correlation_id,
+                    correlation_id.clone(),
                     environment,
                     store,
                     current_root,
@@ -259,7 +259,7 @@ mod partial_tries {
 
             // Check that the expected set of leaves is in the trie
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 states.last().unwrap(),
@@ -280,7 +280,7 @@ mod partial_tries {
             let initial_states = vec![root_hash];
 
             update_writes_to_n_leaf_partial_trie_had_expected_results::<_, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_states,
@@ -299,7 +299,7 @@ mod partial_tries {
             let states = vec![root_hash];
 
             update_writes_to_n_leaf_partial_trie_had_expected_results::<_, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -329,7 +329,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (num_leaves, state) in states[..index].iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -340,7 +340,7 @@ mod full_tries {
 
         // Rewrite that set of leaves
         let write_results = write_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             states.last().unwrap(),
@@ -354,7 +354,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (num_leaves, state) in states[..index].iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -378,7 +378,7 @@ mod full_tries {
             states.push(root_hash);
 
             noop_writes_to_n_leaf_full_trie_had_expected_results::<_, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -400,7 +400,7 @@ mod full_tries {
             states.push(root_hash);
 
             noop_writes_to_n_leaf_full_trie_had_expected_results::<_, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -428,7 +428,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (state_index, state) in states.iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -439,7 +439,7 @@ mod full_tries {
 
         // Write set of leaves to the trie
         let hashes = write_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             states.last().unwrap(),
@@ -478,7 +478,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (state_index, state) in states.iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -502,7 +502,7 @@ mod full_tries {
             states.push(root_hash);
 
             update_writes_to_n_leaf_full_trie_had_expected_results::<_, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -524,7 +524,7 @@ mod full_tries {
             states.push(root_hash);
 
             update_writes_to_n_leaf_full_trie_had_expected_results::<_, _, in_memory::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &states,
@@ -552,7 +552,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (state_index, state) in states.iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -563,7 +563,7 @@ mod full_tries {
 
         // Write set of leaves to the trie
         let hashes = write_leaves::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             environment,
             store,
             states.last().unwrap(),
@@ -602,7 +602,7 @@ mod full_tries {
         // Check that the expected set of leaves is in the trie at every state reference
         for (state_index, state) in states.iter().enumerate() {
             check_leaves::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 environment,
                 store,
                 state,
@@ -626,7 +626,7 @@ mod full_tries {
         }
 
         node_writes_to_5_leaf_full_trie_had_expected_results::<_, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &states,
@@ -647,7 +647,7 @@ mod full_tries {
         }
 
         node_writes_to_5_leaf_full_trie_had_expected_results::<_, _, in_memory::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &states,

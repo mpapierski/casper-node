@@ -525,7 +525,7 @@ where
 
     let key_bytes = key_to_delete.to_bytes()?;
     let TrieScan { tip, mut parents } =
-        match scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)? {
+        match scan::<_, _, _, _, E>(correlation_id.clone(), txn, store, &key_bytes, &root_trie)? {
             Some(trie_scan) => trie_scan,
             None => return Ok(DeleteResult::DoesNotExist),
         };
@@ -975,14 +975,19 @@ where
                 value: value.to_owned(),
             };
             let path: Vec<u8> = key.to_bytes()?;
-            let TrieScan { tip, parents } =
-                match scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)? {
-                    Some(trie_scan) => trie_scan,
-                    // If we are scanning the trie and it's not complete under the given root, then
-                    // in the context of a write we must consider this root to "not exist".
-                    // This can happen when a trie is being sync'd or is incomplete.
-                    None => return Ok(WriteResult::RootNotFound),
-                };
+            let TrieScan { tip, parents } = match scan::<K, V, T, S, E>(
+                correlation_id.clone(),
+                txn,
+                store,
+                &path,
+                &current_root,
+            )? {
+                Some(trie_scan) => trie_scan,
+                // If we are scanning the trie and it's not complete under the given root, then
+                // in the context of a write we must consider this root to "not exist".
+                // This can happen when a trie is being sync'd or is incomplete.
+                None => return Ok(WriteResult::RootNotFound),
+            };
             let new_elements: Vec<(Digest, Trie<K, V>)> = match tip {
                 // If the "tip" is the same as the new leaf, then the leaf
                 // is already in the Trie.
@@ -1228,7 +1233,7 @@ where
     S: TrieStore<K, V>,
     S::Error: From<T::Error>,
 {
-    keys_with_prefix(correlation_id, txn, store, root, &[])
+    keys_with_prefix(correlation_id.clone(), txn, store, root, &[])
 }
 
 /// Returns the iterator over the keys in the subtrie matching `prefix`.

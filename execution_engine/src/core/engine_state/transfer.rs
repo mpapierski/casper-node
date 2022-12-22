@@ -138,7 +138,7 @@ impl TransferRuntimeArgsBuilder {
         let key = match tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance_key(correlation_id, uref.into())
+            .get_purse_balance_key(correlation_id.clone(), uref.into())
         {
             Ok(key) => key,
             Err(_) => return false,
@@ -146,7 +146,7 @@ impl TransferRuntimeArgsBuilder {
         tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance(correlation_id, key)
+            .get_purse_balance(correlation_id.clone(), key)
             .is_ok()
     }
 
@@ -188,7 +188,7 @@ impl TransferRuntimeArgsBuilder {
                             // it is a URef and caller has access but is it a purse URef?
                             if !self.purse_exists(
                                 found_uref.to_owned(),
-                                correlation_id,
+                                correlation_id.clone(),
                                 tracking_copy,
                             ) {
                                 return Err(Error::reverter(ApiError::InvalidPurse));
@@ -243,7 +243,7 @@ impl TransferRuntimeArgsBuilder {
             Some(cl_value) if *cl_value.cl_type() == CLType::URef => {
                 let uref: URef = cl_value.clone().into_t().map_err(Error::reverter)?;
 
-                if !self.purse_exists(uref, correlation_id, tracking_copy) {
+                if !self.purse_exists(uref, correlation_id.clone(), tracking_copy) {
                     return Err(Error::reverter(ApiError::InvalidPurse));
                 }
 
@@ -275,7 +275,7 @@ impl TransferRuntimeArgsBuilder {
         match tracking_copy
             .write()
             .unwrap()
-            .read_account(correlation_id, account_hash)
+            .read_account(correlation_id.clone(), account_hash)
         {
             Ok(account) => Ok(TransferTargetMode::PurseExists(
                 account.main_purse().with_access_rights(AccessRights::ADD),
@@ -336,7 +336,7 @@ impl TransferRuntimeArgsBuilder {
         if mode != TransferTargetMode::Unknown {
             return Ok(mode);
         }
-        match self.resolve_transfer_target_mode(correlation_id, tracking_copy) {
+        match self.resolve_transfer_target_mode(correlation_id.clone(), tracking_copy) {
             Ok(mode) => {
                 self.transfer_target_mode = mode;
                 Ok(mode)
@@ -358,16 +358,17 @@ impl TransferRuntimeArgsBuilder {
     {
         let to = self.to;
 
-        let target_uref =
-            match self.resolve_transfer_target_mode(correlation_id, Arc::clone(&tracking_copy))? {
-                TransferTargetMode::PurseExists(uref) => uref,
-                _ => {
-                    return Err(Error::reverter(ApiError::Transfer));
-                }
-            };
+        let target_uref = match self
+            .resolve_transfer_target_mode(correlation_id.clone(), Arc::clone(&tracking_copy))?
+        {
+            TransferTargetMode::PurseExists(uref) => uref,
+            _ => {
+                return Err(Error::reverter(ApiError::Transfer));
+            }
+        };
 
         let source_uref =
-            self.resolve_source_uref(from, correlation_id, Arc::clone(&tracking_copy))?;
+            self.resolve_source_uref(from, correlation_id.clone(), Arc::clone(&tracking_copy))?;
 
         if source_uref.addr() == target_uref.addr() {
             return Err(Error::reverter(ApiError::InvalidPurse));

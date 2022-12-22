@@ -16,7 +16,7 @@ where
     S::Error: From<T::Error>,
     E: From<S::Error> + From<bytesrepr::Error>,
 {
-    operations::delete::<K, V, T, S, E>(correlation_id, txn, store, root, key_to_delete)
+    operations::delete::<K, V, T, S, E>(correlation_id.clone(), txn, store, root, key_to_delete)
 }
 
 mod partial_tries {
@@ -44,7 +44,7 @@ mod partial_tries {
         // The assert below only works with partial tries
         assert_eq!(store.get(&txn, expected_root_after_delete)?, None);
         let root_after_delete = match checked_delete::<K, V, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             &mut txn,
             store,
             root,
@@ -71,7 +71,7 @@ mod partial_tries {
             let context = LmdbTestContext::new(&initial_tries).unwrap();
 
             delete_from_partial_trie_had_expected_results::<TestKey, TestValue, _, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_root_hash,
@@ -93,7 +93,7 @@ mod partial_tries {
             let context = InMemoryTestContext::new(&initial_tries).unwrap();
 
             delete_from_partial_trie_had_expected_results::<TestKey, TestValue, _, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_root_hash,
@@ -121,8 +121,13 @@ mod partial_tries {
         E: From<R::Error> + From<S::Error> + From<bytesrepr::Error>,
     {
         let mut txn = environment.create_read_write_txn()?;
-        match checked_delete::<K, V, _, _, E>(correlation_id, &mut txn, store, root, key_to_delete)?
-        {
+        match checked_delete::<K, V, _, _, E>(
+            correlation_id.clone(),
+            &mut txn,
+            store,
+            root,
+            key_to_delete,
+        )? {
             DeleteResult::Deleted(_) => panic!("should not delete"),
             DeleteResult::DoesNotExist => Ok(()),
             DeleteResult::RootNotFound => panic!("root should be found"),
@@ -144,7 +149,7 @@ mod partial_tries {
                 _,
                 error::Error,
             >(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_root_hash,
@@ -169,7 +174,7 @@ mod partial_tries {
                 _,
                 error::Error,
             >(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &initial_root_hash,
@@ -231,7 +236,7 @@ mod full_tries {
         // Insert the key-value pairs, keeping track of the roots as we go
         for (key, value) in pairs {
             if let WriteResult::Written(new_root) = write::<K, V, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 &mut txn,
                 store,
                 roots.last().unwrap_or(root),
@@ -246,9 +251,13 @@ mod full_tries {
         // Delete the key-value pairs, checking the resulting roots as we go
         let mut current_root = roots.pop().unwrap_or_else(|| root.to_owned());
         for (key, _value) in pairs.iter().rev() {
-            if let DeleteResult::Deleted(new_root) =
-                delete::<K, V, _, _, E>(correlation_id, &mut txn, store, &current_root, key)?
-            {
+            if let DeleteResult::Deleted(new_root) = delete::<K, V, _, _, E>(
+                correlation_id.clone(),
+                &mut txn,
+                store,
+                &current_root,
+                key,
+            )? {
                 current_root = roots.pop().unwrap_or_else(|| root.to_owned());
                 assert_eq!(new_root, current_root);
             } else {
@@ -265,7 +274,7 @@ mod full_tries {
         let context = LmdbTestContext::new(&empty_trie).unwrap();
 
         serially_insert_and_delete::<TestKey, TestValue, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &empty_root_hash,
@@ -286,7 +295,7 @@ mod full_tries {
         let context = InMemoryTestContext::new(&empty_trie).unwrap();
 
         serially_insert_and_delete::<TestKey, TestValue, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &empty_root_hash,
@@ -328,16 +337,27 @@ mod full_tries {
         let mut expected_root = *root;
         // Insert the key-value pairs, keeping track of the roots as we go
         for (key, value) in pairs_to_insert.iter() {
-            if let WriteResult::Written(new_root) =
-                write::<K, V, _, _, E>(correlation_id, &mut txn, store, &expected_root, key, value)?
-            {
+            if let WriteResult::Written(new_root) = write::<K, V, _, _, E>(
+                correlation_id.clone(),
+                &mut txn,
+                store,
+                &expected_root,
+                key,
+                value,
+            )? {
                 expected_root = new_root;
             } else {
                 panic!("Could not write pair")
             }
         }
         for key in keys_to_delete.iter() {
-            match delete::<K, V, _, _, E>(correlation_id, &mut txn, store, &expected_root, key)? {
+            match delete::<K, V, _, _, E>(
+                correlation_id.clone(),
+                &mut txn,
+                store,
+                &expected_root,
+                key,
+            )? {
                 DeleteResult::Deleted(new_root) => {
                     expected_root = new_root;
                 }
@@ -355,9 +375,14 @@ mod full_tries {
 
         let mut actual_root = *root;
         for (key, value) in pairs_to_insert_less_deleted.iter() {
-            if let WriteResult::Written(new_root) =
-                write::<K, V, _, _, E>(correlation_id, &mut txn, store, &actual_root, key, value)?
-            {
+            if let WriteResult::Written(new_root) = write::<K, V, _, _, E>(
+                correlation_id.clone(),
+                &mut txn,
+                store,
+                &actual_root,
+                key,
+                value,
+            )? {
                 actual_root = new_root;
             } else {
                 panic!("Could not write pair")
@@ -376,7 +401,7 @@ mod full_tries {
         let context = LmdbTestContext::new(&empty_trie).unwrap();
 
         interleaved_insert_and_delete::<TestKey, TestValue, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &empty_root_hash,
@@ -393,7 +418,7 @@ mod full_tries {
         let context = InMemoryTestContext::new(&empty_trie).unwrap();
 
         interleaved_insert_and_delete::<TestKey, TestValue, _, _, error::Error>(
-            correlation_id,
+            correlation_id.clone(),
             &context.environment,
             &context.store,
             &empty_root_hash,
@@ -435,7 +460,7 @@ mod full_tries {
             };
 
             interleaved_insert_and_delete::<Key, StoredValue, _, _, error::Error>(
-                correlation_id,
+                correlation_id.clone(),
                 &context.environment,
                 &context.store,
                 &empty_root_hash,

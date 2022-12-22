@@ -854,7 +854,7 @@ impl ExecutionKind {
                 contract_package = tracking_copy
                     .write()
                     .unwrap()
-                    .get_contract_package(correlation_id, contract_package_hash)?;
+                    .get_contract_package(correlation_id.clone(), contract_package_hash)?;
 
                 let maybe_version_key =
                     version.map(|ver| ContractVersionKey::new(protocol_version.value().major, ver));
@@ -892,7 +892,7 @@ impl ExecutionKind {
                 contract_package = tracking_copy
                     .write()
                     .unwrap()
-                    .get_contract_package(correlation_id, contract_package_hash)?;
+                    .get_contract_package(correlation_id.clone(), contract_package_hash)?;
 
                 let maybe_version_key =
                     version.map(|ver| ContractVersionKey::new(protocol_version.value().major, ver));

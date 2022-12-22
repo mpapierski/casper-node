@@ -115,12 +115,12 @@ fn tracking_copy_caching() {
 
     let zero = StoredValue::CLValue(CLValue::from_t(0_i32).unwrap());
     // first read
-    let value = tc.read(correlation_id, &k).unwrap().unwrap();
+    let value = tc.read(correlation_id.clone(), &k).unwrap().unwrap();
     assert_eq!(value, zero);
 
     // second read; should use cache instead
     // of going back to the DB
-    let value = tc.read(correlation_id, &k).unwrap().unwrap();
+    let value = tc.read(correlation_id.clone(), &k).unwrap().unwrap();
     let db_value = counter.get();
     dbg!(&tc);
     assert_eq!(value, zero);
@@ -136,7 +136,7 @@ fn tracking_copy_read() {
     let k = Key::Hash([0u8; 32]);
 
     let zero = StoredValue::CLValue(CLValue::from_t(0_i32).unwrap());
-    let value = tc.read(correlation_id, &k).unwrap().unwrap();
+    let value = tc.read(correlation_id.clone(), &k).unwrap().unwrap();
     // value read correctly
     assert_eq!(value, zero);
     // Reading does produce an identity transform.
@@ -188,7 +188,7 @@ fn tracking_copy_add_i32() {
     let three = StoredValue::CLValue(CLValue::from_t(3_i32).unwrap());
 
     // adding should work
-    let add = tc.add(correlation_id, k, three.clone());
+    let add = tc.add(correlation_id.clone(), k, three.clone());
     assert_matches!(add, Ok(_));
 
     // Adding creates an add transform.
@@ -198,7 +198,7 @@ fn tracking_copy_add_i32() {
     );
 
     // adding again should update the values
-    let add = tc.add(correlation_id, k, three);
+    let add = tc.add(correlation_id.clone(), k, three);
     assert_matches!(add, Ok(_));
     assert_eq!(
         tc.execution_journal(),
@@ -234,7 +234,7 @@ fn tracking_copy_add_named_key() {
 
     // adding the wrong type should fail
     let failed_add = tc.add(
-        correlation_id,
+        correlation_id.clone(),
         k,
         StoredValue::CLValue(CLValue::from_t(3_i32).unwrap()),
     );
@@ -242,7 +242,7 @@ fn tracking_copy_add_named_key() {
     assert!(tc.execution_journal().is_empty());
 
     // adding correct type works
-    let add = tc.add(correlation_id, k, named_key);
+    let add = tc.add(correlation_id.clone(), k, named_key);
     assert_matches!(add, Ok(_));
     assert_eq!(
         tc.execution_journal(),
@@ -254,7 +254,7 @@ fn tracking_copy_add_named_key() {
 
     // adding again updates the values
     map.insert(name2.clone(), u2);
-    let add = tc.add(correlation_id, k, other_named_key);
+    let add = tc.add(correlation_id.clone(), k, other_named_key);
     assert_matches!(add, Ok(_));
     assert_eq!(
         tc.execution_journal(),
@@ -275,7 +275,7 @@ fn tracking_copy_rw() {
 
     // reading then writing should update the op
     let value = StoredValue::CLValue(CLValue::from_t(3_i32).unwrap());
-    let _ = tc.read(correlation_id, &k);
+    let _ = tc.read(correlation_id.clone(), &k);
     tc.write(k, value.clone());
     assert_eq!(
         tc.execution_journal(),
@@ -293,8 +293,8 @@ fn tracking_copy_ra() {
 
     // reading then adding should update the op
     let value = StoredValue::CLValue(CLValue::from_t(3_i32).unwrap());
-    let _ = tc.read(correlation_id, &k);
-    let _ = tc.add(correlation_id, k, value);
+    let _ = tc.read(correlation_id.clone(), &k);
+    let _ = tc.add(correlation_id.clone(), k, value);
     assert_eq!(
         tc.execution_journal(),
         ExecutionJournal::new(vec![(k, Transform::Identity), (k, Transform::AddInt32(3))])
@@ -312,7 +312,7 @@ fn tracking_copy_aw() {
     // adding then writing should update the op
     let value = StoredValue::CLValue(CLValue::from_t(3_i32).unwrap());
     let write_value = StoredValue::CLValue(CLValue::from_t(7_i32).unwrap());
-    let _ = tc.add(correlation_id, k, value);
+    let _ = tc.add(correlation_id.clone(), k, value);
     tc.write(k, write_value.clone());
     assert_eq!(
         tc.execution_journal(),
@@ -330,18 +330,18 @@ proptest! {
 
         let value = dictionary::handle_stored_value_into(k, v.clone()).unwrap();
 
-        let (gs, root_hash) = InMemoryGlobalState::from_pairs(correlation_id, &[(k, value)]).unwrap();
+        let (gs, root_hash) = InMemoryGlobalState::from_pairs(correlation_id.clone(), &[(k, value)]).unwrap();
         let view = gs.checkout(root_hash).unwrap().unwrap();
         let tc = TrackingCopy::new(view);
         let empty_path = Vec::new();
-        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id, &EngineConfig::default(), k, &empty_path) {
+        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id.clone(), &EngineConfig::default(), k, &empty_path) {
             assert_eq!(v, value);
         } else {
             panic!("Query failed when it should not have!");
         }
 
         if missing_key != k {
-            let result = tc.query(correlation_id, &EngineConfig::default(), missing_key, &empty_path);
+            let result = tc.query(correlation_id.clone(), &EngineConfig::default(), missing_key, &empty_path);
             assert_matches!(result, Ok(TrackingCopyQueryResult::ValueNotFound(_)));
         }
     }
@@ -370,20 +370,20 @@ proptest! {
         let value = dictionary::handle_stored_value_into(k, v.clone()).unwrap();
 
         let (gs, root_hash) = InMemoryGlobalState::from_pairs(
-            correlation_id,
+            correlation_id.clone(),
             &[(k, value), (contract_key, contract)]
         ).unwrap();
         let view = gs.checkout(root_hash).unwrap().unwrap();
         let tc = TrackingCopy::new(view);
         let path = vec!(name.clone());
-        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id, &EngineConfig::default(), contract_key, &path) {
+        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id.clone(), &EngineConfig::default(), contract_key, &path) {
             assert_eq!(v, value);
         } else {
             panic!("Query failed when it should not have!");
         }
 
         if missing_name != name {
-            let result = tc.query(correlation_id, &EngineConfig::default(), contract_key, &[missing_name]);
+            let result = tc.query(correlation_id.clone(), &EngineConfig::default(), contract_key, &[missing_name]);
             assert_matches!(result, Ok(TrackingCopyQueryResult::ValueNotFound(_)));
         }
     }
@@ -413,20 +413,20 @@ proptest! {
         let value = dictionary::handle_stored_value_into(k, v.clone()).unwrap();
 
         let (gs, root_hash) = InMemoryGlobalState::from_pairs(
-            correlation_id,
+            correlation_id.clone(),
             &[(k, value), (account_key, StoredValue::Account(account))],
         ).unwrap();
         let view = gs.checkout(root_hash).unwrap().unwrap();
         let tc = TrackingCopy::new(view);
         let path = vec!(name.clone());
-        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id, &EngineConfig::default(),account_key, &path) {
+        if let Ok(TrackingCopyQueryResult::Success { value, .. }) = tc.query(correlation_id.clone(), &EngineConfig::default(),account_key, &path) {
             assert_eq!(v, value);
         } else {
             panic!("Query failed when it should not have!");
         }
 
         if missing_name != name {
-            let result = tc.query(correlation_id, &EngineConfig::default(), account_key, &[missing_name]);
+            let result = tc.query(correlation_id.clone(), &EngineConfig::default(), account_key, &[missing_name]);
             assert_matches!(result, Ok(TrackingCopyQueryResult::ValueNotFound(_)));
         }
     }
@@ -471,7 +471,7 @@ proptest! {
 
         let value = dictionary::handle_stored_value_into(k, v.clone()).unwrap();
 
-        let (gs, root_hash) = InMemoryGlobalState::from_pairs(correlation_id, &[
+        let (gs, root_hash) = InMemoryGlobalState::from_pairs(correlation_id.clone(), &[
             (k, value),
             (contract_key, contract),
             (account_key, StoredValue::Account(account)),
@@ -480,7 +480,7 @@ proptest! {
         let tc = TrackingCopy::new(view);
         let path = vec!(contract_name, state_name);
 
-        let results =  tc.query(correlation_id, &EngineConfig::default(), account_key, &path);
+        let results =  tc.query(correlation_id.clone(), &EngineConfig::default(), account_key, &path);
         if let Ok(TrackingCopyQueryResult::Success { value, .. }) = results {
             assert_eq!(v, value);
         } else {
@@ -560,7 +560,7 @@ fn query_for_circular_references_should_fail() {
 
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) = InMemoryGlobalState::from_pairs(
-        correlation_id,
+        correlation_id.clone(),
         &[(cl_value_key, cl_value), (contract_key, contract)],
     )
     .unwrap();
@@ -571,7 +571,7 @@ fn query_for_circular_references_should_fail() {
     // iteration _into_ the self-referential key)
     let path = vec![key_name, String::new()];
     if let Ok(TrackingCopyQueryResult::CircularReference(msg)) = tracking_copy.query(
-        correlation_id,
+        correlation_id.clone(),
         &EngineConfig::default(),
         contract_key,
         &path,
@@ -585,7 +585,7 @@ fn query_for_circular_references_should_fail() {
     // query for itself in its own named keys
     let path = vec![contract_name];
     if let Ok(TrackingCopyQueryResult::CircularReference(msg)) = tracking_copy.query(
-        correlation_id,
+        correlation_id.clone(),
         &EngineConfig::default(),
         contract_key,
         &path,
@@ -646,7 +646,7 @@ fn validate_query_proof_should_work() {
     // persist them
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) = InMemoryGlobalState::from_pairs(
-        correlation_id,
+        correlation_id.clone(),
         &[
             (account_key, account_value.to_owned()),
             (contract_key, contract_value.to_owned()),
@@ -667,7 +667,7 @@ fn validate_query_proof_should_work() {
 
     let result = tracking_copy
         .query(
-            correlation_id,
+            correlation_id.clone(),
             &EngineConfig::default(),
             main_account_key,
             path,
@@ -742,7 +742,12 @@ fn validate_query_proof_should_work() {
     );
 
     let misfit_result = tracking_copy
-        .query(correlation_id, &EngineConfig::default(), uref_key, &[])
+        .query(
+            correlation_id.clone(),
+            &EngineConfig::default(),
+            uref_key,
+            &[],
+        )
         .expect("should query");
 
     let misfit_proof = if let TrackingCopyQueryResult::Success { proofs, .. } = misfit_result {
@@ -796,7 +801,7 @@ fn validate_query_proof_should_work() {
     );
 
     let (misfit_global_state, misfit_root_hash) = InMemoryGlobalState::from_pairs(
-        correlation_id,
+        correlation_id.clone(),
         &[
             (account_key, account_value.to_owned()),
             (contract_key, contract_value),
@@ -814,7 +819,7 @@ fn validate_query_proof_should_work() {
 
     let misfit_result = misfit_tracking_copy
         .query(
-            correlation_id,
+            correlation_id.clone(),
             &EngineConfig::default(),
             main_account_key,
             path,
@@ -870,7 +875,7 @@ fn get_keys_should_return_keys_in_the_account_keyspace() {
     // persist them
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) = InMemoryGlobalState::from_pairs(
-        correlation_id,
+        correlation_id.clone(),
         &[
             (account_1_key, account_1_value),
             (account_2_key, account_2_value),
@@ -887,7 +892,7 @@ fn get_keys_should_return_keys_in_the_account_keyspace() {
     let mut tracking_copy = TrackingCopy::new(view);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::Account)
+        .get_keys(correlation_id.clone(), &KeyTag::Account)
         .unwrap();
 
     assert_eq!(key_set.len(), 2);
@@ -921,7 +926,7 @@ fn get_keys_should_return_keys_in_the_uref_keyspace() {
     // persist them
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) = InMemoryGlobalState::from_pairs(
-        correlation_id,
+        correlation_id.clone(),
         &[
             (account_key, account_value),
             (uref_1_key, uref_1_value),
@@ -938,7 +943,7 @@ fn get_keys_should_return_keys_in_the_uref_keyspace() {
     let mut tracking_copy = TrackingCopy::new(view);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 2);
@@ -953,7 +958,7 @@ fn get_keys_should_return_keys_in_the_uref_keyspace() {
     tracking_copy.write(uref_3_key, uref_3_value);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 3);
@@ -966,7 +971,8 @@ fn get_keys_should_return_keys_in_the_uref_keyspace() {
 #[test]
 fn get_keys_should_handle_reads_from_empty_trie() {
     let correlation_id = CorrelationId::new();
-    let (global_state, root_hash) = InMemoryGlobalState::from_pairs(correlation_id, &[]).unwrap();
+    let (global_state, root_hash) =
+        InMemoryGlobalState::from_pairs(correlation_id.clone(), &[]).unwrap();
 
     let view = global_state
         .checkout(root_hash)
@@ -976,7 +982,7 @@ fn get_keys_should_handle_reads_from_empty_trie() {
     let mut tracking_copy = TrackingCopy::new(view);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 0);
@@ -989,7 +995,7 @@ fn get_keys_should_handle_reads_from_empty_trie() {
     tracking_copy.write(uref_1_key, uref_1_value);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 1);
@@ -1002,7 +1008,7 @@ fn get_keys_should_handle_reads_from_empty_trie() {
     tracking_copy.write(uref_2_key, uref_2_value);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 2);
@@ -1032,7 +1038,7 @@ fn get_keys_should_handle_reads_from_empty_trie() {
     tracking_copy.write(uref_3_key, uref_3_value);
 
     let key_set = tracking_copy
-        .get_keys(correlation_id, &KeyTag::URef)
+        .get_keys(correlation_id.clone(), &KeyTag::URef)
         .unwrap();
 
     assert_eq!(key_set.len(), 3);
@@ -1085,13 +1091,13 @@ fn query_with_large_depth_with_fixed_path_should_fail() {
 
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) =
-        InMemoryGlobalState::from_pairs(correlation_id, &pairs).unwrap();
+        InMemoryGlobalState::from_pairs(correlation_id.clone(), &pairs).unwrap();
 
     let view = global_state.checkout(root_hash).unwrap().unwrap();
     let tracking_copy = TrackingCopy::new(view);
 
     let contract_key = contract_keys[0];
-    let result = tracking_copy.query(correlation_id, &engine_config, contract_key, &path);
+    let result = tracking_copy.query(correlation_id.clone(), &engine_config, contract_key, &path);
 
     assert!(
         matches!(result, Ok(TrackingCopyQueryResult::DepthLimit {
@@ -1144,7 +1150,7 @@ fn query_with_large_depth_with_urefs_should_fail() {
 
     let correlation_id = CorrelationId::new();
     let (global_state, root_hash) =
-        InMemoryGlobalState::from_pairs(correlation_id, &pairs).unwrap();
+        InMemoryGlobalState::from_pairs(correlation_id.clone(), &pairs).unwrap();
 
     let view = global_state.checkout(root_hash).unwrap().unwrap();
     let tracking_copy = TrackingCopy::new(view);
@@ -1152,7 +1158,7 @@ fn query_with_large_depth_with_urefs_should_fail() {
     // query for the beginning of a long chain of urefs
     // (second path element of arbitrary value required to cause iteration _into_ the nested key)
     let path = vec![root_key_name, String::new()];
-    let result = tracking_copy.query(correlation_id, &engine_config, contract_key, &path);
+    let result = tracking_copy.query(correlation_id.clone(), &engine_config, contract_key, &path);
 
     assert!(
         matches!(result, Ok(TrackingCopyQueryResult::DepthLimit {

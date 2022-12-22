@@ -331,7 +331,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
         if let Some(value) = self.cache.read().unwrap().get(key) {
             return Ok(Some(value.to_owned()));
         }
-        if let Some(value) = self.reader.read(correlation_id, key)? {
+        if let Some(value) = self.reader.read(correlation_id.clone(), key)? {
             self.cache
                 .write()
                 .unwrap()
@@ -356,7 +356,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
                 let key_tag = key_tag.to_owned();
                 let keys = self
                     .reader
-                    .keys_with_prefix(correlation_id, &[key_tag as u8])?;
+                    .keys_with_prefix(correlation_id.clone(), &[key_tag as u8])?;
                 ret.extend(keys);
                 tracking_copy_cache.insert_key_tag_read(key_tag, ret.to_owned())
             }
@@ -374,7 +374,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
         key: &Key,
     ) -> Result<Option<StoredValue>, R::Error> {
         let normalized_key = key.normalize();
-        if let Some(value) = self.get(correlation_id, &normalized_key)? {
+        if let Some(value) = self.get(correlation_id.clone(), &normalized_key)? {
             self.journal
                 .write()
                 .unwrap()
@@ -410,7 +410,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
         value: StoredValue,
     ) -> Result<AddResult, R::Error> {
         let normalized_key = key.normalize();
-        let current_value = match self.get(correlation_id, &normalized_key)? {
+        let current_value = match self.get(correlation_id.clone(), &normalized_key)? {
             None => return Ok(AddResult::KeyNotFound(normalized_key)),
             Some(current_value) => current_value,
         };
@@ -521,7 +521,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
 
             let stored_value = match self
                 .reader
-                .read_with_proof(correlation_id, &query.current_key)?
+                .read_with_proof(correlation_id.clone(), &query.current_key)?
             {
                 None => {
                     return Ok(query.into_not_found_result("Failed to find base key"));
@@ -624,7 +624,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
         Option<TrieMerkleProof<Key, StoredValue>>,
         <R as StateReader<Key, StoredValue>>::Error,
     > {
-        self.reader.read_with_proof(correlation_id, key)
+        self.reader.read_with_proof(correlation_id.clone(), key)
     }
 
     fn keys_with_prefix(
@@ -632,7 +632,7 @@ impl<R: StateReader<Key, StoredValue> + Send + Sync> TrackingCopy<R> {
         correlation_id: CorrelationId,
         prefix: &[u8],
     ) -> Result<Vec<Key>, <R as StateReader<Key, StoredValue>>::Error> {
-        self.reader.keys_with_prefix(correlation_id, prefix)
+        self.reader.keys_with_prefix(correlation_id.clone(), prefix)
     }
 }
 
@@ -660,7 +660,7 @@ impl<R: Send + Sync + StateReader<Key, StoredValue>> StateReader<Key, StoredValu
         if let Some(value) = self.cache.read().unwrap().muts_cached.get(key) {
             return Ok(Some(value.to_owned()));
         }
-        if let Some(value) = self.reader.read(correlation_id, key)? {
+        if let Some(value) = self.reader.read(correlation_id.clone(), key)? {
             Ok(Some(value))
         } else {
             Ok(None)
@@ -672,7 +672,7 @@ impl<R: Send + Sync + StateReader<Key, StoredValue>> StateReader<Key, StoredValu
         correlation_id: CorrelationId,
         key: &Key,
     ) -> Result<Option<TrieMerkleProof<Key, StoredValue>>, Self::Error> {
-        self.reader.read_with_proof(correlation_id, key)
+        self.reader.read_with_proof(correlation_id.clone(), key)
     }
 
     fn keys_with_prefix(
@@ -680,7 +680,7 @@ impl<R: Send + Sync + StateReader<Key, StoredValue>> StateReader<Key, StoredValu
         correlation_id: CorrelationId,
         prefix: &[u8],
     ) -> Result<Vec<Key>, Self::Error> {
-        self.reader.keys_with_prefix(correlation_id, prefix)
+        self.reader.keys_with_prefix(correlation_id.clone(), prefix)
     }
 }
 

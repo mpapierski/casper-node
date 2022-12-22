@@ -101,7 +101,10 @@ where
         account_hash: AccountHash,
     ) -> Result<Account, Self::Error> {
         let account_key = Key::Account(account_hash);
-        match self.get(correlation_id, &account_key).map_err(Into::into)? {
+        match self
+            .get(correlation_id.clone(), &account_key)
+            .map_err(Into::into)?
+        {
             Some(StoredValue::Account(account)) => Ok(account),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("Account".to_string(), other.type_name()),
@@ -117,7 +120,7 @@ where
     ) -> Result<Account, Self::Error> {
         let account_key = Key::Account(account_hash);
         match self
-            .read(correlation_id, &account_key)
+            .read(correlation_id.clone(), &account_key)
             .map_err(Into::into)?
         {
             Some(StoredValue::Account(account)) => Ok(account),
@@ -145,7 +148,7 @@ where
         key: Key,
     ) -> Result<Motes, Self::Error> {
         let stored_value: StoredValue = self
-            .read(correlation_id, &key)
+            .read(correlation_id.clone(), &key)
             .map_err(Into::into)?
             .ok_or(execution::Error::KeyNotFound(key))?;
         let cl_value: CLValue = stored_value
@@ -164,7 +167,7 @@ where
             .uref_to_hash()
             .ok_or(execution::Error::KeyIsNotAURef(purse_key))?;
         let proof: TrieMerkleProof<Key, StoredValue> = self
-            .read_with_proof(correlation_id, &balance_key) // Key::Hash, so no need to normalize
+            .read_with_proof(correlation_id.clone(), &balance_key) // Key::Hash, so no need to normalize
             .map_err(Into::into)?
             .ok_or(execution::Error::KeyNotFound(purse_key))?;
         let stored_value_ref: &StoredValue = proof.value();
@@ -182,7 +185,7 @@ where
         key: Key,
     ) -> Result<(Motes, TrieMerkleProof<Key, StoredValue>), Self::Error> {
         let proof: TrieMerkleProof<Key, StoredValue> = self
-            .read_with_proof(correlation_id, &key.normalize())
+            .read_with_proof(correlation_id.clone(), &key.normalize())
             .map_err(Into::into)?
             .ok_or(execution::Error::KeyNotFound(key))?;
         let cl_value: CLValue = proof
@@ -201,7 +204,7 @@ where
         contract_wasm_hash: ContractWasmHash,
     ) -> Result<ContractWasm, Self::Error> {
         let key = contract_wasm_hash.into();
-        match self.get(correlation_id, &key).map_err(Into::into)? {
+        match self.get(correlation_id.clone(), &key).map_err(Into::into)? {
             Some(StoredValue::ContractWasm(contract_wasm)) => Ok(contract_wasm),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("ContractWasm".to_string(), other.type_name()),
@@ -217,7 +220,10 @@ where
         contract_hash: ContractHash,
     ) -> Result<Contract, Self::Error> {
         let key = contract_hash.into();
-        match self.read(correlation_id, &key).map_err(Into::into)? {
+        match self
+            .read(correlation_id.clone(), &key)
+            .map_err(Into::into)?
+        {
             Some(StoredValue::Contract(contract)) => Ok(contract),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("Contract".to_string(), other.type_name()),
@@ -232,7 +238,10 @@ where
         contract_package_hash: ContractPackageHash,
     ) -> Result<ContractPackage, Self::Error> {
         let key = contract_package_hash.into();
-        match self.read(correlation_id, &key).map_err(Into::into)? {
+        match self
+            .read(correlation_id.clone(), &key)
+            .map_err(Into::into)?
+        {
             Some(StoredValue::ContractPackage(contract_package)) => Ok(contract_package),
             Some(other) => Err(execution::Error::TypeMismatch(
                 StoredValueTypeMismatch::new("ContractPackage".to_string(), other.type_name()),
@@ -246,7 +255,7 @@ where
         correlation_id: CorrelationId,
     ) -> Result<SystemContractRegistry, Self::Error> {
         match self
-            .get(correlation_id, &Key::SystemContractRegistry)
+            .get(correlation_id.clone(), &Key::SystemContractRegistry)
             .map_err(Into::into)?
         {
             Some(StoredValue::CLValue(registry)) => {

@@ -35,7 +35,7 @@ mod partial_tries {
             let actual = {
                 let txn = context.environment.create_read_txn().unwrap();
                 let mut tmp = operations::keys::<TestKey, TestValue, _, _>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &txn,
                     &context.store,
                     &root_hash,
@@ -71,7 +71,7 @@ mod partial_tries {
             let actual = {
                 let txn = context.environment.create_read_txn().unwrap();
                 let mut tmp = operations::keys::<TestKey, TestValue, _, _>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &txn,
                     &context.store,
                     &root_hash,
@@ -132,7 +132,7 @@ mod full_tries {
                 let actual = {
                     let txn = context.environment.create_read_txn().unwrap();
                     let mut tmp = operations::keys::<TestKey, TestValue, _, _>(
-                        correlation_id,
+                        correlation_id.clone(),
                         &txn,
                         &context.store,
                         state,
@@ -222,7 +222,7 @@ mod keys_iterator {
         let context = return_on_err!(InMemoryTestContext::new(&tries));
         let txn = return_on_err!(context.environment.create_read_txn());
         let _tmp = operations::keys::<TestKey, TestValue, _, _>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             &context.store,
             &root_hash,
@@ -286,7 +286,7 @@ mod keys_with_prefix_iterator {
             .expect("should create a read txn");
         let expected = expected_keys(prefix);
         let mut actual = operations::keys_with_prefix::<TestKey, TestValue, _, _>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             &context.store,
             &root_hash,

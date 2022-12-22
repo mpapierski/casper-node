@@ -94,7 +94,7 @@ impl InMemoryGlobalState {
             for (key, value) in pairs {
                 let key = key.normalize();
                 match operations::write::<_, _, _, InMemoryTrieStore, in_memory::Error>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &mut txn,
                     &state.trie_store,
                     &current_root,
@@ -135,7 +135,7 @@ impl StateReader<Key, StoredValue> for InMemoryGlobalStateView {
             InMemoryTrieStore,
             Self::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -162,7 +162,7 @@ impl StateReader<Key, StoredValue> for InMemoryGlobalStateView {
             InMemoryTrieStore,
             Self::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -183,7 +183,7 @@ impl StateReader<Key, StoredValue> for InMemoryGlobalStateView {
     ) -> Result<Vec<Key>, Self::Error> {
         let txn = self.environment.create_read_txn()?;
         let keys_iter = keys_with_prefix::<Key, StoredValue, _, _>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.store.deref(),
             &self.root_hash,
@@ -211,7 +211,7 @@ impl CommitProvider for InMemoryGlobalState {
         commit::<InMemoryEnvironment, InMemoryTrieStore, _, Self::Error>(
             &self.environment,
             &self.trie_store,
-            correlation_id,
+            correlation_id.clone(),
             prestate_hash,
             effects,
         )
@@ -288,7 +288,7 @@ impl StateProvider for InMemoryGlobalState {
             InMemoryReadWriteTransaction,
             InMemoryTrieStore,
             Self::Error,
-        >(correlation_id, &mut txn, &self.trie_store, trie)?;
+        >(correlation_id.clone(), &mut txn, &self.trie_store, trie)?;
         txn.commit()?;
         Ok(trie_hash)
     }
@@ -307,7 +307,7 @@ impl StateProvider for InMemoryGlobalState {
             InMemoryTrieStore,
             Self::Error,
         >(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             self.trie_store.deref(),
             trie_keys,
@@ -379,7 +379,10 @@ mod tests {
         let (state, root_hash) = create_test_state();
         let checkout = state.checkout(root_hash).unwrap().unwrap();
         for TestPair { key, value } in create_test_pairs().iter().cloned() {
-            assert_eq!(Some(value), checkout.read(correlation_id, &key).unwrap());
+            assert_eq!(
+                Some(value),
+                checkout.read(correlation_id.clone(), &key).unwrap()
+            );
         }
     }
 
@@ -405,14 +408,16 @@ mod tests {
             .map(|TestPair { key, value }| (key, Transform::Write(value)))
             .collect();
 
-        let updated_hash = state.commit(correlation_id, root_hash, effects).unwrap();
+        let updated_hash = state
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
 
         let updated_checkout = state.checkout(updated_hash).unwrap().unwrap();
 
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap()
+                updated_checkout.read(correlation_id.clone(), &key).unwrap()
             );
         }
     }
@@ -432,13 +437,15 @@ mod tests {
             tmp
         };
 
-        let updated_hash = state.commit(correlation_id, root_hash, effects).unwrap();
+        let updated_hash = state
+            .commit(correlation_id.clone(), root_hash, effects)
+            .unwrap();
 
         let updated_checkout = state.checkout(updated_hash).unwrap().unwrap();
         for TestPair { key, value } in test_pairs_updated.iter().cloned() {
             assert_eq!(
                 Some(value),
-                updated_checkout.read(correlation_id, &key).unwrap()
+                updated_checkout.read(correlation_id.clone(), &key).unwrap()
             );
         }
 
@@ -446,13 +453,15 @@ mod tests {
         for TestPair { key, value } in create_test_pairs().iter().cloned() {
             assert_eq!(
                 Some(value),
-                original_checkout.read(correlation_id, &key).unwrap()
+                original_checkout
+                    .read(correlation_id.clone(), &key)
+                    .unwrap()
             );
         }
         assert_eq!(
             None,
             original_checkout
-                .read(correlation_id, &test_pairs_updated[2].key)
+                .read(correlation_id.clone(), &test_pairs_updated[2].key)
                 .unwrap()
         );
     }
@@ -464,7 +473,7 @@ mod tests {
             197, 117, 38, 12, 241, 62, 54, 241, 121, 165, 11, 8, 130, 189, 100, 252, 4, 102, 236,
             210, 91, 221, 123, 200, 135, 102, 194, 204, 46, 76, 13, 254,
         ];
-        let (_, root_hash) = InMemoryGlobalState::from_pairs(correlation_id, &[]).unwrap();
+        let (_, root_hash) = InMemoryGlobalState::from_pairs(correlation_id.clone(), &[]).unwrap();
         assert_eq!(expected_bytes, root_hash.into_vec())
     }
 }

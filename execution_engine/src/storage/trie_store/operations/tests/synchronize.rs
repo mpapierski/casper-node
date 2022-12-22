@@ -38,7 +38,7 @@ where
     {
         let txn: R::ReadTransaction = source_environment.create_read_txn()?;
         let missing_from_source = operations::missing_trie_keys::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             &txn,
             source_store,
             vec![root.to_owned()],
@@ -62,7 +62,7 @@ where
 
             // Now that we've added in `trie_to_insert`, queue up its children
             let new_keys = operations::missing_trie_keys::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 &target_txn,
                 target_store,
                 vec![trie_key],
@@ -79,7 +79,7 @@ where
     {
         let target_txn: R::ReadWriteTransaction = target_environment.create_read_write_txn()?;
         let missing_from_target = operations::missing_trie_keys::<_, _, _, _, E>(
-            correlation_id,
+            correlation_id.clone(),
             &target_txn,
             target_store,
             vec![root.to_owned()],
@@ -94,11 +94,11 @@ where
         let source_txn: R::ReadTransaction = source_environment.create_read_txn()?;
         let target_txn: R::ReadTransaction = target_environment.create_read_txn()?;
         let target_keys =
-            operations::keys::<_, _, _, _>(correlation_id, &target_txn, target_store, root)
+            operations::keys::<_, _, _, _>(correlation_id.clone(), &target_txn, target_store, root)
                 .collect::<Result<Vec<K>, S::Error>>()?;
         for key in target_keys {
             let maybe_value: ReadResult<V> = operations::read::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 &source_txn,
                 source_store,
                 root,
@@ -115,11 +115,11 @@ where
         let source_txn: R::ReadTransaction = source_environment.create_read_txn()?;
         let target_txn: R::ReadTransaction = target_environment.create_read_txn()?;
         let source_keys =
-            operations::keys::<_, _, _, _>(correlation_id, &source_txn, source_store, root)
+            operations::keys::<_, _, _, _>(correlation_id.clone(), &source_txn, source_store, root)
                 .collect::<Result<Vec<K>, S::Error>>()?;
         for key in source_keys {
             let maybe_value: ReadResult<V> = operations::read::<_, _, _, _, E>(
-                correlation_id,
+                correlation_id.clone(),
                 &target_txn,
                 target_store,
                 root,
@@ -142,7 +142,7 @@ fn lmdb_copy_state() {
     let target = LmdbTestContext::new::<TestKey, TestValue>(&[]).unwrap();
 
     copy_state::<TestKey, TestValue, _, _, error::Error>(
-        correlation_id,
+        correlation_id.clone(),
         &source.environment,
         &source.store,
         &target.environment,
@@ -160,7 +160,7 @@ fn in_memory_copy_state() {
     let target = InMemoryTestContext::new::<TestKey, TestValue>(&[]).unwrap();
 
     copy_state::<TestKey, TestValue, _, _, in_memory::Error>(
-        correlation_id,
+        correlation_id.clone(),
         &source.environment,
         &source.store,
         &target.environment,

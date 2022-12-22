@@ -13,6 +13,7 @@ use std::{
     time::Instant,
 };
 
+use bytes::Bytes;
 use filesize::PathExt;
 use fs2::FileExt;
 use lmdb::DatabaseFlags;
@@ -29,9 +30,9 @@ use casper_execution_engine::{
             execution_result::ExecutionResult,
             run_genesis_request::RunGenesisRequest,
             step::{StepRequest, StepSuccess},
-            BalanceResult, EngineConfig, EngineState, Error, GenesisSuccess, GetBidsRequest,
-            QueryRequest, QueryResult, RewardItem, StepError, SystemContractRegistry,
-            UpgradeConfig, UpgradeSuccess, DEFAULT_MAX_QUERY_DEPTH,
+            BalanceResult, DeployItem, EngineConfig, EngineState, Error, ExecutableDeployItem,
+            GenesisSuccess, GetBidsRequest, QueryRequest, QueryResult, RewardItem, StepError,
+            SystemContractRegistry, UpgradeConfig, UpgradeSuccess, DEFAULT_MAX_QUERY_DEPTH,
         },
         execution,
     },
@@ -39,7 +40,7 @@ use casper_execution_engine::{
         additive_map::AdditiveMap,
         execution_journal::ExecutionJournal,
         logging::{self, Settings, Style},
-        newtypes::CorrelationId,
+        newtypes::{CorrelationId, Property},
         system_config::{
             auction_costs::AuctionCosts, handle_payment_costs::HandlePaymentCosts,
             mint_costs::MintCosts,
@@ -693,10 +694,36 @@ where
             execute_request
         };
 
+        debug_assert_eq!(exec_request.deploys.len(), 1);
+
+        let session_module_bytes = match exec_request
+            .deploys
+            .iter()
+            .next()
+            .map(|deploy_item| &deploy_item.session)
+        {
+            Some(ExecutableDeployItem::ModuleBytes { module_bytes, .. }) => {
+                Some(bytes::Bytes::copy_from_slice(module_bytes))
+            }
+            _ => None,
+        };
+        // let payment_module_bytes = match execute_request
+        //     .deploys
+        //     .first()
+        //     .map(|deploy_item| &deploy_item.payment)
+        // {
+        //     Some(ExecutableDeployItem::ModuleBytes { module_bytes, .. }) => {
+        //         Some(module_bytes.as_slice())
+        //     }
+        //     _ => None,
+        // };
+
+        let correlation_id = CorrelationId::new();
+
         let start = Instant::now();
         let maybe_exec_results = self
             .engine_state
-            .run_execute(CorrelationId::new(), exec_request);
+            .run_execute(correlation_id.clone(), exec_request);
         let end = start.elapsed();
 
         {
@@ -729,16 +756,71 @@ where
 
             // let file = File::append("execution_results.txt");
 
-            // module,file,line,elapsed,result,gas,expr,value
+            let trace = correlation_id.trace();
+
+            let durations = trace.into_iter().find_map(|prop| {
+                match prop {
+                    // Property::Preprocess { original_bytes } => todo!(),
+                    // Property::Contract { contract_hash, original_bytes } => todo!(),
+                    Property::WasmVM {
+                        original_bytes,
+                        preprocess_duration,
+                        invoke_duration,
+                    } if Some(&original_bytes) == session_module_bytes.as_ref() => {
+                        Some((preprocess_duration, invoke_duration))
+                    }
+                    _ => None,
+                }
+            });
+
+            // if session_module_bytes.is_some() {
+            //     dbg!(&durations);
+            // }
+
+            // dbg!(&trace);
+
+            // let session_cache: Option<bool> =
+            //     if let Some(session_module_bytes) = session_module_bytes {
+            //         let session_cache: Vec<bool> = trace
+            //             .iter()
+            //             .filter_map(|prop| match prop {
+            //                 Property::VMCacheHit { original_bytes }
+            //                     if original_bytes == session_module_bytes.as_slice() =>
+            //                 {
+            //                     Some(true)
+            //                 }
+            //                 Property::VMCacheMiss { original_bytes }
+            //                     if original_bytes == session_module_bytes.as_slice() =>
+            //                 {
+            //                     Some(false)
+            //                 }
+            //                 _ => None,
+            //             })
+            //             .collect();
+            //         // debug_assert_eq!(session_cache.len(), 1, "{:?}", trace);
+            //         session_cache.get(0).cloned()
+            //     } else {
+            //         None
+            //     };
+
+            // let cache_hit = trace
+            //     .iter()
+            //     .find(|prop| matches!(prop, Property::VMCacheHit { .. }));
+
+            // module,file,line,session_cache,elapsed,result,gas,expr,value
             match instrumented.data {
                 Some((expr, value)) => {
                     writeln!(
                         file,
-                        r#""{module}","{file}","{line}","{function}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        r#""{module}","{file}","{line}","{function}","{preprocess}","{invoke}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
                         module = instrumented.module_name,
                         file = instrumented.file,
                         line = instrumented.line, // line
                         function = instrumented.function,
+                        preprocess = durations.map(|(a, _b)| a.as_micros().to_string()).unwrap_or(String::new()),
+                        invoke = durations.map(|(_a, b)| b.as_micros().to_string()).unwrap_or(String::new()),
+                        // session_cache = "",//session_cache.map(|val|val.to_string()).unwrap_or(String::new()),
+
                         elapsed = end.as_micros(),
                         error = match exec_error {
                             Some(error) => error.to_string(),
@@ -756,11 +838,13 @@ where
                 None => {
                     writeln!(
                         file,
-                        r#""{module}","{file}","{line}","{function}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
+                        r#""{module}","{file}","{line}","{function}","{preprocess}","{invoke}","{elapsed}","{error}","{gas}","{expr}","{value}""#,
                         module = instrumented.module_name,
                         file = instrumented.file,
                         line = instrumented.line,
                         function = instrumented.function,
+                        preprocess = durations.map(|(a, _b)| a.as_micros().to_string()).unwrap_or(String::new()),
+                        invoke = durations.map(|(_a, b)| b.as_micros().to_string()).unwrap_or(String::new()),
                         elapsed = end.as_micros(),
                         error = match exec_error {
                             Some(error) => error.to_string(),
@@ -1150,7 +1234,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash: Digest = self.post_state_hash.expect("should have post_state_hash");
         self.engine_state
-            .get_purse_balance(correlation_id, state_root_hash, purse)
+            .get_purse_balance(correlation_id.clone(), state_root_hash, purse)
             .expect("should get purse balance")
     }
 
@@ -1159,7 +1243,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash: Digest = self.post_state_hash.expect("should have post_state_hash");
         self.engine_state
-            .get_balance(correlation_id, state_root_hash, public_key)
+            .get_balance(correlation_id.clone(), state_root_hash, public_key)
             .expect("should get purse balance using public key")
     }
 
@@ -1308,7 +1392,11 @@ where
             .clone()
             .expect("System contract registry not found. Please run genesis first.");
         self.engine_state
-            .get_era_validators(correlation_id, Some(system_contract_registry), request)
+            .get_era_validators(
+                correlation_id.clone(),
+                Some(system_contract_registry),
+                request,
+            )
             .expect("get era validators should not error")
     }
 
@@ -1344,13 +1432,13 @@ where
         let reader = tracking_copy.reader();
 
         let unbond_keys = reader
-            .keys_with_prefix(correlation_id, &[KeyTag::Unbond as u8])
+            .keys_with_prefix(correlation_id.clone(), &[KeyTag::Unbond as u8])
             .unwrap_or_default();
 
         let mut ret = BTreeMap::new();
 
         for key in unbond_keys.into_iter() {
-            let read_result = reader.read(correlation_id, &key);
+            let read_result = reader.read(correlation_id.clone(), &key);
             if let (Key::Unbond(account_hash), Ok(Some(StoredValue::Unbonding(unbonding_purses)))) =
                 (key, read_result)
             {
@@ -1375,13 +1463,13 @@ where
         let reader = tracking_copy.reader();
 
         let withdraws_keys = reader
-            .keys_with_prefix(correlation_id, &[KeyTag::Withdraw as u8])
+            .keys_with_prefix(correlation_id.clone(), &[KeyTag::Withdraw as u8])
             .unwrap_or_default();
 
         let mut ret = BTreeMap::new();
 
         for key in withdraws_keys.into_iter() {
-            let read_result = reader.read(correlation_id, &key);
+            let read_result = reader.read(correlation_id.clone(), &key);
             if let (Key::Withdraw(account_hash), Ok(Some(StoredValue::Withdraw(withdraw_purses)))) =
                 (key, read_result)
             {
@@ -1425,7 +1513,7 @@ where
         let reader = tracking_copy.reader();
 
         reader
-            .keys_with_prefix(correlation_id, &[KeyTag::Balance as u8])
+            .keys_with_prefix(correlation_id.clone(), &[KeyTag::Balance as u8])
             .unwrap_or_default()
     }
 
@@ -1473,7 +1561,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash = self.get_post_state_hash();
         self.engine_state
-            .get_system_auction_hash(correlation_id, state_root_hash)
+            .get_system_auction_hash(correlation_id.clone(), state_root_hash)
             .expect("should have auction hash")
     }
 
@@ -1482,7 +1570,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash = self.get_post_state_hash();
         self.engine_state
-            .get_system_mint_hash(correlation_id, state_root_hash)
+            .get_system_mint_hash(correlation_id.clone(), state_root_hash)
             .expect("should have auction hash")
     }
 
@@ -1492,7 +1580,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash = self.get_post_state_hash();
         self.engine_state
-            .get_handle_payment_hash(correlation_id, state_root_hash)
+            .get_handle_payment_hash(correlation_id.clone(), state_root_hash)
             .expect("should have handle payment hash")
     }
 
@@ -1502,7 +1590,7 @@ where
         let correlation_id = CorrelationId::new();
         let state_root_hash = self.get_post_state_hash();
         self.engine_state
-            .get_standard_payment_hash(correlation_id, state_root_hash)
+            .get_standard_payment_hash(correlation_id.clone(), state_root_hash)
             .expect("should have standard payment hash")
     }
 

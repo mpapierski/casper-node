@@ -225,7 +225,7 @@ where
         let mut genesis_installer: GenesisInstaller<S> = GenesisInstaller::new(
             genesis_config_hash,
             protocol_version,
-            correlation_id,
+            correlation_id.clone(),
             ee_config.clone(),
             tracking_copy,
         );
@@ -238,7 +238,7 @@ where
         let post_state_hash = self
             .state
             .commit(
-                correlation_id,
+                correlation_id.clone(),
                 initial_root_hash,
                 execution_effect.transforms.to_owned(),
             )
@@ -289,7 +289,7 @@ where
         let registry = if let Ok(registry) = tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(correlation_id)
+            .get_system_contracts(correlation_id.clone())
         {
             registry
         } else {
@@ -353,7 +353,7 @@ where
 
         system_upgrader
             .refresh_system_contracts(
-                correlation_id,
+                correlation_id.clone(),
                 mint_hash,
                 auction_hash,
                 handle_payment_hash,
@@ -367,7 +367,7 @@ where
             let auction_contract = tracking_copy
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *auction_hash)?;
+                .get_contract(correlation_id.clone(), *auction_hash)?;
 
             let validator_slots_key = auction_contract.named_keys()[VALIDATOR_SLOTS_KEY];
             let value = StoredValue::CLValue(
@@ -384,7 +384,7 @@ where
             let auction_contract = tracking_copy
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *auction_hash)?;
+                .get_contract(correlation_id.clone(), *auction_hash)?;
 
             let auction_delay_key = auction_contract.named_keys()[AUCTION_DELAY_KEY];
             let value = StoredValue::CLValue(
@@ -401,7 +401,7 @@ where
             let auction_contract = tracking_copy
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *auction_hash)?;
+                .get_contract(correlation_id.clone(), *auction_hash)?;
 
             let locked_funds_period_key = auction_contract.named_keys()[LOCKED_FUNDS_PERIOD_KEY];
             let value = StoredValue::CLValue(
@@ -418,7 +418,7 @@ where
             let auction_contract = tracking_copy
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *auction_hash)?;
+                .get_contract(correlation_id.clone(), *auction_hash)?;
 
             let unbonding_delay_key = auction_contract.named_keys()[UNBONDING_DELAY_KEY];
             let value = StoredValue::CLValue(
@@ -440,7 +440,7 @@ where
             let mint_contract = tracking_copy
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *mint_hash)?;
+                .get_contract(correlation_id.clone(), *mint_hash)?;
 
             let locked_funds_period_key = mint_contract.named_keys()[ROUND_SEIGNIORAGE_RATE_KEY];
             let value = StoredValue::CLValue(
@@ -464,7 +464,7 @@ where
         let post_state_hash = self
             .state
             .commit(
-                correlation_id,
+                correlation_id.clone(),
                 pre_state_hash,
                 execution_effect.transforms.to_owned(),
             )
@@ -504,7 +504,7 @@ where
 
         Ok(tracking_copy
             .query(
-                correlation_id,
+                correlation_id.clone(),
                 self.config(),
                 query_request.key(),
                 query_request.path(),
@@ -533,7 +533,7 @@ where
         for deploy_item in deploys {
             let result = match deploy_item.session {
                 ExecutableDeployItem::Transfer { .. } => self.transfer(
-                    correlation_id,
+                    correlation_id.clone(),
                     &self.executor,
                     exec_request.protocol_version,
                     exec_request.parent_state_hash,
@@ -542,7 +542,7 @@ where
                     exec_request.proposer.clone(),
                 ),
                 _ => self.deploy(
-                    correlation_id,
+                    correlation_id.clone(),
                     &self.executor,
                     exec_request.protocol_version,
                     exec_request.parent_state_hash,
@@ -572,7 +572,7 @@ where
         let account: Account = match tracking_copy
             .write()
             .unwrap()
-            .get_account(correlation_id, account_hash)
+            .get_account(correlation_id.clone(), account_hash)
         {
             Ok(account) => account.clone(),
             Err(_) => {
@@ -605,9 +605,9 @@ where
             None => return Ok(BalanceResult::RootNotFound),
         };
         let purse_balance_key =
-            tracking_copy.get_purse_balance_key(correlation_id, purse_uref.into())?;
+            tracking_copy.get_purse_balance_key(correlation_id.clone(), purse_uref.into())?;
         let (balance, proof) =
-            tracking_copy.get_purse_balance_with_proof(correlation_id, purse_balance_key)?;
+            tracking_copy.get_purse_balance_with_proof(correlation_id.clone(), purse_balance_key)?;
         let proof = Box::new(proof);
         let motes = balance.value();
         Ok(BalanceResult::Success { motes, proof })
@@ -650,7 +650,7 @@ where
         let authorization_keys = deploy_item.authorization_keys;
 
         let account = match self.get_authorized_account(
-            correlation_id,
+            correlation_id.clone(),
             account_hash,
             &authorization_keys,
             Arc::clone(&tracking_copy),
@@ -663,7 +663,7 @@ where
         let proposer_account = match tracking_copy
             .write()
             .unwrap()
-            .get_account(correlation_id, proposer_addr)
+            .get_account(correlation_id.clone(), proposer_addr)
         {
             Ok(proposer) => proposer,
             Err(error) => return Ok(ExecutionResult::precondition_failure(Error::Exec(error))),
@@ -672,7 +672,7 @@ where
         let system_contract_registry = tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(correlation_id)?;
+            .get_system_contracts(correlation_id.clone())?;
 
         let handle_payment_contract_hash = system_contract_registry
             .get(HANDLE_PAYMENT)
@@ -684,7 +684,7 @@ where
         let handle_payment_contract = match tracking_copy
             .write()
             .unwrap()
-            .get_contract(correlation_id, *handle_payment_contract_hash)
+            .get_contract(correlation_id.clone(), *handle_payment_contract_hash)
         {
             Ok(contract) => contract,
             Err(error) => {
@@ -719,7 +719,7 @@ where
             match tracking_copy
                 .write()
                 .unwrap()
-                .get_purse_balance_key(correlation_id, proposer_main_purse.into())
+                .get_purse_balance_key(correlation_id.clone(), proposer_main_purse.into())
             {
                 Ok(balance_key) => balance_key,
                 Err(error) => return Ok(ExecutionResult::precondition_failure(Error::Exec(error))),
@@ -733,7 +733,7 @@ where
         let account_main_purse_balance_key = match tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance_key(correlation_id, account_main_purse.into())
+            .get_purse_balance_key(correlation_id.clone(), account_main_purse.into())
         {
             Ok(balance_key) => balance_key,
             Err(error) => return Ok(ExecutionResult::precondition_failure(Error::Exec(error))),
@@ -742,7 +742,7 @@ where
         let account_main_purse_balance = match tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance(correlation_id, account_main_purse_balance_key)
+            .get_purse_balance(correlation_id.clone(), account_main_purse_balance_key)
         {
             Ok(balance_key) => balance_key,
             Err(error) => return Ok(ExecutionResult::precondition_failure(Error::Exec(error))),
@@ -775,7 +775,7 @@ where
         let mut runtime_args_builder =
             TransferRuntimeArgsBuilder::new(deploy_item.session.args().clone());
 
-        match runtime_args_builder.transfer_target_mode(correlation_id, Arc::clone(&tracking_copy))
+        match runtime_args_builder.transfer_target_mode(correlation_id.clone(), Arc::clone(&tracking_copy))
         {
             Ok(mode) => match mode {
                 TransferTargetMode::Unknown | TransferTargetMode::PurseExists(_) => { /* noop */ }
@@ -791,7 +791,7 @@ where
                             deploy_item.deploy_hash,
                             gas_limit,
                             protocol_version,
-                            correlation_id,
+                            correlation_id.clone(),
                             Arc::clone(&tracking_copy),
                             Phase::Session,
                             create_purse_stack,
@@ -824,7 +824,7 @@ where
 
         let transfer_args = match runtime_args_builder.build(
             &account,
-            correlation_id,
+            correlation_id.clone(),
             Arc::clone(&tracking_copy),
         ) {
             Ok(transfer_args) => transfer_args,
@@ -841,7 +841,7 @@ where
                 let source_purse_balance_key = match tracking_copy
                     .write()
                     .unwrap()
-                    .get_purse_balance_key(correlation_id, Key::URef(source_uref))
+                    .get_purse_balance_key(correlation_id.clone(), Key::URef(source_uref))
                 {
                     Ok(purse_balance_key) => purse_balance_key,
                     Err(error) => return Ok(make_charged_execution_failure(Error::Exec(error))),
@@ -850,7 +850,7 @@ where
                 match tracking_copy
                     .write()
                     .unwrap()
-                    .get_purse_balance(correlation_id, source_purse_balance_key)
+                    .get_purse_balance(correlation_id.clone(), source_purse_balance_key)
                 {
                     Ok(purse_balance) => purse_balance,
                     Err(error) => return Ok(make_charged_execution_failure(Error::Exec(error))),
@@ -886,7 +886,7 @@ where
                     deploy_item.deploy_hash,
                     gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     Arc::clone(&tracking_copy),
                     Phase::Payment,
                     get_payment_purse_stack,
@@ -929,7 +929,7 @@ where
                     deploy_item.deploy_hash,
                     gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     Arc::clone(&tracking_copy),
                     Phase::Payment,
                     transfer_to_payment_purse_stack,
@@ -961,7 +961,7 @@ where
                 let payment_purse_balance_key = match tracking_copy
                     .write()
                     .unwrap()
-                    .get_purse_balance_key(correlation_id, Key::URef(payment_uref))
+                    .get_purse_balance_key(correlation_id.clone(), Key::URef(payment_uref))
                 {
                     Ok(payment_purse_balance_key) => payment_purse_balance_key,
                     Err(error) => return Ok(make_charged_execution_failure(Error::Exec(error))),
@@ -970,7 +970,7 @@ where
                 match tracking_copy
                     .write()
                     .unwrap()
-                    .get_purse_balance(correlation_id, payment_purse_balance_key)
+                    .get_purse_balance(correlation_id.clone(), payment_purse_balance_key)
                 {
                     Ok(payment_purse_balance) => payment_purse_balance,
                     Err(error) => return Ok(make_charged_execution_failure(Error::Exec(error))),
@@ -1017,7 +1017,7 @@ where
                 deploy_item.deploy_hash,
                 gas_limit,
                 protocol_version,
-                correlation_id,
+                correlation_id.clone(),
                 Arc::clone(&tracking_copy),
                 Phase::Session,
                 transfer_stack,
@@ -1081,7 +1081,7 @@ where
                     deploy_item.deploy_hash,
                     gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     finalization_tc,
                     Phase::FinalizePayment,
                     finalize_payment_stack,
@@ -1167,7 +1167,7 @@ where
         let account = {
             let account_hash = deploy_item.address;
             match self.get_authorized_account(
-                correlation_id,
+                correlation_id.clone(),
                 account_hash,
                 &authorization_keys,
                 Arc::clone(&tracking_copy),
@@ -1190,7 +1190,7 @@ where
             Arc::clone(&tracking_copy),
             account.named_keys(),
             session,
-            correlation_id,
+            correlation_id.clone(),
             &protocol_version,
             Phase::Session,
         ) {
@@ -1207,7 +1207,7 @@ where
             match tracking_copy
                 .write()
                 .unwrap()
-                .get_purse_balance_key(correlation_id, account_key)
+                .get_purse_balance_key(correlation_id.clone(), account_key)
             {
                 Ok(key) => key,
                 Err(error) => {
@@ -1221,7 +1221,7 @@ where
         let account_main_purse_balance: Motes = match tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance(correlation_id, account_main_purse_balance_key)
+            .get_purse_balance(correlation_id.clone(), account_main_purse_balance_key)
         {
             Ok(balance) => balance,
             Err(error) => return Ok(ExecutionResult::precondition_failure(error.into())),
@@ -1292,7 +1292,7 @@ where
                     deploy_hash,
                     payment_gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     Arc::clone(&tracking_copy),
                     phase,
                     payment_stack,
@@ -1302,7 +1302,7 @@ where
                     Arc::clone(&tracking_copy),
                     account.named_keys(),
                     payment,
-                    correlation_id,
+                    correlation_id.clone(),
                     &protocol_version,
                     phase,
                 ) {
@@ -1322,7 +1322,7 @@ where
                     deploy_hash,
                     payment_gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     Arc::clone(&tracking_copy),
                     phase,
                     payment_stack,
@@ -1337,7 +1337,7 @@ where
             let proposer_account: Account = match tracking_copy
                 .write()
                 .unwrap()
-                .get_account(correlation_id, AccountHash::from(&proposer))
+                .get_account(correlation_id.clone(), AccountHash::from(&proposer))
             {
                 Ok(account) => account.clone(),
                 Err(error) => {
@@ -1353,7 +1353,7 @@ where
             match tracking_copy
                 .write()
                 .unwrap()
-                .get_purse_balance_key(correlation_id, proposer_purse.into())
+                .get_purse_balance_key(correlation_id.clone(), proposer_purse.into())
             {
                 Ok(key) => key,
                 Err(error) => {
@@ -1391,7 +1391,7 @@ where
         let system_contract_registry = tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(correlation_id)?;
+            .get_system_contracts(correlation_id.clone())?;
 
         let handle_payment_contract_hash = system_contract_registry
             .get(HANDLE_PAYMENT)
@@ -1403,7 +1403,7 @@ where
         let handle_payment_contract = match tracking_copy
             .write()
             .unwrap()
-            .get_contract(correlation_id, *handle_payment_contract_hash)
+            .get_contract(correlation_id.clone(), *handle_payment_contract_hash)
         {
             Ok(contract) => contract,
             Err(error) => {
@@ -1423,7 +1423,7 @@ where
         let purse_balance_key = match tracking_copy
             .write()
             .unwrap()
-            .get_purse_balance_key(correlation_id, payment_purse_key)
+            .get_purse_balance_key(correlation_id.clone(), payment_purse_key)
         {
             Ok(key) => key,
             Err(error) => {
@@ -1434,7 +1434,7 @@ where
             match tracking_copy
                 .write()
                 .unwrap()
-                .get_purse_balance(correlation_id, purse_balance_key)
+                .get_purse_balance(correlation_id.clone(), purse_balance_key)
             {
                 Ok(balance) => balance,
                 Err(error) => {
@@ -1523,7 +1523,7 @@ where
                 deploy_hash,
                 session_gas_limit,
                 protocol_version,
-                correlation_id,
+                correlation_id.clone(),
                 Arc::clone(&session_tracking_copy),
                 Phase::Session,
                 session_stack,
@@ -1626,7 +1626,7 @@ where
             let system_contract_registry = finalization_tc
                 .write()
                 .unwrap()
-                .get_system_contracts(correlation_id)?;
+                .get_system_contracts(correlation_id.clone())?;
 
             let handle_payment_contract_hash = system_contract_registry
                 .get(HANDLE_PAYMENT)
@@ -1638,7 +1638,7 @@ where
             let handle_payment_contract = match finalization_tc
                 .write()
                 .unwrap()
-                .get_contract(correlation_id, *handle_payment_contract_hash)
+                .get_contract(correlation_id.clone(), *handle_payment_contract_hash)
             {
                 Ok(info) => info,
                 Err(error) => return Ok(ExecutionResult::precondition_failure(error.into())),
@@ -1667,7 +1667,7 @@ where
                     deploy_hash,
                     gas_limit,
                     protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     finalization_tc,
                     Phase::FinalizePayment,
                     handle_payment_stack,
@@ -1703,7 +1703,7 @@ where
         effects: AdditiveMap<Key, Transform>,
     ) -> Result<Digest, Error> {
         self.state
-            .commit(correlation_id, pre_state_hash, effects)
+            .commit(correlation_id.clone(), pre_state_hash, effects)
             .map_err(|err| Error::Exec(err.into()))
     }
 
@@ -1716,7 +1716,7 @@ where
     where
         Error: From<S::Error>,
     {
-        Ok(self.state.get_trie(correlation_id, trie_or_chunk_id)?)
+        Ok(self.state.get_trie(correlation_id.clone(), trie_or_chunk_id)?)
     }
 
     /// Gets a trie object for given state root hash.
@@ -1728,7 +1728,7 @@ where
     where
         Error: From<S::Error>,
     {
-        Ok(self.state.get_trie_full(correlation_id, &trie_key)?)
+        Ok(self.state.get_trie_full(correlation_id.clone(), &trie_key)?)
     }
 
     /// Puts a trie and finds missing descendant trie keys.
@@ -1740,10 +1740,10 @@ where
     where
         Error: From<S::Error>,
     {
-        let inserted_trie_key = self.state.put_trie(correlation_id, trie_bytes)?;
+        let inserted_trie_key = self.state.put_trie(correlation_id.clone(), trie_bytes)?;
         let missing_descendant_trie_keys = self
             .state
-            .missing_trie_keys(correlation_id, vec![inserted_trie_key])?;
+            .missing_trie_keys(correlation_id.clone(), vec![inserted_trie_key])?;
         Ok(missing_descendant_trie_keys)
     }
 
@@ -1757,7 +1757,7 @@ where
         Error: From<S::Error>,
     {
         self.state
-            .missing_trie_keys(correlation_id, trie_keys)
+            .missing_trie_keys(correlation_id.clone(), trie_keys)
             .map_err(Error::from)
     }
 
@@ -1776,7 +1776,7 @@ where
 
         let system_contract_registry = match system_contract_registry {
             Some(system_contract_registry) => system_contract_registry,
-            None => match self.get_system_contract_registry(correlation_id, state_root_hash) {
+            None => match self.get_system_contract_registry(correlation_id.clone(), state_root_hash) {
                 Ok(system_contract_registry) => system_contract_registry,
                 Err(error) => {
                     error!(%state_root_hash, %error, "unable to get era validators");
@@ -1796,7 +1796,7 @@ where
             vec![SEIGNIORAGE_RECIPIENTS_SNAPSHOT_KEY.to_string()],
         );
 
-        let snapshot = match self.run_query(correlation_id, query_request)? {
+        let snapshot = match self.run_query(correlation_id.clone(), query_request)? {
             QueryResult::RootNotFound => return Err(GetEraValidatorsError::RootNotFound),
             QueryResult::ValueNotFound(error) => {
                 error!(%error, "unexpected query failure; value not found");
@@ -1844,14 +1844,14 @@ where
         let mut tracking_copy = tracking_copy.write().unwrap();
 
         let bid_keys = tracking_copy
-            .get_keys(correlation_id, &KeyTag::Bid)
+            .get_keys(correlation_id.clone(), &KeyTag::Bid)
             .map_err(|err| Error::Exec(err.into()))?;
 
         let mut bids = BTreeMap::new();
 
         for key in bid_keys.iter() {
             if let Some(StoredValue::Bid(bid)) =
-                tracking_copy.get(correlation_id, key).map_err(Into::into)?
+                tracking_copy.get(correlation_id.clone(), key).map_err(Into::into)?
             {
                 bids.insert(bid.validator_public_key().clone(), *bid);
             };
@@ -1922,7 +1922,7 @@ where
                 deploy_hash,
                 gas_limit,
                 step_request.protocol_version,
-                correlation_id,
+                correlation_id.clone(),
                 Arc::clone(&tracking_copy),
                 Phase::Session,
                 distribute_rewards_stack,
@@ -1956,7 +1956,7 @@ where
                     deploy_hash,
                     gas_limit,
                     step_request.protocol_version,
-                    correlation_id,
+                    correlation_id.clone(),
                     Arc::clone(&tracking_copy),
                     Phase::Session,
                     slash_stack,
@@ -1996,7 +1996,7 @@ where
                 deploy_hash,
                 gas_limit,
                 step_request.protocol_version,
-                correlation_id,
+                correlation_id.clone(),
                 Arc::clone(&tracking_copy),
                 Phase::Session,
                 run_auction_stack,
@@ -2015,7 +2015,7 @@ where
         let post_state_hash = self
             .state
             .commit(
-                correlation_id,
+                correlation_id.clone(),
                 step_request.pre_state_hash,
                 execution_effect.transforms,
             )
@@ -2046,7 +2046,7 @@ where
         let account = match tracking_copy
             .write()
             .unwrap()
-            .get_account(correlation_id, account_addr)
+            .get_account(correlation_id.clone(), account_addr)
         {
             Ok(account) => account.clone(),
             Err(error) => return Err(error.into()),
@@ -2057,7 +2057,7 @@ where
             match tracking_copy
                 .read()
                 .unwrap()
-                .get_purse_balance_key(correlation_id, main_purse.into())
+                .get_purse_balance_key(correlation_id.clone(), main_purse.into())
             {
                 Ok(balance_key) => balance_key,
                 Err(error) => return Err(error.into()),
@@ -2067,7 +2067,7 @@ where
         let (account_balance, proof) = match tracking_copy
             .read()
             .unwrap()
-            .get_purse_balance_with_proof(correlation_id, main_purse_balance_key)
+            .get_purse_balance_with_proof(correlation_id.clone(), main_purse_balance_key)
         {
             Ok((balance, proof)) => (balance, proof),
             Err(error) => return Err(error.into()),
@@ -2091,7 +2091,7 @@ where
         let result = tracking_copy
             .write()
             .unwrap()
-            .get_system_contracts(correlation_id)
+            .get_system_contracts(correlation_id.clone())
             .map_err(|error| {
                 error!(%error, "Failed to retrieve system contract registry");
                 Error::MissingSystemContractRegistry
@@ -2105,7 +2105,7 @@ where
         correlation_id: CorrelationId,
         state_hash: Digest,
     ) -> Result<ContractHash, Error> {
-        let registry = self.get_system_contract_registry(correlation_id, state_hash)?;
+        let registry = self.get_system_contract_registry(correlation_id.clone(), state_hash)?;
         let mint_hash = registry.get(MINT).ok_or_else(|| {
             error!("Missing system mint contract hash");
             Error::MissingSystemContractHash(MINT.to_string())
@@ -2119,7 +2119,7 @@ where
         correlation_id: CorrelationId,
         state_hash: Digest,
     ) -> Result<ContractHash, Error> {
-        let registry = self.get_system_contract_registry(correlation_id, state_hash)?;
+        let registry = self.get_system_contract_registry(correlation_id.clone(), state_hash)?;
         let auction_hash = registry.get(AUCTION).ok_or_else(|| {
             error!("Missing system auction contract hash");
             Error::MissingSystemContractHash(AUCTION.to_string())
@@ -2133,7 +2133,7 @@ where
         correlation_id: CorrelationId,
         state_hash: Digest,
     ) -> Result<ContractHash, Error> {
-        let registry = self.get_system_contract_registry(correlation_id, state_hash)?;
+        let registry = self.get_system_contract_registry(correlation_id.clone(), state_hash)?;
         let handle_payment = registry.get(HANDLE_PAYMENT).ok_or_else(|| {
             error!("Missing system handle payment contract hash");
             Error::MissingSystemContractHash(HANDLE_PAYMENT.to_string())
@@ -2147,7 +2147,7 @@ where
         correlation_id: CorrelationId,
         state_hash: Digest,
     ) -> Result<ContractHash, Error> {
-        let registry = self.get_system_contract_registry(correlation_id, state_hash)?;
+        let registry = self.get_system_contract_registry(correlation_id.clone(), state_hash)?;
         let standard_payment = registry.get(STANDARD_PAYMENT).ok_or_else(|| {
             error!("Missing system standard payment contract hash");
             Error::MissingSystemContractHash(STANDARD_PAYMENT.to_string())

@@ -421,6 +421,7 @@ dependencies = [
 name = "casper-engine-test-support"
 version = "2.2.0"
 dependencies = [
+ "bytes",
  "casper-execution-engine",
  "casper-hashing",
  "casper-types 1.5.0",

@@ -333,7 +333,7 @@ impl ContractRuntime {
                 async move {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
-                    let result = engine_state.run_query(correlation_id, query_request);
+                    let result = engine_state.run_query(correlation_id.clone(), query_request);
                     metrics.run_query.observe(start.elapsed().as_secs_f64());
                     trace!(?result, "query result");
                     responder.respond(result).await
@@ -351,7 +351,7 @@ impl ContractRuntime {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
                     let result = engine_state.get_purse_balance(
-                        correlation_id,
+                        correlation_id.clone(),
                         balance_request.state_hash(),
                         balance_request.purse_uref(),
                     );
@@ -377,7 +377,7 @@ impl ContractRuntime {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
                     let era_validators = engine_state.get_era_validators(
-                        correlation_id,
+                        correlation_id.clone(),
                         system_contract_registry,
                         request,
                     );
@@ -405,7 +405,7 @@ impl ContractRuntime {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
                     let era_validators = engine_state.get_era_validators(
-                        correlation_id,
+                        correlation_id.clone(),
                         system_contract_registry,
                         request.into(),
                     );
@@ -456,7 +456,7 @@ impl ContractRuntime {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
                     let result = engine_state.put_trie_and_find_missing_descendant_trie_keys(
-                        correlation_id,
+                        correlation_id.clone(),
                         &*trie_bytes,
                     );
                     // PERF: this *could* be called only periodically.
@@ -557,7 +557,7 @@ impl ContractRuntime {
                 async move {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
-                    let result = engine_state.get_bids(correlation_id, get_bids_request);
+                    let result = engine_state.get_bids(correlation_id.clone(), get_bids_request);
                     metrics.get_bids.observe(start.elapsed().as_secs_f64());
                     trace!(?result, "get bids result");
                     responder.respond(result).await
@@ -574,7 +574,8 @@ impl ContractRuntime {
                 async move {
                     let correlation_id = CorrelationId::new();
                     let start = Instant::now();
-                    let result = engine_state.missing_trie_keys(correlation_id, vec![trie_key]);
+                    let result =
+                        engine_state.missing_trie_keys(correlation_id.clone(), vec![trie_key]);
                     metrics
                         .missing_trie_keys
                         .observe(start.elapsed().as_secs_f64());
@@ -689,7 +690,7 @@ impl ContractRuntime {
         );
 
         let result = self.engine_state.commit_genesis(
-            correlation_id,
+            correlation_id.clone(),
             genesis_config_hash,
             protocol_version,
             &ee_config,
@@ -726,7 +727,7 @@ impl ContractRuntime {
         let start = Instant::now();
         let result = self
             .engine_state
-            .missing_trie_keys(correlation_id, trie_keys);
+            .missing_trie_keys(correlation_id.clone(), trie_keys);
         self.metrics
             .missing_trie_keys
             .observe(start.elapsed().as_secs_f64());
@@ -861,7 +862,7 @@ impl ContractRuntime {
     ) -> Result<Option<TrieOrChunk>, engine_state::Error> {
         let correlation_id = CorrelationId::new();
         let start = Instant::now();
-        let result = engine_state.get_trie(correlation_id, trie_or_chunk_id);
+        let result = engine_state.get_trie(correlation_id.clone(), trie_or_chunk_id);
         metrics.get_trie.observe(start.elapsed().as_secs_f64());
         result
     }
@@ -873,7 +874,7 @@ impl ContractRuntime {
     ) -> Result<Option<Bytes>, engine_state::Error> {
         let correlation_id = CorrelationId::new();
         let start = Instant::now();
-        let result = engine_state.get_trie_full(correlation_id, trie_key);
+        let result = engine_state.get_trie_full(correlation_id.clone(), trie_key);
         metrics.get_trie.observe(start.elapsed().as_secs_f64());
         result
     }

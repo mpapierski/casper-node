@@ -27,7 +27,7 @@ where
         .get(&txn, root_hash)?
         .expect("check_scan received an invalid root hash");
     let TrieScan { mut tip, parents } = scan::<TestKey, TestValue, R::ReadTransaction, S, E>(
-        correlation_id,
+        correlation_id.clone(),
         &txn,
         store,
         key,
@@ -72,7 +72,7 @@ mod partial_tries {
             for leaf in TEST_LEAVES.iter() {
                 let leaf_bytes = leaf.to_bytes().unwrap();
                 check_scan::<_, _, error::Error>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &context.environment,
                     &context.store,
                     &root_hash,
@@ -93,7 +93,7 @@ mod partial_tries {
             for leaf in TEST_LEAVES.iter() {
                 let leaf_bytes = leaf.to_bytes().unwrap();
                 check_scan::<_, _, in_memory::Error>(
-                    correlation_id,
+                    correlation_id.clone(),
                     &context.environment,
                     &context.store,
                     &root_hash,
@@ -123,7 +123,7 @@ mod full_tries {
                 for leaf in TEST_LEAVES.iter() {
                     let leaf_bytes = leaf.to_bytes().unwrap();
                     check_scan::<_, _, error::Error>(
-                        correlation_id,
+                        correlation_id.clone(),
                         &context.environment,
                         &context.store,
                         state,
@@ -150,7 +150,7 @@ mod full_tries {
                 for leaf in TEST_LEAVES.iter() {
                     let leaf_bytes = leaf.to_bytes().unwrap();
                     check_scan::<_, _, in_memory::Error>(
-                        correlation_id,
+                        correlation_id.clone(),
                         &context.environment,
                         &context.store,
                         state,
