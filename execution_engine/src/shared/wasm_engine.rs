@@ -37,7 +37,6 @@ use tracing::Subscriber;
 use wasmer::{
     imports, AsStoreMut, AsStoreRef, Cranelift, FunctionEnv, FunctionEnvMut, TypedFunction,
 };
-use wasmer_compiler_llvm::LLVM;
 use wasmer_compiler_singlepass::Singlepass;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
@@ -88,7 +87,6 @@ pub enum CraneliftOptLevel {
 pub enum WasmerBackend {
     Singlepass,
     Cranelift { optimize: CraneliftOptLevel },
-    LLVM,
 }
 
 /// Mode of execution for smart contracts.
@@ -4222,7 +4220,6 @@ fn make_wasmer_store(backend: WasmerBackend) -> wasmer::Store {
             }
             cranelift.into()
         }
-        WasmerBackend::LLVM => LLVM::new().into(),
     };
     wasmer::Store::new(engine)
 }
