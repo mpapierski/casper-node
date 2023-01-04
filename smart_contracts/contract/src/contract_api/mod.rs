@@ -9,7 +9,7 @@ use alloc::{
     alloc::{alloc, Layout},
     vec::Vec,
 };
-use core::{mem, ptr::NonNull};
+use core::{mem, ptr::NonNull, slice};
 
 use casper_types::{bytesrepr::ToBytes, ApiError};
 
@@ -32,6 +32,12 @@ pub fn alloc_bytes(n: usize) -> NonNull<u8> {
     NonNull::new(raw_ptr)
         .ok_or(ApiError::OutOfMemory)
         .unwrap_or_revert()
+}
+
+/// Allocate mutable slice
+pub fn alloc_slice<'a>(n: usize) -> &'a mut [u8] {
+    let ptr = alloc_bytes(n);
+    unsafe { slice::from_raw_parts_mut(ptr.as_ptr(), n) }
 }
 
 fn to_ptr<T: ToBytes>(t: T) -> (*const u8, usize, Vec<u8>) {

@@ -1,4 +1,3 @@
-#![no_std]
 #![no_main]
 
 const NODE_03_ADDR: &[u8; 64] = b"a3b2fd2971f2de5145d2342df38555ce97070a27ef7e74b63e08c482697308dd";

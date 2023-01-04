@@ -1,5 +1,3 @@
-#![no_std]
-
 use casper_contract::{
     contract_api::{runtime, system},
     unwrap_or_revert::UnwrapOrRevert,

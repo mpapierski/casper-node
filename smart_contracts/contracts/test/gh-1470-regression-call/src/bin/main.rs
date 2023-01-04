@@ -1,10 +1,7 @@
-#![no_std]
 #![no_main]
 
-extern crate alloc;
+use std::str::FromStr;
 
-use alloc::string::String;
-use core::str::FromStr;
 use gh_1470_regression_call::{ARG_CONTRACT_HASH, ARG_CONTRACT_PACKAGE_HASH, ARG_TEST_METHOD};
 
 use casper_contract::{contract_api::runtime, unwrap_or_revert::UnwrapOrRevert};

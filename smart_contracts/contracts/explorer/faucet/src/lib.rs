@@ -1,9 +1,4 @@
-#![no_std]
-
-extern crate alloc;
-
-use alloc::{vec, vec::Vec};
-use core::mem::MaybeUninit;
+use std::mem::MaybeUninit;
 
 use casper_contract::{
     contract_api::{self, runtime, storage, system},

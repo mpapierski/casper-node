@@ -3,11 +3,9 @@ CARGO  = $(or $(shell which cargo),  $(HOME)/.cargo/bin/cargo)
 RUSTUP = $(or $(shell which rustup), $(HOME)/.cargo/bin/rustup)
 NPM    = $(or $(shell which npm),    /usr/bin/npm)
 
-PINNED_NIGHTLY := $(shell cat smart_contracts/rust-toolchain)
 PINNED_STABLE  := $(shell sed -nr 's/channel\s+=\s+\"(.*)\"/\1/p' rust-toolchain.toml)
 
 CARGO_OPTS := --locked
-CARGO_PINNED_NIGHTLY := $(CARGO) +$(PINNED_NIGHTLY) $(CARGO_OPTS)
 CARGO := $(CARGO) $(CARGO_OPTS)
 
 DISABLE_LOGGING = RUST_LOG=MatchesNothing
@@ -108,11 +106,11 @@ check-std-features:
 
 .PHONY: check-format
 check-format:
-	$(CARGO_PINNED_NIGHTLY) fmt --all -- --check
+	$(CARGO) fmt --all -- --check
 
 .PHONY: format
 format:
-	$(CARGO_PINNED_NIGHTLY) fmt --all
+	$(CARGO) fmt --all
 
 lint-contracts-rs:
 	cd smart_contracts/contracts && $(CARGO) clippy $(patsubst %, -p %, $(ALL_CONTRACTS)) -- -D warnings -A renamed_and_removed_lints
@@ -201,17 +199,10 @@ setup-audit:
 	cargo install cargo-audit
 
 .PHONY: setup-rs
-setup-rs: smart_contracts/rust-toolchain
+setup-rs:
 	$(RUSTUP) update
-	$(RUSTUP) toolchain install $(PINNED_STABLE) $(PINNED_NIGHTLY)
+	$(RUSTUP) toolchain install $(PINNED_STABLE)
 	$(RUSTUP) target add --toolchain $(PINNED_STABLE) wasm32-unknown-unknown
-	$(RUSTUP) target add --toolchain $(PINNED_NIGHTLY) wasm32-unknown-unknown
-
-.PHONY: setup-nightly-rs
-setup-nightly-rs:
-	$(RUSTUP) update
-	$(RUSTUP) toolchain install nightly
-	$(RUSTUP) target add --toolchain nightly wasm32-unknown-unknown
 
 .PHONY: setup-as
 setup-as: smart_contracts/contract_as/package.json

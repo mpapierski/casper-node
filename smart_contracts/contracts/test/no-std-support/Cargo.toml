@@ -1,0 +1,16 @@
+[package]
+name = "no-std-support"
+version = "0.1.0"
+authors = ["Michał Papierski <michal@casperlabs.io>"]
+edition = "2021"
+
+[dependencies]
+casper-contract = { path = "../../../contract", default-features = false, features = ["no_std"] }
+casper-types = { path = "../../../../types" }
+
+[[bin]]
+name = "no_std_support"
+path = "src/main.rs"
+bench = false
+doctest = false
+test = false

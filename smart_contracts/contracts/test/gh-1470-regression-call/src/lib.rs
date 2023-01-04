@@ -1,5 +1,3 @@
-#![no_std]
-
 use core::str::FromStr;
 
 use casper_types::ApiError;

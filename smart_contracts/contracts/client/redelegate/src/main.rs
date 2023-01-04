@@ -1,7 +1,4 @@
-#![no_std]
 #![no_main]
-
-extern crate alloc;
 
 use casper_contract::contract_api::{runtime, system};
 use casper_types::{runtime_args, system::auction, PublicKey, RuntimeArgs, U512};

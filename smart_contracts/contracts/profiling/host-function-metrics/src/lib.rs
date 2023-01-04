@@ -1,9 +1,4 @@
-#![no_std]
-
-extern crate alloc;
-
-use alloc::{boxed::Box, string::String, vec, vec::Vec};
-use core::iter;
+use std::iter;
 
 use rand::{distributions::Alphanumeric, rngs::SmallRng, Rng, SeedableRng};
 

@@ -13,7 +13,7 @@
 //! # Writing Smart Contracts
 //!
 //! ```no_run
-//! #![no_std]
+//!
 //! #![no_main]
 //!
 //! use casper_contract::contract_api::{runtime, storage};
@@ -44,10 +44,9 @@
 //!
 //! Support for writing smart contracts are contained in the [`contract_api`] module and its
 //! submodules.
-
-#![cfg_attr(not(test), no_std)]
+#![cfg_attr(feature = "no_std", no_std)]
 #![cfg_attr(
-    all(not(test), feature = "no-std-helpers"),
+    feature = "nightly",
     feature(alloc_error_handler, core_intrinsics, lang_items)
 )]
 #![doc(html_root_url = "https://docs.rs/casper-contract/1.4.4")]
@@ -62,12 +61,11 @@ extern crate alloc;
 
 pub mod contract_api;
 pub mod ext_ffi;
-#[cfg(all(not(test), feature = "no-std-helpers", not(feature = "std")))]
 mod no_std_handlers;
 pub mod unwrap_or_revert;
 
 /// An instance of [`WeeAlloc`](https://docs.rs/wee_alloc) which allows contracts built as `no_std`
 /// to avoid having to provide a global allocator themselves.
-#[cfg(all(not(test), feature = "no-std-helpers"))]
+#[cfg(feature = "wee_alloc")]
 #[global_allocator]
 pub static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;

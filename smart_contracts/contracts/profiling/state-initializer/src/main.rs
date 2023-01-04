@@ -1,6 +1,5 @@
 //! Transfers the requested amount of motes to the first account and zero motes to the second
 //! account.
-#![no_std]
 #![no_main]
 
 use casper_contract::contract_api::{runtime, system};

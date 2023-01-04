@@ -1,5 +1,3 @@
-#![no_std]
-
 use casper_contract::contract_api::{runtime, storage};
 
 #[no_mangle]

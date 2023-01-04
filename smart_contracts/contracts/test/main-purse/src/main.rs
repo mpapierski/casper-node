@@ -1,4 +1,3 @@
-#![no_std]
 #![no_main]
 
 use casper_contract::contract_api::{account, runtime};

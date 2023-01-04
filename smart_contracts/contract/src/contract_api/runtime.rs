@@ -1,7 +1,7 @@
 //! Functions for interacting with the current runtime.
 
 use alloc::{collections::BTreeSet, vec, vec::Vec};
-use core::mem::MaybeUninit;
+use core::{mem::MaybeUninit, slice};
 
 use casper_types::{
     account::AccountHash,
@@ -156,28 +156,29 @@ fn get_named_arg_size(name: &str) -> Option<usize> {
 /// is not invoked with any arguments.
 pub fn get_named_arg<T: FromBytes>(name: &str) -> T {
     let arg_size = get_named_arg_size(name).unwrap_or_revert_with(ApiError::MissingArgument);
-    let arg_bytes = if arg_size > 0 {
+    if arg_size > 0 {
         let res = {
-            let data_non_null_ptr = contract_api::alloc_bytes(arg_size);
+            let data_non_null_ptr = contract_api::alloc_slice(arg_size);
+
             let ret = unsafe {
                 ext_ffi::casper_get_named_arg(
                     name.as_bytes().as_ptr(),
                     name.len(),
-                    data_non_null_ptr.as_ptr(),
+                    data_non_null_ptr.as_mut_ptr(),
                     arg_size,
                 )
             };
-            let data =
-                unsafe { Vec::from_raw_parts(data_non_null_ptr.as_ptr(), arg_size, arg_size) };
-            api_error::result_from(ret).map(|_| data)
+            // let data =
+            //     unsafe { Vec::from_raw_parts(data_non_null_ptr.as_ptr(), arg_size, arg_size) };
+            api_error::result_from(ret).map(|()| data_non_null_ptr)
         };
         // Assumed to be safe as `get_named_arg_size` checks the argument already
-        res.unwrap_or_revert()
+        let data = res.unwrap_or_revert();
+        bytesrepr::deserialize_from_slice(data).unwrap_or_revert_with(ApiError::InvalidArgument)
     } else {
         // Avoids allocation with 0 bytes and a call to get_named_arg
-        Vec::new()
-    };
-    bytesrepr::deserialize(arg_bytes).unwrap_or_revert_with(ApiError::InvalidArgument)
+        bytesrepr::deserialize_from_slice(&[]).unwrap_or_revert_with(ApiError::InvalidArgument)
+    }
 }
 
 /// Returns the caller of the current context, i.e. the [`AccountHash`] of the account which made

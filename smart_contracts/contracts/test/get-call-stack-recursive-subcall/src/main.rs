@@ -1,9 +1,4 @@
-#![no_std]
 #![no_main]
-
-extern crate alloc;
-
-use alloc::{boxed::Box, string::ToString, vec};
 
 use casper_contract::contract_api::{runtime, storage};
 use casper_types::{CLType, EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, Parameter};

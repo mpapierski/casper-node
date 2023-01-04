@@ -1,10 +1,4 @@
-#![no_std]
 #![no_main]
-
-#[macro_use]
-extern crate alloc;
-
-use alloc::string::String;
 
 use casper_contract::contract_api::{runtime, storage};
 

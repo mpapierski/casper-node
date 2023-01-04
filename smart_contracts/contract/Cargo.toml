@@ -17,8 +17,15 @@ version-sync = { version = "0.9", optional = true }
 wee_alloc = { version = "0.4.5", optional = true }
 
 [features]
-default = ["no-std-helpers"]
-no-std-helpers = ["wee_alloc"]
+default = ["std"]
+
+# no-std-helpers has no effect
+no-std-helpers = []
 test-support = []
-# DEPRECATED - enabling `std` has no effect.
-std = []
+
+# Enable standard library
+std = ["wee_alloc"]
+no_std = ["wee_alloc"]
+
+# Add support for nightly
+nightly = []

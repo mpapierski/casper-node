@@ -1,10 +1,6 @@
-#![no_std]
 #![no_main]
 
-extern crate alloc;
-
-use alloc::string::{String, ToString};
-use core::str::FromStr;
+use std::str::FromStr;
 
 use casper_contract::{
     contract_api::{runtime, storage},

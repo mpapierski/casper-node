@@ -1,9 +1,4 @@
-#![no_std]
 #![no_main]
-
-extern crate alloc;
-
-use alloc::string::String;
 
 use casper_contract::{
     contract_api::{runtime, system},

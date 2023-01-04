@@ -1,9 +1,4 @@
-#![no_std]
 #![no_main]
-
-extern crate alloc;
-
-use alloc::string::String;
 
 use auction::{DelegationRate, METHOD_ADD_BID};
 use casper_contract::{
