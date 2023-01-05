@@ -27,18 +27,18 @@ CONTRACT_TARGET_DIR       = target/wasm32-unknown-unknown/release
 CONTRACT_TARGET_DIR_AS    = target_as
 
 build-contract-rs/%:
-	cd smart_contracts/contracts && $(CARGO) build --release $(filter-out --release, $(CARGO_FLAGS)) --package $*
+	cd smart_contracts/contracts && $(CARGO) build --profile release-smart-contracts $(filter-out --release, $(CARGO_FLAGS)) --package $*
 	wasm-strip $(CONTRACT_TARGET_DIR)/$(subst -,_,$*).wasm 2>/dev/null | true
 
 .PHONY: build-all-contracts-rs
 build-all-contracts-rs:
 	cd smart_contracts/contracts && \
-	$(CARGO) build --release $(filter-out --release, $(CARGO_FLAGS)) $(patsubst %, -p %, $(ALL_CONTRACTS))
+	$(CARGO) build --profile release-smart-contracts $(filter-out --profile release-smart-contracts, $(CARGO_FLAGS)) $(patsubst %, -p %, $(ALL_CONTRACTS))
 
 .PHONY: build-client-contracts-rs
 build-client-contracts-rs:
 	cd smart_contracts/contracts && \
-	$(CARGO) build --release $(filter-out --release, $(CARGO_FLAGS)) $(patsubst %, -p %, $(CLIENT_CONTRACTS))
+	$(CARGO) build --profile release-smart-contracts $(filter-out --profile release-smart-contracts, $(CARGO_FLAGS)) $(patsubst %, -p %, $(CLIENT_CONTRACTS))
 
 strip-contract/%:
 	wasm-strip $(CONTRACT_TARGET_DIR)/$(subst -,_,$*).wasm 2>/dev/null | true

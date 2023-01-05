@@ -41,3 +41,13 @@ lto = true
 [profile.bench]
 codegen-units = 1
 lto = true
+
+[profile.release-smart-contracts]
+inherits = "release"
+codegen-units = 1
+# Tell `rustc` to optimize for small code size.
+opt-level = "s"
+lto = true
+debug = false
+panic = "abort"
+overflow-checks = true
