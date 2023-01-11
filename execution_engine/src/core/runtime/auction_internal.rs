@@ -200,7 +200,7 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
 
         self.context
             .access_rights_extend(&[source, target.into_add()]);
@@ -213,7 +213,8 @@ where
             .call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Transfer))?;
 
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
+
         cl_value.into_t().map_err(|_| Error::CLValue)
     }
 
@@ -233,7 +234,7 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
 
         let mint_contract_hash = self.get_mint_contract().map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
@@ -246,7 +247,7 @@ where
                 args_values,
             )
             .map_err(|error| <Option<Error>>::from(error).unwrap_or(Error::MintError))?;
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
         cl_value
             .into_t::<Result<(), mint::Error>>()
             .map_err(|_| Error::CLValue)?

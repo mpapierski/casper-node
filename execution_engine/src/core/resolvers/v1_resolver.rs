@@ -10,26 +10,20 @@ use super::{
 };
 
 pub(crate) struct RuntimeModuleImportResolver {
-    memory: RefCell<Option<MemoryRef>>,
-    max_memory: u32,
+    // memory: RefCell<Option<MemoryRef>>,
+    pub(crate) memory: MemoryRef,
+    // max_memory: u32,
 }
 
 impl RuntimeModuleImportResolver {
-    pub(crate) fn new(max_memory: u32) -> Self {
-        Self {
-            memory: RefCell::new(None),
-            max_memory,
-        }
+    pub(crate) fn new(memory: MemoryRef) -> Self {
+        Self { memory }
     }
 }
 
 impl MemoryResolver for RuntimeModuleImportResolver {
-    fn memory_ref(&self) -> Result<MemoryRef, ResolverError> {
-        self.memory
-            .borrow()
-            .as_ref()
-            .map(Clone::clone)
-            .ok_or(ResolverError::NoImportedMemory)
+    fn memory_ref(&self) -> MemoryRef {
+        self.memory.clone()
     }
 }
 
@@ -257,35 +251,19 @@ impl ModuleImportResolver for RuntimeModuleImportResolver {
         descriptor: &MemoryDescriptor,
     ) -> Result<MemoryRef, InterpreterError> {
         if field_name == "memory" {
-            match &mut *self.memory.borrow_mut() {
-                Some(_) => {
-                    // Even though most wat -> wasm compilers don't allow multiple memory entries,
-                    // we should make sure we won't accidentally allocate twice.
-                    Err(InterpreterError::Instantiation(
-                        "Memory is already instantiated".into(),
-                    ))
-                }
-                memory_ref @ None => {
-                    // Any memory entry in the wasm file without max specified is changed into an
-                    // entry with hardcoded max value. This way `maximum` below is never
-                    // unspecified, but for safety reasons we'll still default it.
-                    let descriptor_max = descriptor.maximum().unwrap_or(self.max_memory);
-                    // Checks if wasm's memory entry has too much initial memory or non-default max
-                    // memory pages exceeds the limit.
-                    if descriptor.initial() > descriptor_max || descriptor_max > self.max_memory {
-                        return Err(InterpreterError::Instantiation(
-                            "Module requested too much memory".into(),
-                        ));
-                    }
-                    // Note: each "page" is 64 KiB
-                    let mem = MemoryInstance::alloc(
-                        Pages(descriptor.initial() as usize),
-                        descriptor.maximum().map(|x| Pages(x as usize)),
-                    )?;
-                    *memory_ref = Some(mem.clone());
-                    Ok(mem)
-                }
-            }
+            Ok(self.memory.clone())
+            // match &mut *self.memory.borrow_mut() {
+            //     Some(_) => {
+            //         // Even though most wat -> wasm compilers don't allow multiple memory entries,
+            //         // we should make sure we won't accidentally allocate twice.
+            //         Err(InterpreterError::Instantiation(
+            //             "Memory is already instantiated".into(),
+            //         ))
+            //     }
+            //     memory_ref @ None => {
+            //         *memory_ref = Some(self.memory;
+            //     }
+            // }
         } else {
             Err(InterpreterError::Instantiation(
                 "Memory imported under unknown name".to_owned(),

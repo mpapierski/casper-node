@@ -13,6 +13,7 @@ use casper_types::{
     AccessRights, BlockTime, CLTyped, CLValue, ContextAccessRights, DeployHash, EntryPointType,
     Gas, Key, Phase, ProtocolVersion, RuntimeArgs, StoredValue, U512,
 };
+use pwasm_utils::rules::Metering;
 
 use crate::{
     core::{
@@ -27,7 +28,7 @@ use crate::{
     },
     shared::{
         newtypes::CorrelationId,
-        wasm_engine::{Instance, Module, WasmEngine},
+        wasm_engine::{Instance, MeteringHandle, Module, WasmEngine},
     },
     storage::global_state::StateReader,
 };
@@ -105,6 +106,8 @@ impl Executor {
             Arc::new(RwLock::new(generator))
         };
 
+        let metering_handle = Arc::new(MeteringHandle::atomic(gas_limit.value_u64()));
+
         let context = self.create_runtime_context(
             EntryPointType::Session,
             args.clone(),
@@ -116,6 +119,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
+            metering_handle,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -128,6 +132,7 @@ impl Executor {
 
         let result = match execution_kind {
             ExecutionKind::Module(module_bytes) => {
+                // TODO: Nest back into `execute_module_bytes`
                 runtime.stack = Some(stack);
 
                 match utils::attenuate_uref_in_args(
@@ -141,18 +146,21 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
+                let initial_limit = gas_limit.value_u64();
+
                 let module = match runtime.wasm_engine().preprocess(
                     correlation_id.clone(),
                     self.wasm_engine().wasm_config().clone(),
                     &module_bytes,
+                    initial_limit,
                 ) {
                     Ok(module) => module,
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                runtime.module = Some(module.get_wasmi_module());
+                runtime.module = Some(module.original_bytes().clone());
 
-                let instance = match self.wasm_engine.instance_and_memory(
+                let mut instance = match self.wasm_engine.instance_and_memory(
                     module,
                     protocol_version,
                     runtime.clone(),
@@ -161,12 +169,24 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
+                // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
+                let metering_handle = instance.get_metering_handle();
+                runtime.context_mut().metering_handle = metering_handle;
+
                 let result = instance.invoke_export(
                     correlation_id,
                     &self.wasm_engine,
                     DEFAULT_ENTRY_POINT_NAME,
                     Vec::new(),
                 );
+
+                // dbg!(&initial_limit, instance.remaining_points());
+                // if let Some(remaining_points) = instance.get_metering_handle().get_remaining_points() {
+                //     let gas_used = initial_limit.checked_sub(remaining_points).unwrap();
+                //     dbg!(gas_used);
+                // }
+
+                // instance.points
 
                 match result {
                     Ok(_) => {
@@ -232,6 +252,8 @@ impl Executor {
             Arc::new(RwLock::new(generator))
         };
 
+        let payment_metering = Arc::new(MeteringHandle::atomic(payment_gas_limit.value_u64()));
+
         let runtime_context = self.create_runtime_context(
             EntryPointType::Session,
             payment_args,
@@ -243,6 +265,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             payment_gas_limit,
+            payment_metering,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -257,17 +280,21 @@ impl Executor {
         // captures that.
         let mut runtime = Runtime::new(self.config, runtime_context, self.wasm_engine.clone());
 
-        match runtime.call_host_standard_payment(stack) {
+        let result = runtime.call_host_standard_payment(stack);
+
+        let cost = runtime.context().gas_counter();
+
+        match result {
             Ok(()) => ExecutionResult::Success {
                 execution_journal: runtime.context().execution_journal(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
+                cost,
             },
             Err(error) => ExecutionResult::Failure {
                 execution_journal,
                 error: error.into(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
+                cost,
             },
         }
     }
@@ -353,6 +380,8 @@ impl Executor {
         let access_rights = contract.extract_access_rights(contract_hash);
         let base_key = Key::from(contract_hash);
 
+        let metering_handle = Arc::new(MeteringHandle::atomic(gas_limit.value_u64()));
+
         let runtime_context = self.create_runtime_context(
             EntryPointType::Contract,
             runtime_args.clone(),
@@ -364,6 +393,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
+            metering_handle,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -422,6 +452,7 @@ impl Executor {
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
+        metering_handle: Arc<MeteringHandle>,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -448,7 +479,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
-            gas_counter,
+            metering_handle,
             address_generator,
             protocol_version,
             correlation_id.clone(),

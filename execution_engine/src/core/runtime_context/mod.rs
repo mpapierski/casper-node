@@ -32,7 +32,9 @@ use crate::{
         runtime_context::dictionary::DictionaryValue,
         tracking_copy::{AddResult, TrackingCopy, TrackingCopyExt},
     },
-    shared::{execution_journal::ExecutionJournal, newtypes::CorrelationId},
+    shared::{
+        execution_journal::ExecutionJournal, newtypes::CorrelationId, wasm_engine::MeteringHandle,
+    },
     storage::global_state::StateReader,
 };
 
@@ -95,11 +97,11 @@ pub struct RuntimeContext<R: Clone> {
     // Key pointing to the entity we are currently running
     //(could point at an account or contract in the global state)
     base_key: Key,
+    gas_limit: Gas,
+
     blocktime: BlockTime,
     deploy_hash: DeployHash,
-    gas_limit: Gas,
-    // NOTE: Should gas counter be wrapped in Arc + RwLock?
-    gas_counter: Arc<RwLock<Gas>>,
+    pub(crate) metering_handle: Arc<MeteringHandle>,
     address_generator: Arc<RwLock<AddressGenerator>>,
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
@@ -131,7 +133,7 @@ where
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
-        gas_counter: Gas,
+        metering_handle: Arc<MeteringHandle>,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -152,7 +154,7 @@ where
             deploy_hash,
             base_key,
             gas_limit,
-            gas_counter: Arc::new(RwLock::new(gas_counter)),
+            metering_handle,
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -180,7 +182,8 @@ where
         let blocktime = self.blocktime;
         let deploy_hash = self.deploy_hash;
         let gas_limit = self.gas_limit;
-        let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
+        // let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
+        let metering_handle = self.metering_handle.clone();
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
         let correlation_id = self.correlation_id.clone();
@@ -201,7 +204,7 @@ where
             deploy_hash,
             base_key,
             gas_limit,
-            gas_counter,
+            metering_handle,
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -395,17 +398,28 @@ where
     /// Returns the gas limit.
     pub fn gas_limit(&self) -> Gas {
         self.gas_limit
+        // todo!()
     }
 
     /// Returns the current gas counter.
+    pub fn get_remaining_points(&self) -> Option<Gas> {
+        self.metering_handle.get_remaining_points().map(Gas::from)
+        // .ok_or(Error::GasLimit)
+    }
+
     pub fn gas_counter(&self) -> Gas {
-        *self.gas_counter.read().unwrap()
+        // If there is no remaining points (i.e. counter is exhausted) then the counter is the limit
+        let remaining_points = self.get_remaining_points().unwrap_or_default();
+        dbg!(&self.gas_limit, &remaining_points, &self.metering_handle);
+        self.gas_limit
+            .checked_sub(remaining_points)
+            .expect("remaining_points should not be greater than initial gas limit")
     }
 
     /// Sets the gas counter to a new value.
-    pub fn set_gas_counter(&mut self, new_gas_counter: Gas) {
-        // self.gas_counter = Arc::new(new_gas_counter);
-        *self.gas_counter.write().unwrap() = new_gas_counter;
+    pub fn set_remaining_points(&self, new_gas_counter: Gas) {
+        self.metering_handle
+            .set_remaining_points(new_gas_counter.value_u64())
     }
 
     /// Returns the base key.
@@ -863,23 +877,17 @@ where
     /// Returns [`Error::GasLimit`] if gas limit exceeded and `()` if not.
     /// Intuition about the return value sense is to answer the question 'are we
     /// allowed to continue?'
-    pub(crate) fn charge_gas(&mut self, amount: Gas) -> Result<(), Error> {
-        let prev = self.gas_counter();
+    pub(crate) fn charge_gas(&self, amount: Gas) -> Result<(), Error> {
+        let prev = self.get_remaining_points().ok_or(Error::GasLimit)?;
         let gas_limit = self.gas_limit();
-        // gas charge overflow protection
-        match prev.checked_add(amount) {
+        match prev.checked_sub(amount) {
             None => {
-                self.set_gas_counter(gas_limit);
-                Err(Error::GasLimit)
-            }
-            Some(val) if val > gas_limit => {
-                self.set_gas_counter(gas_limit);
+                // NOTE: Is this correct? Was this block of code executed already (even if partially) so we can set remaining points to 0, so no further execution is possible?
+                self.set_remaining_points(Gas::from(0u64));
                 Err(Error::GasLimit)
             }
             Some(val) => {
-                // let u128_val: u128 = val.value().as_u128();
-                // eprintln!("prev={} amount={} val={}", prev, amount, u128_val);
-                self.set_gas_counter(val);
+                self.set_remaining_points(val);
                 Ok(())
             }
         }

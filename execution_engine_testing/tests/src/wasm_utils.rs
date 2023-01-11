@@ -1,13 +1,23 @@
 //! Wasm helpers.
 use std::fmt::Write;
 
-use parity_wasm::builder;
+use parity_wasm::builder::{self, ModuleBuilder};
 
 use casper_types::contracts::DEFAULT_ENTRY_POINT_NAME;
+use wabt::wasm2wat;
+
+pub(crate) fn module_template() -> ModuleBuilder {
+    builder::module()
+        .import()
+        .path("env", "memory")
+        .external()
+        .memory(1, None)
+        .build()
+}
 
 /// Creates minimal session code that does nothing
 pub fn do_nothing_bytes() -> Vec<u8> {
-    let module = builder::module()
+    let module = module_template()
         .function()
         // A signature with 0 params and no return type
         .signature()
@@ -20,9 +30,10 @@ pub fn do_nothing_bytes() -> Vec<u8> {
         .field(DEFAULT_ENTRY_POINT_NAME)
         .build()
         // Memory section is mandatory
-        .memory()
-        .build()
+        // .memory()
+        // .build()
         .build();
+
     parity_wasm::serialize(module).expect("should serialize")
 }
 
@@ -44,11 +55,11 @@ pub fn make_n_arg_call_bytes(
     // This wasm module contains a function with a specified amount of arguments in it.
     let wat = format!(
         r#"(module
+        (import "env" "memory" (memory $memory 17))
         (func $call (call $func {call_args}) (return))
         (func $func {func_params} (return))
         (export "func" (func $func))
         (export "call" (func $call))
-        (memory $memory 1)
       )"#
     );
     let module_bytes = wabt::wat2wasm(wat)?;

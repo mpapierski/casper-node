@@ -21,7 +21,7 @@ use casper_execution_engine::{
 };
 use casper_types::{contracts::DEFAULT_ENTRY_POINT_NAME, RuntimeArgs};
 
-use crate::wasm_utils;
+use crate::wasm_utils::{self, module_template};
 
 const OOM_INIT: (u32, Option<u32>) = (2805655325, None);
 const FAILURE_ONE_ABOVE_LIMIT: (u32, Option<u32>) = (DEFAULT_MAX_TABLE_SIZE + 1, None);
@@ -44,8 +44,8 @@ fn make_oom_payload(initial: u32, maximum: Option<u32>) -> Vec<u8> {
 
     let wat = format!(
         r#"(module
+            (import "env" "memory" (memory (;0;) 0))
             (table (;0;) {} funcref)
-            (memory (;0;) 0)
             (export "call" (func $call))
             (func $call))
             "#,
@@ -209,25 +209,20 @@ fn test_element_section(
     builder.run_genesis(&*PRODUCTION_RUN_GENESIS_REQUEST);
 
     let mut wat = String::new();
+    writeln!(
+        wat,
+        r#"(module
+        (import "env" "memory" (memory $mem 0))"#
+    )
+    .unwrap();
 
     if let Some(max) = table_max {
-        writeln!(
-            wat,
-            r#"(module
-            (table {table_init} {max} anyfunc)"#
-        )
-        .unwrap();
+        writeln!(wat, r#"(table {table_init} {max} anyfunc)"#).unwrap();
     } else {
-        writeln!(
-            wat,
-            r#"(module
-            (table {table_init} anyfunc)"#
-        )
-        .unwrap();
+        writeln!(wat, r#"(table {table_init} anyfunc)"#).unwrap();
     }
 
-    wat += "(memory $0 1)\n";
-    wat += r#"(export "memory" (memory $0))"#;
+    wat += r#"(export "memory" (memory $mem))"#;
     wat += "\n";
     wat += r#"(export "call" (func $call))"#;
     wat += "\n";
@@ -269,7 +264,7 @@ fn should_not_allow_more_than_one_table() {
 
     // wabt::wat2wasm doesn't allow multiple tables so we'll go with a builder
 
-    let module = builder::module()
+    let module = module_template()
         // table 1
         .table()
         .with_min(0)
@@ -356,8 +351,12 @@ fn make_arbitrary_br_table(size: usize) -> Result<Vec<u8>, Box<dyn std::error::E
     // (export "call" (func 1)))
 
     let mut src = String::new();
-    writeln!(src, "(module")?;
-    writeln!(src, "(memory (;0;) 0)")?;
+    writeln!(
+        src,
+        r#"(module
+        (import "env" "memory" (memory $mem 0))"#
+    )?;
+
     writeln!(src, r#"(export "call" (func $call))"#)?;
     writeln!(src, r#"(func $switch_like (param $p i32) (result i32)"#)?;
 
@@ -467,7 +466,7 @@ fn make_arbitrary_global(size: usize) -> Result<Vec<u8>, Box<dyn std::error::Err
     // )
     let mut src = String::new();
     writeln!(src, "(module")?;
-    writeln!(src, "  (memory $0 1)")?;
+    writeln!(src, r#"(import "env" "memory" (memory $mem 0))"#)?;
 
     for i in 0..size {
         writeln!(
@@ -635,8 +634,8 @@ fn should_not_allow_too_many_params() {
 fn should_not_allow_to_import_gas_function() {
     let module_bytes = wat::parse_str(
         r#"(module
+            (import "env" "memory" (memory $memory 17))
             (func $gas (import "env" "gas") (param i32))
-            (memory $0 1)
         )"#,
     )
     .unwrap();
@@ -674,7 +673,7 @@ fn should_not_allow_to_import_gas_function() {
 #[test]
 fn should_not_get_non_existing_global() {
     let get_undeclared_global = r#"(module
-        (memory $memory 16)
+        (import "env" "memory" (memory $memory 16))
         (export "call" (func $call_fn))
         (func $call_fn
             global.get 0
@@ -689,7 +688,7 @@ fn should_not_get_non_existing_global() {
 #[test]
 fn should_not_get_global_above_declared_range() {
     let get_undeclared_global = r#"(module
-        (memory $memory 16)
+        (import "env" "memory" (memory $memory 16))
         (export "call" (func $call_fn))
         (func $call_fn
             global.get 3
@@ -707,7 +706,8 @@ fn should_not_get_global_above_declared_range() {
 #[test]
 fn should_not_set_non_existing_global() {
     let set_undeclared_global = r#"(module
-        (memory $memory 16)
+                (import "env" "memory" (memory $memory 17))
+
         (export "call" (func $call_fn))
         (func $call_fn
             i32.const 123
@@ -724,7 +724,8 @@ fn should_not_set_non_existing_global() {
 fn should_not_set_non_existing_global_u32_max() {
     let set_undeclared_global = format!(
         r#"(module
-        (memory $memory 16)
+                (import "env" "memory" (memory $memory 17))
+
         (export "call" (func $call_fn))
         (func $call_fn
             i32.const 0
@@ -745,7 +746,8 @@ fn should_not_set_non_existing_global_u32_max() {
 fn should_not_get_non_existing_global_u32_max() {
     let set_undeclared_global = format!(
         r#"(module
-        (memory $memory 16)
+                (import "env" "memory" (memory $memory 17))
+
         (export "call" (func $call_fn))
         (func $call_fn
             global.get {index}
@@ -763,7 +765,8 @@ fn should_not_get_non_existing_global_u32_max() {
 #[test]
 fn should_not_set_non_existing_global_above_declared_range() {
     let set_undeclared_global = r#"(module
-        (memory $memory 16)
+                (import "env" "memory" (memory $memory 17))
+
         (export "call" (func $call_fn))
         (func $call_fn
             i32.const 0

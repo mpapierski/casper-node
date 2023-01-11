@@ -1,4 +1,8 @@
-use std::{collections::BTreeSet, convert::TryFrom};
+use std::{
+    collections::BTreeSet,
+    convert::TryFrom,
+    sync::{Arc, RwLock},
+};
 
 use wasmi::{Externals, MemoryRef, ModuleRef, RuntimeArgs, RuntimeValue, Trap};
 
@@ -18,7 +22,7 @@ use crate::{
     core::{execution, resolvers::v1_function_index::FunctionIndex},
     shared::{
         host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
-        wasm_engine::{FunctionContext, WasmiAdapter},
+        wasm_engine::{FunctionContext, MeteringHandle, WasmiAdapter},
     },
     storage::global_state::StateReader,
 };
@@ -34,8 +38,9 @@ where
     R::Error: Into<Error>,
 {
     pub runtime: &'a mut Runtime<R>,
-    pub module: ModuleRef,
+    // pub module: ModuleRef,
     pub memory: MemoryRef,
+    pub metering_handle: Arc<MeteringHandle>,
 }
 
 impl<'b, R> Externals for WasmiExternals<'b, R>
@@ -228,7 +233,32 @@ where
 
             FunctionIndex::GasFuncIndex => {
                 let (gas_arg,): (u32,) = Args::parse(args)?;
-                self.runtime.gas(Gas::new(gas_arg.into()))?;
+
+                // if unsigned(globals[remaining_points_index]) < unsigned(self.accumulated_cost) { throw(); }
+                // globals[remaining_points_index] -= self.accumulated_cost;
+
+                let gas_arg_64bit: u64 = gas_arg.into();
+                self.runtime
+                    .context()
+                    .charge_gas(Gas::from(gas_arg_64bit))?;
+
+                // if *self.remaining_points < gas_arg.into() {
+                //     *self.exhausted_points = true;
+                //     return Err(execution::Error::GasLimit.into());
+                // } else {
+                //     *self.remaining_points -= gas_arg_64bit;
+                // }
+
+                // let current_limit = *self.remaining_points;
+
+                // match current_limit.checked_sub(gas_arg.into()) {
+                //     Some(new_limit) => {
+                //         *self.remaining_points = new_limit;
+                //     }
+                //     None => {
+                //         return Err(execution::Error::GasLimit.into());
+                //     }
+                // }
                 Ok(None)
             }
 

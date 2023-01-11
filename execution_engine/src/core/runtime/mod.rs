@@ -53,8 +53,8 @@ use crate::{
         host_function_costs::{Cost, HostFunction},
         newtypes::{CorrelationId, Property},
         wasm_engine::{
-            self, FunctionContext, Module, PreprocessingError, RuntimeValue, WasmEngine,
-            WasmiModule,
+            self, FunctionContext, Instance, MeteringHandle, Module, PreprocessingError,
+            RuntimeValue, WasmEngine, WasmiModule,
         },
     },
     storage::global_state::StateReader,
@@ -95,9 +95,16 @@ where
 
 /// Represents the runtime properties of a WASM execution.
 #[derive(Clone)]
-pub struct Runtime<R: Clone> {
+pub struct Runtime<R>
+where
+    R: Clone,
+{
+    // where
+    //     R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
+    //     R::Error: Into<execution::Error>,
+    // {
     pub(crate) config: EngineConfig,
-    pub(crate) module: Option<WasmiModule>,
+    pub(crate) module: Option<bytes::Bytes>,
     pub(crate) host_buffer: Arc<Mutex<Option<CLValue>>>,
     pub(crate) context: RuntimeContext<R>,
     pub(crate) stack: Option<RuntimeStack>,
@@ -106,6 +113,10 @@ pub struct Runtime<R: Clone> {
     // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime
     // issues when dealing with wasmtime's Store object.
     pub wasmtime_memory: Option<wasmtime::Memory>,
+    // pub instance: Option<Box<Instance<R>>,
+
+    // // NOTE: For practical purposes this is defaulted to "atomic" counter initialized with provided gas limit and later when we have Wasm instance it's wasm-specific metering handle.
+    // pub metering_handle: Arc<MeteringHandle>,
 }
 
 impl<R> Runtime<R>
@@ -128,6 +139,8 @@ where
             host_function_flag: HostFunctionFlag::default(),
             wasm_engine,
             wasmtime_memory: None,
+            // metering_handle: None,
+            // instance: None,
         }
     }
 
@@ -141,13 +154,14 @@ where
         Self::check_preconditions(&stack);
         Runtime {
             config: self.config,
-            module: Some(module.get_wasmi_module()),
+            module: Some(module.original_bytes().clone()),
             host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: Some(stack),
             host_function_flag: self.host_function_flag.clone(),
             wasm_engine: self.wasm_engine.clone(),
             wasmtime_memory: self.wasmtime_memory.clone(),
+            // metering_handle: self.instance.clone(),
         }
     }
 
@@ -163,6 +177,7 @@ where
             host_function_flag: self.host_function_flag.clone(),
             wasm_engine: self.wasm_engine.clone(),
             wasmtime_memory: self.wasmtime_memory,
+            // instance: None,
         }
     }
 
@@ -184,19 +199,9 @@ where
     pub(crate) fn context(&self) -> &RuntimeContext<R> {
         &self.context
     }
-
-    pub(crate) fn gas(&mut self, amount: Gas) -> Result<(), Error> {
-        self.context.charge_gas(amount)
-    }
-
-    /// Returns current gas counter.
-    fn gas_counter(&self) -> Gas {
-        self.context.gas_counter()
-    }
-
-    /// Sets new gas counter value.
-    fn set_gas_counter(&mut self, new_gas_counter: Gas) {
-        self.context.set_gas_counter(new_gas_counter);
+    /// Returns the mutable context.
+    pub(crate) fn context_mut(&mut self) -> &mut RuntimeContext<R> {
+        &mut self.context
     }
 
     /// Charge for a system contract call.
@@ -223,7 +228,10 @@ where
         &mut self,
         entry_points: &EntryPoints,
     ) -> Result<Vec<u8>, Error> {
-        let mut parity_wasm = self.module.clone().unwrap();
+        // let mut parity_wasm = self.module.clone().unwrap();
+        let mut parity_wasm = wasm_engine::deserialize_interpreted(
+            self.module.as_ref().expect("should have wasm module bytes"),
+        )?;
 
         // let memory = parity_wasm
         //     .memory_section()
@@ -249,27 +257,30 @@ where
         if let Some(missing_name) = maybe_missing_name {
             Err(Error::FunctionNotFound(missing_name))
         } else {
-            let mut module = self.module.clone().unwrap();
-            pwasm_utils::optimize(&mut module, entry_point_names)?;
+            // let mut module = self.module.clone().unwrap();
+            // let mut parity_wasm = parity_wasm;
 
-            match module.import_section() {
-                Some(imports) => {
-                    let memories = imports
-                        .entries()
-                        .iter()
-                        .filter_map(|entry| match entry.external() {
-                            parity_wasm::elements::External::Function(_) => None,
-                            parity_wasm::elements::External::Table(_) => None,
-                            parity_wasm::elements::External::Memory(mem) => Some(mem),
-                            parity_wasm::elements::External::Global(_) => None,
-                        })
-                        .collect::<Vec<_>>();
-                    assert!(!memories.is_empty());
-                }
-                None => todo!(),
-            }
+            pwasm_utils::optimize(&mut parity_wasm, entry_point_names)?;
+
+            // match parity_wasm.import_section() {
+            //     Some(imports) => {
+            //         // let memories = imports
+            //         //     .entries()
+            //         //     .iter()
+            //         //     .filter_map(|entry| match entry.external() {
+            //         //         parity_wasm::elements::External::Function(_) => None,
+            //         //         parity_wasm::elements::External::Table(_) => None,
+            //         //         parity_wasm::elements::External::Memory(mem) => Some(mem),
+            //         //         parity_wasm::elements::External::Global(_) => None,
+            //         //     })
+            //         //     .collect::<Vec<_>>();
+            //         // assert!(!memories.is_empty());
+            //     }
+            //     None => todo!(),
+            // }
             // debug_assert!(module.import_section().unwrap_or_default().map(|import| import.)
-            parity_wasm::serialize(module).map_err(Error::ParityWasm)
+            parity_wasm.to_bytes().map_err(Error::ParityWasm)
+            // parity_wasm::serialize(module.deref()).map_err(Error::ParityWasm)
         }
     }
 
@@ -660,7 +671,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
 
         let mint_hash = self.context.get_system_contract(MINT)?;
         let base_key = Key::from(mint_hash);
@@ -761,10 +772,10 @@ where
         // Charge just for the amount that particular entry point cost - using gas cost from the
         // isolated runtime might have a recursive costs whenever system contract calls other system
         // contract.
-        self.gas(match mint_runtime.gas_counter().checked_sub(gas_counter) {
-            None => gas_counter,
-            Some(new_gas) => new_gas,
-        })?;
+        // self.gas(match mint_runtime.gas_counter().checked_sub(gas_counter) {
+        //     None => gas_counter,
+        //     Some(new_gas) => new_gas,
+        // })?;
 
         // Result still contains a result, but the entrypoints logic does not exit early on errors.
         let ret = result?;
@@ -790,7 +801,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
 
         let handle_payment_hash = self.context.get_system_contract(HANDLE_PAYMENT)?;
         let base_key = Key::from(handle_payment_hash);
@@ -854,10 +865,10 @@ where
             _ => CLValue::from_t(()).map_err(Self::reverter),
         };
 
-        self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
+        let cost = match runtime.context().gas_counter().checked_sub(gas_counter) {
             None => gas_counter,
             Some(new_gas) => new_gas,
-        })?;
+        };
 
         let ret = result?;
         let urefs = utils::extract_urefs(&ret)?;
@@ -874,11 +885,11 @@ where
         // NOTE: This method (unlike other call_host_* methods) already runs on its own runtime
         // context.
         self.stack = Some(stack);
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
         let amount: U512 =
             Self::get_named_argument(self.context.args(), standard_payment::ARG_AMOUNT)?;
         let result = self.pay(amount).map_err(Self::reverter);
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
         result
     }
 
@@ -890,7 +901,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
 
         let auction_hash = self.context.get_system_contract(AUCTION)?;
         let base_key = Key::from(auction_hash);
@@ -1067,10 +1078,11 @@ where
         };
 
         // Charge for the gas spent during execution in an isolated runtime.
-        self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
+        let gas = match runtime.context.gas_counter().checked_sub(gas_counter) {
             None => gas_counter,
             Some(new_gas) => new_gas,
-        })?;
+        };
+        self.context.charge_gas(gas)?;
 
         // Result still contains a result, but the entrypoints logic does not exit early on errors.
         let ret = result?;
@@ -1366,8 +1378,12 @@ where
                     original_bytes: wasm_bytes.clone(),
                 });
 
-            self.wasm_engine
-                .module_from_bytes(self.context.correlation_id().clone(), wasm_bytes.clone())?
+            let initial_limit = self.context.gas_limit().value_u64();
+            self.wasm_engine.module_from_bytes(
+                self.context.correlation_id().clone(),
+                wasm_bytes.clone(),
+                initial_limit,
+            )?
         };
 
         let context = self.context.new_from_self(
@@ -1381,9 +1397,18 @@ where
 
         let mut runtime = Runtime::new_invocation_runtime(self, context, &module, stack);
 
-        let instance =
+        let mut instance =
             self.wasm_engine
                 .instance_and_memory(module, protocol_version, runtime.clone())?;
+
+        // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
+        let metering_handle = instance.get_metering_handle();
+        let remaining_points = self
+            .context()
+            .get_remaining_points()
+            .ok_or(Error::GasLimit)?;
+        metering_handle.set_remaining_points(remaining_points.value_u64());
+        runtime.context_mut().metering_handle = metering_handle;
 
         let result = instance.invoke_export(
             self.context.correlation_id().clone(),
@@ -1397,7 +1422,9 @@ where
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
         // counter from there to our counter.
-        self.context.set_gas_counter(runtime.context.gas_counter());
+        if let Some(remaining_points) = runtime.context.get_remaining_points() {
+            self.context.set_remaining_points(remaining_points);
+        }
 
         {
             // let transfers = self.context.transfers_mut();
@@ -2327,13 +2354,13 @@ where
         &mut self,
         mint_contract_hash: ContractHash,
     ) -> Result<U512, Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
         let call_result = self.call_contract(
             mint_contract_hash,
             mint::METHOD_READ_BASE_ROUND_REWARD,
             RuntimeArgs::default(),
         );
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
 
         let reward = call_result?.into_t()?;
         Ok(reward)
@@ -2342,14 +2369,14 @@ where
     /// Calls the `mint` method on the mint contract at the given mint
     /// contract key
     fn mint_mint(&mut self, mint_contract_hash: ContractHash, amount: U512) -> Result<URef, Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
             runtime_args
         };
         let call_result = self.call_contract(mint_contract_hash, mint::METHOD_MINT, runtime_args);
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
 
         let result: Result<URef, mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -2362,7 +2389,7 @@ where
         mint_contract_hash: ContractHash,
         amount: U512,
     ) -> Result<(), Error> {
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
@@ -2373,7 +2400,7 @@ where
             mint::METHOD_REDUCE_TOTAL_SUPPLY,
             runtime_args,
         );
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
 
         let result: Result<(), mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -2439,10 +2466,10 @@ where
             runtime_args
         };
 
-        let gas_counter = self.gas_counter();
+        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
         let call_result =
             self.call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values);
-        self.set_gas_counter(gas_counter);
+        self.context.set_remaining_points(gas_counter);
 
         Ok(call_result?.into_t()?)
     }
@@ -3130,7 +3157,7 @@ where
         T: AsRef<[Cost]> + Copy,
     {
         let cost = host_function.calculate_gas_cost(weights);
-        self.gas(cost)?;
+        self.context.charge_gas(cost)?;
         Ok(())
     }
 

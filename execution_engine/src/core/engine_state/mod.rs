@@ -606,8 +606,8 @@ where
         };
         let purse_balance_key =
             tracking_copy.get_purse_balance_key(correlation_id.clone(), purse_uref.into())?;
-        let (balance, proof) =
-            tracking_copy.get_purse_balance_with_proof(correlation_id.clone(), purse_balance_key)?;
+        let (balance, proof) = tracking_copy
+            .get_purse_balance_with_proof(correlation_id.clone(), purse_balance_key)?;
         let proof = Box::new(proof);
         let motes = balance.value();
         Ok(BalanceResult::Success { motes, proof })
@@ -775,7 +775,8 @@ where
         let mut runtime_args_builder =
             TransferRuntimeArgsBuilder::new(deploy_item.session.args().clone());
 
-        match runtime_args_builder.transfer_target_mode(correlation_id.clone(), Arc::clone(&tracking_copy))
+        match runtime_args_builder
+            .transfer_target_mode(correlation_id.clone(), Arc::clone(&tracking_copy))
         {
             Ok(mode) => match mode {
                 TransferTargetMode::Unknown | TransferTargetMode::PurseExists(_) => { /* noop */ }
@@ -1653,7 +1654,7 @@ where
                 proposer_purse,
             ]);
 
-            let gas_limit = Gas::new(U512::MAX);
+            let gas_limit = Gas::from(u64::MAX); // U512 max
 
             let handle_payment_stack = self.get_new_system_call_stack();
 
@@ -1716,7 +1717,9 @@ where
     where
         Error: From<S::Error>,
     {
-        Ok(self.state.get_trie(correlation_id.clone(), trie_or_chunk_id)?)
+        Ok(self
+            .state
+            .get_trie(correlation_id.clone(), trie_or_chunk_id)?)
     }
 
     /// Gets a trie object for given state root hash.
@@ -1728,7 +1731,9 @@ where
     where
         Error: From<S::Error>,
     {
-        Ok(self.state.get_trie_full(correlation_id.clone(), &trie_key)?)
+        Ok(self
+            .state
+            .get_trie_full(correlation_id.clone(), &trie_key)?)
     }
 
     /// Puts a trie and finds missing descendant trie keys.
@@ -1776,13 +1781,15 @@ where
 
         let system_contract_registry = match system_contract_registry {
             Some(system_contract_registry) => system_contract_registry,
-            None => match self.get_system_contract_registry(correlation_id.clone(), state_root_hash) {
-                Ok(system_contract_registry) => system_contract_registry,
-                Err(error) => {
-                    error!(%state_root_hash, %error, "unable to get era validators");
-                    return Err(error.into());
+            None => {
+                match self.get_system_contract_registry(correlation_id.clone(), state_root_hash) {
+                    Ok(system_contract_registry) => system_contract_registry,
+                    Err(error) => {
+                        error!(%state_root_hash, %error, "unable to get era validators");
+                        return Err(error.into());
+                    }
                 }
-            },
+            }
         };
 
         let auction_hash = system_contract_registry
@@ -1850,8 +1857,9 @@ where
         let mut bids = BTreeMap::new();
 
         for key in bid_keys.iter() {
-            if let Some(StoredValue::Bid(bid)) =
-                tracking_copy.get(correlation_id.clone(), key).map_err(Into::into)?
+            if let Some(StoredValue::Bid(bid)) = tracking_copy
+                .get(correlation_id.clone(), key)
+                .map_err(Into::into)?
             {
                 bids.insert(bid.validator_public_key().clone(), *bid);
             };

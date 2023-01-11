@@ -6,6 +6,8 @@ use parity_wasm::{
 
 use casper_engine_test_support::DEFAULT_WASM_CONFIG;
 
+use crate::wasm_utils::module_template;
+
 /// Prepare malicious payload with amount of opcodes that could potentially overflow injected gas
 /// counter.
 pub(crate) fn make_gas_counter_overflow() -> Vec<u8> {
@@ -20,7 +22,7 @@ pub(crate) fn make_gas_counter_overflow() -> Vec<u8> {
         Instructions::new(instructions)
     };
 
-    let module = builder::module()
+    let module = module_template()
         .function()
         // A signature with 0 params and no return type
         .signature()
@@ -33,9 +35,6 @@ pub(crate) fn make_gas_counter_overflow() -> Vec<u8> {
         // Export above function
         .export()
         .field(DEFAULT_ENTRY_POINT_NAME)
-        .build()
-        // Memory section is mandatory
-        .memory()
         .build()
         .build();
     parity_wasm::serialize(module).expect("should serialize")
@@ -65,6 +64,11 @@ pub(crate) fn make_module_without_memory_section() -> Vec<u8> {
         // Export above function
         .export()
         .field(DEFAULT_ENTRY_POINT_NAME)
+        .build()
+        .import()
+        .path("env", "memory")
+        .external()
+        .memory(1, None)
         .build()
         .build();
     parity_wasm::serialize(module).expect("should serialize")

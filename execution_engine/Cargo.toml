@@ -59,6 +59,8 @@ wasmtime = { version = "0.30.0", default-features = false, features = [
 wasmer = "3.1.0"
 wasmer-compiler-singlepass = "3.1.0"
 wasmer-compiler-cranelift = "3.1.0"
+moka = "0.9.6"
+wasmer-middlewares = "3.1.0"
 
 # integration tests fail with BufferTooSmall error
 #llvm-sys = "120"

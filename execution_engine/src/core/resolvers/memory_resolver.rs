@@ -9,5 +9,5 @@ use super::error::ResolverError;
 /// contract didn't request a memory this method should return an Error.
 pub trait MemoryResolver {
     /// Returns a memory instance.
-    fn memory_ref(&self) -> Result<MemoryRef, ResolverError>;
+    fn memory_ref(&self) -> MemoryRef;
 }

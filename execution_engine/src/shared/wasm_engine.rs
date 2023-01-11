@@ -9,6 +9,7 @@ use casper_types::{
     ProtocolVersion, StoredValue, URef, U512,
 };
 use itertools::Itertools;
+use moka::sync::Cache;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use once_cell::sync::Lazy;
@@ -29,15 +30,20 @@ use std::{
     ops::{Deref, DerefMut},
     path::Path,
     rc::Rc,
-    sync::{Arc, Mutex, Once, RwLock},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc, Mutex, Once, RwLock,
+    },
     time::{Duration, Instant},
 };
 use thiserror::Error;
 use tracing::Subscriber;
 use wasmer::{
-    imports, AsStoreMut, AsStoreRef, Cranelift, FunctionEnv, FunctionEnvMut, TypedFunction,
+    imports, wasmparser::Operator, AsStoreMut, AsStoreRef, CompilerConfig, Cranelift, FunctionEnv,
+    FunctionEnvMut, ModuleMiddleware, Pages, TypedFunction,
 };
 use wasmer_compiler_singlepass::Singlepass;
+use wasmer_middlewares::metering::{self, MeteringPoints};
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
 /// Name of the internal gas function injected by [`pwasm_utils::inject_gas_counter`].
@@ -53,7 +59,7 @@ pub const DEFAULT_MAX_GLOBALS: u32 = 256;
 pub const DEFAULT_MAX_PARAMETER_COUNT: u32 = 256;
 
 pub use parity_wasm::elements::Module as WasmiModule;
-use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
+use wasmi::{ImportsBuilder, MemoryInstance, MemoryRef, ModuleInstance, ModuleRef};
 use wasmtime::{
     AsContext, AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory,
     MemoryType, StoreContextMut, Trap,
@@ -63,8 +69,8 @@ use crate::{
     core::{
         execution,
         resolvers::{
-            create_module_resolver, memory_resolver::MemoryResolver,
-            v1_function_index::FunctionIndex,
+            memory_resolver::MemoryResolver, v1_function_index::FunctionIndex,
+            v1_resolver::RuntimeModuleImportResolver,
         },
         runtime::{externals::WasmiExternals, Runtime, RuntimeStack},
     },
@@ -98,7 +104,7 @@ pub enum WasmerBackend {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ExecutionMode {
     /// Runs Wasm modules in interpreted mode.
-    Interpreted,
+    Interpreted { cache_artifacts: bool },
     /// Runs Wasm modules in a compiled mode.
     Compiled { cache_artifacts: bool },
     /// Runs Wasm modules in a JIT mode.
@@ -123,7 +129,7 @@ impl ExecutionMode {
 
     pub fn is_using_cache(&self) -> bool {
         match self {
-            ExecutionMode::Interpreted => false,
+            ExecutionMode::Interpreted { cache_artifacts } => *cache_artifacts,
             ExecutionMode::Compiled { cache_artifacts } => *cache_artifacts,
             ExecutionMode::JustInTime => false,
             ExecutionMode::Wasmer {
@@ -136,7 +142,7 @@ impl ExecutionMode {
 impl ToBytes for ExecutionMode {
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
         match self {
-            ExecutionMode::Interpreted => 1u32.to_bytes(),
+            ExecutionMode::Interpreted { cache_artifacts } => (1u32, *cache_artifacts).to_bytes(),
             ExecutionMode::Compiled { cache_artifacts } => (2u32, *cache_artifacts).to_bytes(),
             ExecutionMode::JustInTime => 3u32.to_bytes(),
             ExecutionMode::Wasmer {
@@ -147,7 +153,9 @@ impl ToBytes for ExecutionMode {
 
     fn serialized_length(&self) -> usize {
         match self {
-            ExecutionMode::Interpreted => 1u32.serialized_length(),
+            ExecutionMode::Interpreted { cache_artifacts } => {
+                (1u32, *cache_artifacts).serialized_length()
+            }
             ExecutionMode::Compiled { cache_artifacts } => {
                 (2u32, *cache_artifacts).serialized_length()
             }
@@ -165,7 +173,13 @@ impl FromBytes for ExecutionMode {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
         let (execution_mode, rem) = u32::from_bytes(bytes)?;
         if execution_mode == 1 {
-            Ok((ExecutionMode::Interpreted, rem))
+            let (flag, rem) = bool::from_bytes(rem)?;
+            Ok((
+                ExecutionMode::Interpreted {
+                    cache_artifacts: flag,
+                },
+                rem,
+            ))
         } else if execution_mode == 2 {
             let (flag, rem) = bool::from_bytes(rem)?;
             Ok((
@@ -180,7 +194,12 @@ impl FromBytes for ExecutionMode {
             // let (backend, rem) = u32::from_bytes(rem)?;
             // let backend = WasmerBackend::from_u32(backend).ok_or(bytesrepr::Error::Formatting)?;
             let (flag, rem) = bool::from_bytes(rem)?;
-            Ok((ExecutionMode::Interpreted, rem))
+            Ok((
+                ExecutionMode::Interpreted {
+                    cache_artifacts: flag,
+                },
+                rem,
+            ))
         } else {
             Err(bytesrepr::Error::Formatting)
         }
@@ -190,7 +209,9 @@ impl FromBytes for ExecutionMode {
 impl Distribution<ExecutionMode> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ExecutionMode {
         match rng.gen::<bool>() {
-            false => ExecutionMode::Interpreted,
+            false => ExecutionMode::Interpreted {
+                cache_artifacts: rng.gen(),
+            },
             true => ExecutionMode::Compiled {
                 cache_artifacts: rng.gen(),
             },
@@ -198,7 +219,9 @@ impl Distribution<ExecutionMode> for Standard {
     }
 }
 
-fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, PreprocessingError> {
+pub(crate) fn deserialize_interpreted(
+    wasm_bytes: &[u8],
+) -> Result<WasmiModule, PreprocessingError> {
     parity_wasm::elements::deserialize_buffer(wasm_bytes).map_err(PreprocessingError::from)
 }
 
@@ -206,12 +229,11 @@ fn deserialize_interpreted(wasm_bytes: &[u8]) -> Result<WasmiModule, Preprocessi
 /// NOTE: Probably at this stage it can hold raw wasm bytes without being an enum, and the decision
 /// can be made later
 pub enum Module {
-    /// TODO: We might not need it anymore. We use "do nothing" bytes for replacing wasm modules
-    Noop,
     Interpreted {
         original_bytes: Bytes,
         wasmi_module: WasmiModule,
         timestamp: Instant,
+        initial_limit: u64,
     },
     Compiled {
         original_bytes: Bytes,
@@ -230,7 +252,7 @@ pub enum Module {
     },
     Singlepass {
         original_bytes: Bytes,
-        wasmi_module: WasmiModule,
+        // wasmi_module: WasmiModule,
         wasmer_module: wasmer::Module,
         store: wasmer::Store,
         timestamp: Instant,
@@ -240,7 +262,6 @@ pub enum Module {
 impl fmt::Debug for Module {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Noop => f.debug_tuple("Noop").finish(),
             Self::Interpreted { wasmi_module, .. } => {
                 f.debug_tuple("Interpreted").field(wasmi_module).finish()
             }
@@ -252,56 +273,13 @@ impl fmt::Debug for Module {
 }
 
 impl Module {
-    pub fn try_into_interpreted(self) -> Result<WasmiModule, Self> {
-        if let Self::Interpreted { wasmi_module, .. } = self {
-            Ok(wasmi_module)
-        } else {
-            Err(self)
-        }
-    }
-
-    /// Consumes self, and returns an [`WasmiModule`] regardless of an implementation.
-    ///
-    /// Such module can be useful for performing optimizations. To create a [`Module`] back use
-    /// appropriate [`WasmEngine`] method.
-    pub fn into_interpreted(self) -> WasmiModule {
+    pub fn original_bytes(&self) -> &Bytes {
         match self {
-            Module::Noop => unimplemented!("Attempting to get interpreted module from noop"),
-            Module::Interpreted {
-                original_bytes,
-                wasmi_module,
-                ..
-            } => wasmi_module,
-            Module::Compiled { wasmi_module, .. } => wasmi_module,
-            Module::Jitted { wasmi_module, .. } => wasmi_module,
-            Module::Singlepass { wasmi_module, .. } => wasmi_module,
+            Module::Interpreted { original_bytes, .. } => original_bytes,
+            Module::Compiled { original_bytes, .. } => original_bytes,
+            Module::Jitted { original_bytes, .. } => original_bytes,
+            Module::Singlepass { original_bytes, .. } => original_bytes,
         }
-    }
-
-    pub fn get_wasmi_module(&self) -> WasmiModule {
-        let wasmi_module_ref = match self {
-            Module::Noop => unreachable!("noop is unused"),
-            Module::Interpreted {
-                original_bytes,
-                wasmi_module,
-                ..
-            } => wasmi_module,
-            Module::Compiled {
-                original_bytes,
-                wasmi_module,
-                precompile_time,
-
-                wasmtime_module,
-            } => wasmi_module,
-            Module::Jitted {
-                original_bytes,
-                wasmi_module,
-                precompile_time,
-                module,
-            } => wasmi_module,
-            Module::Singlepass { wasmi_module, .. } => wasmi_module,
-        };
-        wasmi_module_ref.clone()
     }
 }
 
@@ -416,20 +394,87 @@ impl Into<wasmi::RuntimeValue> for RuntimeValue {
     }
 }
 
+#[derive(Debug)]
+pub struct AtomicMeteringHandle {
+    remaining_points: AtomicU64,
+    exhausted_points: AtomicBool,
+}
+
+impl AtomicMeteringHandle {
+    pub fn with_limit(remaining_points: u64) -> Self {
+        Self {
+            remaining_points: remaining_points.into(),
+            exhausted_points: false.into(),
+        }
+    }
+    fn get_remaining_points(&self) -> Option<u64> {
+        if self.exhausted_points.load(Ordering::SeqCst) {
+            None
+        } else {
+            Some(self.remaining_points.load(Ordering::SeqCst))
+        }
+    }
+    fn set_remaining_points(&self, new_limit: u64) {
+        self.remaining_points.store(new_limit, Ordering::SeqCst);
+        self.exhausted_points.store(false, Ordering::SeqCst);
+        // if self.exhausted_points.load(Ordering::SeqCst) {
+        //     None
+        // } else {
+        //     Some(self.remaining_points.load(Ordering::SeqCst))
+        // }
+    }
+}
+
+#[derive(Debug)]
+pub enum MeteringHandle {
+    Atomic(AtomicMeteringHandle),
+    Wasmer {
+        store: Arc<RwLock<wasmer::Store>>,
+        instance: wasmer::Instance,
+    },
+}
+
+impl MeteringHandle {
+    pub(crate) fn get_remaining_points(&self) -> Option<u64> {
+        match self {
+            MeteringHandle::Atomic(metering_handle) => metering_handle.get_remaining_points(),
+            MeteringHandle::Wasmer { store, instance } => {
+                let mut store = store.write().unwrap();
+                match metering::get_remaining_points(&mut store.as_store_mut(), &instance) {
+                    MeteringPoints::Remaining(remaining) => Some(remaining),
+                    MeteringPoints::Exhausted => None,
+                }
+            }
+        }
+    }
+    pub(crate) fn set_remaining_points(&self, points: u64) {
+        match self {
+            MeteringHandle::Atomic(metering_handle) => metering_handle.set_remaining_points(points),
+            MeteringHandle::Wasmer { store, instance } => {
+                let mut store = store.write().unwrap();
+                metering::set_remaining_points(&mut store.as_store_mut(), instance, points)
+            }
+        }
+    }
+
+    pub(crate) fn atomic(initial_limit: u64) -> MeteringHandle {
+        MeteringHandle::Atomic(AtomicMeteringHandle::with_limit(initial_limit))
+    }
+}
+
 /// Warmed up instance of a wasm module used for execution.
-pub enum Instance<R>
-where
-    R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
-    R::Error: Into<execution::Error>,
+pub enum Instance<R: Clone>
+// where
+//     R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
+//     R::Error: Into<execution::Error>,
 {
-    // TODO: We might not need it. Actually trying to execute a noop is a programming error.
-    Noop,
     Interpreted {
         original_bytes: Bytes,
         module: ModuleRef,
         memory: MemoryRef,
         runtime: Runtime<R>,
         timestamp: Instant,
+        metering_handle: Arc<MeteringHandle>,
     },
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
@@ -445,21 +490,22 @@ where
     },
     Singlepass {
         original_bytes: Bytes,
-        module: WasmiModule,
+        // module: WasmiModule,
         /// There is no separate "compile" step that turns a wasm bytes into a wasmer module
-        wasmer_module: wasmer::Module,
-        runtime: Runtime<R>,
-        store: wasmer::Store,
+        // wasmer_module: wasmer::Module,
+        // runtime: Runtime<R>,
+        store: Arc<RwLock<wasmer::Store>>,
         timestamp: Instant,
+        instance: wasmer::Instance,
     },
 }
 
-unsafe impl<R> Send for Instance<R>
-where
-    R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
-    R::Error: Into<execution::Error>,
-{
-}
+// unsafe impl<R> Send for Instance<R>
+// where
+//     R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
+//     R::Error: Into<execution::Error>,
+// {
+// }
 // unsafe impl<R> Sync for Instance<R> where R: Sync {}
 
 impl<R> fmt::Debug for Instance<R>
@@ -469,7 +515,6 @@ where
 {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Noop => f.debug_tuple("Noop").finish(),
             Self::Interpreted { module, memory, .. } => f
                 .debug_tuple("Interpreted")
                 .field(module)
@@ -586,7 +631,6 @@ where
 {
     pub fn interpreted_memory(&self) -> MemoryRef {
         match self {
-            Instance::Noop => unimplemented!("Unable to get interpreted memory from noop module"),
             Instance::Interpreted { memory, .. } => memory.clone(),
             Instance::Compiled { .. } => unreachable!("available only from wasmi externals"),
             Instance::Singlepass { .. } => unreachable!("available only from wasmi externals"),
@@ -594,30 +638,31 @@ where
     }
     /// Invokes exported function
     pub fn invoke_export(
-        self,
+        &mut self,
         correlation_id: CorrelationId,
         wasm_engine: &WasmEngine,
         func_name: &str,
         args: Vec<RuntimeValue>,
     ) -> Result<Option<RuntimeValue>, RuntimeError> {
         match self {
-            Instance::Noop => {
-                unimplemented!("Unable to execute export {} on noop instance", func_name)
-            }
             Instance::Interpreted {
                 original_bytes,
                 module,
                 memory,
-                mut runtime,
+                runtime,
                 timestamp,
+                metering_handle,
             } => {
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
                     args.into_iter().map(|value| value.into()).collect();
 
                 let mut wasmi_externals = WasmiExternals {
-                    runtime: &mut runtime,
-                    module: module.clone(),
+                    runtime: runtime,
+                    // module: module.clone(),
+                    // remaining_points: initial_limit,
                     memory: memory.clone(),
+                    // exhausted_points,
+                    metering_handle: metering_handle.clone(),
                 };
 
                 let preprocess_dur = timestamp.elapsed();
@@ -644,7 +689,7 @@ where
             Instance::Compiled {
                 original_bytes,
                 module,
-                mut compiled_module,
+                compiled_module,
                 precompile_time,
                 runtime,
             } => {
@@ -896,7 +941,8 @@ where
                         "env",
                         "gas",
                         |mut caller: Caller<Runtime<R>>, param: u32| {
-                            caller.data_mut().gas(Gas::new(U512::from(param)))?;
+                            // caller.data_mut().gas(Gas::new(U512::from(param)))?;
+                            todo!("wasmtime gas temporarily unavailable");
                             Ok(())
                         },
                     )
@@ -1856,39 +1902,955 @@ where
 
                 let start = Instant::now();
 
-                let instance = linker
-                    .instantiate(&mut store, &compiled_module)
-                    .map_err(|error| RuntimeError::Other(error.to_string()))?;
+                // let instance = linker
+                //     .instantiate(&mut store, &compiled_module)
+                //     .map_err(|error| RuntimeError::Other(error.to_string()))?;
+                todo!("wasmtime temporarily unavailable");
 
-                let exported_func = instance
-                    .get_typed_func::<(), (), _>(&mut store, func_name)
-                    .expect("should get typed func");
+                // let exported_func = instance
+                //     .get_typed_func::<(), (), _>(&mut store, func_name)
+                //     .expect("should get typed func");
 
-                let ret = exported_func
-                    .call(&mut store, ())
-                    .map_err(RuntimeError::from);
+                // let ret = exported_func
+                //     .call(&mut store, ())
+                //     .map_err(RuntimeError::from);
 
-                let stop = start.elapsed();
+                // let stop = start.elapsed();
 
-                ret?;
+                // ret?;
 
-                Ok(Some(RuntimeValue::I64(0)))
+                // Ok(Some(RuntimeValue::I64(0)))
             }
             Instance::Singlepass {
                 original_bytes,
+                // wasmer_module,
+                // runtime,
+                store: wasmer_store,
+                instance,
+                timestamp,
+            } => {
+                let preprocess_dur = timestamp.elapsed();
+
+                // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
+
+                let call_func: TypedFunction<(), ()> = {
+                    let store = wasmer_store.read().unwrap();
+                    instance
+                        .exports
+                        .get_typed_function(&store.as_store_ref(), func_name)
+                        .expect("should get wasmer call func")
+                };
+
+                let _call_result = {
+                    let mut store = wasmer_store.write().unwrap();
+                    call_func.call(&mut store.as_store_mut())
+                }?;
+
+                let invoke_dur = timestamp.elapsed();
+
+                correlation_id.record_property(Property::WasmVM {
+                    original_bytes: original_bytes.clone(),
+                    preprocess_duration: preprocess_dur,
+                    invoke_duration: invoke_dur,
+                });
+
+                Ok(Some(RuntimeValue::I64(0)))
+            }
+        }
+    }
+
+    pub(crate) fn get_metering_handle(&self) -> Arc<MeteringHandle> {
+        match self {
+            Instance::Interpreted {
+                metering_handle, ..
+            } => Arc::clone(metering_handle),
+            Instance::Compiled {
+                original_bytes,
+                precompile_time,
                 module,
-                wasmer_module,
+                compiled_module,
                 runtime,
+            } => todo!(),
+            Instance::Singlepass {
+                original_bytes,
+                store,
+                timestamp,
+                instance,
+            } => Arc::new(MeteringHandle::Wasmer {
+                store: store.clone(),
+                instance: instance.clone(),
+            }),
+        }
+    }
+
+    // pub(crate) fn set_remaining_points(&mut self, points: u64) {
+    //     self.get_metering_handle().set_remaining_points(points)
+    //     // match self {
+    //     //     Instance::Interpreted {
+    //     //         metering_handle, ..
+    //     //     } => {
+    //     //         metering_handle.set_remaining_points(points);
+    //     //     }
+    //     //     Instance::Compiled { .. } => todo!(),
+    //     //     Instance::Singlepass {
+    //     //         store, instance, ..
+    //     //     } => {
+    //     //         metering::set_remaining_points(store, &instance, points);
+    //     //     }
+    //     // }
+    // }
+
+    // pub(crate) fn get_remaining_points(&mut self) -> Option<u64> {
+    //     self.get_metering_hnadle().
+    //     // match self {
+    //     //     Instance::Interpreted {
+    //     //         remaining_points: initial_limit,
+    //     //         exhausted_points,
+    //     //         ..
+    //     //     } => {
+    //     //         if *exhausted_points {
+    //     //             None
+    //     //         } else {
+    //     //             Some(*initial_limit)
+    //     //         }
+    //     //     }
+    //     //     Instance::Compiled { .. } => None,
+    //     //     Instance::Singlepass {
+    //     //         store, instance, ..
+    //     //     } => match metering::get_remaining_points(store, &instance) {
+    //     //         MeteringPoints::Remaining(remaining_points) => Some(remaining_points),
+    //     //         MeteringPoints::Exhausted => None,
+    //     //     },
+    //     // }
+    // }
+}
+
+/// An error emitted by the Wasm preprocessor.
+#[derive(Debug, Clone, Error)]
+#[non_exhaustive]
+pub enum WasmValidationError {
+    /// Initial table size outside allowed bounds.
+    #[error("initial table size of {actual} exceeds allowed limit of {max}")]
+    InitialTableSizeExceeded {
+        /// Allowed maximum table size.
+        max: u32,
+        /// Actual initial table size specified in the Wasm.
+        actual: u32,
+    },
+    /// Maximum table size outside allowed bounds.
+    #[error("maximum table size of {actual} exceeds allowed limit of {max}")]
+    MaxTableSizeExceeded {
+        /// Allowed maximum table size.
+        max: u32,
+        /// Actual max table size specified in the Wasm.
+        actual: u32,
+    },
+    /// Number of the tables in a Wasm must be at most one.
+    #[error("the number of tables must be at most one")]
+    MoreThanOneTable,
+    /// Length of a br_table exceeded the maximum allowed size.
+    #[error("maximum br_table size of {actual} exceeds allowed limit of {max}")]
+    BrTableSizeExceeded {
+        /// Maximum allowed br_table length.
+        max: u32,
+        /// Actual size of a br_table in the code.
+        actual: usize,
+    },
+    /// Declared number of globals exceeds allowed limit.
+    #[error("declared number of globals ({actual}) exceeds allowed limit of {max}")]
+    TooManyGlobals {
+        /// Maximum allowed globals.
+        max: u32,
+        /// Actual number of globals declared in the Wasm.
+        actual: usize,
+    },
+    /// Module declares a function type with too many parameters.
+    #[error("use of a function type with too many parameters (limit of {max} but function declares {actual})")]
+    TooManyParameters {
+        /// Maximum allowed parameters.
+        max: u32,
+        /// Actual number of parameters a function has in the Wasm.
+        actual: usize,
+    },
+    /// Module tries to import a function that the host does not provide.
+    #[error("module imports a non-existent function")]
+    MissingHostFunction,
+    /// Opcode for a global access refers to a non-existing global
+    #[error("opcode for a global access refers to non-existing global index {index}")]
+    IncorrectGlobalOperation {
+        /// Provided index.
+        index: u32,
+    },
+    /// Missing function index.
+    #[error("missing function index {index}")]
+    MissingFunctionIndex {
+        /// Provided index.
+        index: u32,
+    },
+    /// Missing function type.
+    #[error("missing type index {index}")]
+    MissingFunctionType {
+        /// Provided index.
+        index: u32,
+    },
+    /// Unsupported WASM start section.
+    #[error("Unsupported WASM start")]
+    UnsupportedWasmStart,
+}
+
+/// An error emitted by the Wasm preprocessor.
+#[derive(Debug, Clone, Error)]
+#[non_exhaustive]
+pub enum PreprocessingError {
+    /// Unable to deserialize Wasm bytes.
+    #[error("Deserialization error: {0}")]
+    Deserialize(String),
+    /// Found opcodes forbidden by gas rules.
+    #[error(
+        "Encountered operation forbidden by gas rules. Consult instruction -> metering config map"
+    )]
+    OperationForbiddenByGasRules,
+    /// Stack limiter was unable to instrument the binary.
+    #[error("Stack limiter error")]
+    StackLimiter,
+    /// Wasm bytes is missing memory section.
+    #[error("Memory section should exist")]
+    MissingMemorySection,
+    /// The module is missing.
+    #[error("Missing module")]
+    MissingModule,
+    /// Unable to validate wasm bytes.
+    #[error("Wasm validation error: {0}")]
+    WasmValidation(#[from] WasmValidationError),
+    /// Wasmtime was unable to precompile a module
+    #[error("Precompile error: {0}")]
+    Precompile(String),
+    /// Wasmer was unable to compile a module
+    #[error(transparent)]
+    Compile(Arc<wasmer::CompileError>),
+    #[error(transparent)]
+    DeserializeModule(Arc<wasmer::DeserializeError>),
+    #[error(transparent)]
+    SerializeModule(Arc<wasmer::SerializeError>),
+}
+
+impl From<wasmer::CompileError> for PreprocessingError {
+    fn from(v: wasmer::CompileError) -> Self {
+        Self::Compile(Arc::new(v))
+    }
+}
+
+impl From<wasmer::DeserializeError> for PreprocessingError {
+    fn from(v: wasmer::DeserializeError) -> Self {
+        Self::DeserializeModule(Arc::new(v))
+    }
+}
+
+impl From<wasmer::SerializeError> for PreprocessingError {
+    fn from(v: wasmer::SerializeError) -> Self {
+        Self::SerializeModule(Arc::new(v))
+    }
+}
+
+impl From<elements::Error> for PreprocessingError {
+    fn from(error: elements::Error) -> Self {
+        PreprocessingError::Deserialize(error.to_string())
+    }
+}
+
+/// Ensures that all the references to functions and global variables in the wasm bytecode are
+/// properly declared.
+///
+/// This validates that:
+///
+/// - Start function points to a function declared in the Wasm bytecode
+/// - All exported functions are pointing to functions declared in the Wasm bytecode
+/// - `call` instructions reference a function declared in the Wasm bytecode.
+/// - `global.set`, `global.get` instructions are referencing an existing global declared in the
+///   Wasm bytecode.
+/// - All members of the "elem" section point at functions declared in the Wasm bytecode.
+fn ensure_valid_access(module: &WasmiModule) -> Result<(), WasmValidationError> {
+    let function_types_count = module
+        .type_section()
+        .map(|ts| ts.types().len())
+        .unwrap_or_default();
+
+    let mut function_count = 0_u32;
+    if let Some(import_section) = module.import_section() {
+        for import_entry in import_section.entries() {
+            if let External::Function(function_type_index) = import_entry.external() {
+                if (*function_type_index as usize) < function_types_count {
+                    function_count = function_count.saturating_add(1);
+                } else {
+                    return Err(WasmValidationError::MissingFunctionType {
+                        index: *function_type_index,
+                    });
+                }
+            }
+        }
+    }
+    if let Some(function_section) = module.function_section() {
+        for function_entry in function_section.entries() {
+            let function_type_index = function_entry.type_ref();
+            if (function_type_index as usize) < function_types_count {
+                function_count = function_count.saturating_add(1);
+            } else {
+                return Err(WasmValidationError::MissingFunctionType {
+                    index: function_type_index,
+                });
+            }
+        }
+    }
+
+    if let Some(function_index) = module.start_section() {
+        ensure_valid_function_index(function_index, function_count)?;
+    }
+    if let Some(export_section) = module.export_section() {
+        for export_entry in export_section.entries() {
+            if let Internal::Function(function_index) = export_entry.internal() {
+                ensure_valid_function_index(*function_index, function_count)?;
+            }
+        }
+    }
+
+    if let Some(code_section) = module.code_section() {
+        let global_len = module
+            .global_section()
+            .map(|global_section| global_section.entries().len())
+            .unwrap_or(0);
+
+        for instr in code_section
+            .bodies()
+            .iter()
+            .flat_map(|body| body.code().elements())
+        {
+            match instr {
+                Instruction::Call(idx) => {
+                    ensure_valid_function_index(*idx, function_count)?;
+                }
+                Instruction::GetGlobal(idx) | Instruction::SetGlobal(idx)
+                    if *idx as usize >= global_len =>
+                {
+                    return Err(WasmValidationError::IncorrectGlobalOperation { index: *idx });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(element_section) = module.elements_section() {
+        for element_segment in element_section.entries() {
+            for idx in element_segment.members() {
+                ensure_valid_function_index(*idx, function_count)?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn ensure_valid_function_index(index: u32, function_count: u32) -> Result<(), WasmValidationError> {
+    if index >= function_count {
+        return Err(WasmValidationError::MissingFunctionIndex { index });
+    }
+    Ok(())
+}
+
+/// Checks if given wasm module contains a memory section.
+fn memory_section(module: &WasmiModule) -> Option<&MemorySection> {
+    for section in module.sections() {
+        if let Section::Memory(section) = section {
+            return Some(section);
+        }
+    }
+    None
+}
+
+/// Ensures (table) section has at most one table entry, and initial, and maximum values are
+/// normalized.
+///
+/// If a maximum value is not specified it will be defaulted to 4k to prevent OOM.
+fn ensure_table_size_limit(
+    mut module: WasmiModule,
+    limit: u32,
+) -> Result<WasmiModule, WasmValidationError> {
+    if let Some(sect) = module.table_section_mut() {
+        // Table section is optional and there can be at most one.
+        if sect.entries().len() > 1 {
+            return Err(WasmValidationError::MoreThanOneTable);
+        }
+
+        if let Some(table_entry) = sect.entries_mut().first_mut() {
+            let initial = table_entry.limits().initial();
+            if initial > limit {
+                return Err(WasmValidationError::InitialTableSizeExceeded {
+                    max: limit,
+                    actual: initial,
+                });
+            }
+
+            match table_entry.limits().maximum() {
+                Some(max) => {
+                    if max > limit {
+                        return Err(WasmValidationError::MaxTableSizeExceeded {
+                            max: limit,
+                            actual: max,
+                        });
+                    }
+                }
+                None => {
+                    // rewrite wasm and provide a maximum limit for a table section
+                    *table_entry = TableType::new(initial, Some(limit))
+                }
+            }
+        }
+    }
+
+    Ok(module)
+}
+
+/// Ensure that any `br_table` instruction adheres to its immediate value limit.
+fn ensure_br_table_size_limit(module: &WasmiModule, limit: u32) -> Result<(), WasmValidationError> {
+    let code_section = if let Some(type_section) = module.code_section() {
+        type_section
+    } else {
+        return Ok(());
+    };
+    for instr in code_section
+        .bodies()
+        .iter()
+        .flat_map(|body| body.code().elements())
+    {
+        if let Instruction::BrTable(br_table_data) = instr {
+            if br_table_data.table.len() > limit as usize {
+                return Err(WasmValidationError::BrTableSizeExceeded {
+                    max: limit,
+                    actual: br_table_data.table.len(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Ensures that module doesn't declare too many globals.
+///
+/// Globals are not limited through the `stack_height` as locals are. Neither does
+/// the linear memory limit `memory_pages` applies to them.
+fn ensure_global_variable_limit(
+    module: &WasmiModule,
+    limit: u32,
+) -> Result<(), WasmValidationError> {
+    if let Some(global_section) = module.global_section() {
+        let actual = global_section.entries().len();
+        if actual > limit as usize {
+            return Err(WasmValidationError::TooManyGlobals { max: limit, actual });
+        }
+    }
+    Ok(())
+}
+
+/// Ensure maximum numbers of parameters a function can have.
+///
+/// Those need to be limited to prevent a potentially exploitable interaction with
+/// the stack height instrumentation: The costs of executing the stack height
+/// instrumentation for an indirectly called function scales linearly with the amount
+/// of parameters of this function. Because the stack height instrumentation itself is
+/// is not weight metered its costs must be static (via this limit) and included in
+/// the costs of the instructions that cause them (call, call_indirect).
+fn ensure_parameter_limit(module: &WasmiModule, limit: u32) -> Result<(), WasmValidationError> {
+    let type_section = if let Some(type_section) = module.type_section() {
+        type_section
+    } else {
+        return Ok(());
+    };
+
+    for Type::Function(func) in type_section.types() {
+        let actual = func.params().len();
+        if actual > limit as usize {
+            return Err(WasmValidationError::TooManyParameters { max: limit, actual });
+        }
+    }
+
+    Ok(())
+}
+
+/// Ensures that Wasm module has valid imports.
+fn ensure_valid_imports(module: &WasmiModule) -> Result<(), WasmValidationError> {
+    let import_entries = module
+        .import_section()
+        .map(|is| is.entries())
+        .unwrap_or(&[]);
+
+    // Gas counter is currently considered an implementation detail.
+    //
+    // If a wasm module tries to import it will be rejected.
+
+    for import in import_entries {
+        if import.module() == DEFAULT_GAS_MODULE_NAME
+            && import.field() == INTERNAL_GAS_FUNCTION_NAME
+        {
+            return Err(WasmValidationError::MissingHostFunction);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Clone)]
+struct WasmtimeEngine(wasmtime::Engine);
+
+impl fmt::Debug for WasmtimeEngine {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("WasmtimeEngine").finish()
+    }
+}
+
+impl std::ops::Deref for WasmtimeEngine {
+    type Target = wasmtime::Engine;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+// NOTE: Imitates persistent on disk cache for precompiled artifacts, ideally it should be something
+// like `Box<dyn ArtifactsCache>` and stick it to WasmEngine, so for instance while testing we can
+// have a global cache instance to speed up testing.
+#[derive(PartialEq, Eq, Hash)]
+struct CacheKey(
+    /// When cache is implemented as persistent on disk it's important to note that wasmer can use
+    /// host CPU's features that may not be present when persistent cache is moved to different CPU
+    /// with missing feature sets.
+    wasmer::Triple,
+    /// We're caching instrumented binary keyed by the original wasm bytes therefore we also need
+    /// to know the wasm config that's used to instrument the wasm bytes. After chainspec will
+    /// modify OpcodeCosts we need to create new cache entry to avoid incorrect execution of old
+    /// binary but under new chain configuration.
+    WasmConfig,
+    /// Raw Wasm bytes without any modification.
+    Bytes,
+);
+
+#[derive(Debug, Clone)]
+struct WasmerArtifact {
+    // wasmi_module: WasmiModule,
+
+    // wasmer::Module can't be cached without storing a Store as well but for some reason wasmer::Module can live without the Store.
+    // store: wasmer::Store,
+    // module: wasmer::Module,
+    artifact_bytes: Bytes,
+}
+
+#[derive(Debug, Clone)]
+enum CachedArtifact {
+    Interpreted(WasmiModule),
+    Wasmer(WasmerArtifact),
+    Bytes(Bytes),
+}
+
+impl CachedArtifact {
+    fn try_into_wasmer(self) -> Option<WasmerArtifact> {
+        if let Self::Wasmer(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+
+    fn try_into_interpreted(self) -> Result<WasmiModule, Self> {
+        if let Self::Interpreted(v) = self {
+            Ok(v)
+        } else {
+            Err(self)
+        }
+    }
+
+    fn try_into_bytes(self) -> Option<Bytes> {
+        if let Self::Bytes(v) = self {
+            Some(v)
+        } else {
+            None
+        }
+    }
+}
+
+static GLOBAL_CACHE: Lazy<Cache<CacheKey, CachedArtifact>> = Lazy::new(|| Cache::new(10_000));
+
+fn cache_get(_correlation_id: &CorrelationId, cache_key: &CacheKey) -> Option<CachedArtifact> {
+    let precompiled = GLOBAL_CACHE.get(cache_key)?;
+    Some(precompiled)
+}
+
+fn cache_set(_correlation_id: &CorrelationId, cache_key: CacheKey, artifact: CachedArtifact) {
+    GLOBAL_CACHE.insert(cache_key, artifact);
+}
+
+/// Wasm preprocessor.
+#[derive(Debug, Clone)]
+pub struct WasmEngine {
+    wasm_config: WasmConfig,
+    execution_mode: ExecutionMode,
+    compiled_engine: Arc<WasmtimeEngine>,
+    // wasmer_store: Arc<wasmer::Store>,
+}
+
+fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
+    let wasmtime_cache_root = cache_path.join("wasmtime");
+    fs::create_dir_all(&wasmtime_cache_root)
+        .map_err(|err| format!("cannot create the dirs to cache: {:?}", err))?;
+
+    // Canonicalize the path after creating the directories.
+    let wasmtime_cache_root = wasmtime_cache_root
+        .canonicalize()
+        .map_err(|err| format!("failed to canonicalize the path: {:?}", err))?;
+
+    // Write the cache config file
+    let cache_config_path = wasmtime_cache_root.join("cache-config.toml");
+
+    let config_content = format!(
+        "\
+[cache]
+enabled = true
+directory = \"{cache_dir}\"
+",
+        cache_dir = wasmtime_cache_root.display()
+    );
+    fs::write(&cache_config_path, config_content)
+        .map_err(|err| format!("cannot write the cache config: {:?}", err))?;
+
+    config
+        .cache_config_load(cache_config_path)
+        .map_err(|err| format!("failed to parse the config: {:?}", err))?;
+
+    Ok(())
+}
+
+// TODO: There are some issues with multithreaded test runner and how we set up the cache. We should
+// figure out better way to deal with this initialization.
+static GLOBAL_CACHE_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
+    let mut config = wasmtime::Config::new();
+
+    // This should solve nondeterministic issue with access to the directory when running EE in
+    // non-compiled mode
+    {
+        let _global_cache_guard = GLOBAL_CACHE_MUTEX.lock().unwrap();
+        setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
+            .expect("should setup wasmtime cache path");
+    }
+
+    config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
+    // config.async_support(false);
+    config.wasm_reference_types(false);
+    config.wasm_simd(false);
+    config.wasm_bulk_memory(false);
+    config.wasm_multi_value(false);
+    config.wasm_multi_memory(false);
+    config.wasm_module_linking(false);
+    config.wasm_threads(false);
+
+    // TODO: Tweak more
+    let wasmtime_engine = wasmtime::Engine::new(&config).expect("should create new engine");
+    WasmtimeEngine(wasmtime_engine)
+}
+
+mod wasmer_backend;
+
+fn make_wasmer_store(
+    backend: WasmerBackend,
+    initial_limit: u64,
+    opcode_costs: OpcodeCosts,
+) -> wasmer::Store {
+    let metering = wasmer_backend::wasmer_metering(initial_limit, opcode_costs);
+
+    let engine: wasmer::Engine = match backend {
+        WasmerBackend::Singlepass => {
+            let mut singlepass = Singlepass::new();
+            singlepass.push_middleware(metering);
+            singlepass.into()
+        }
+        WasmerBackend::Cranelift { optimize } => {
+            let mut cranelift = Cranelift::new();
+            match optimize {
+                CraneliftOptLevel::None => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::None);
+                }
+                CraneliftOptLevel::Speed => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::Speed);
+                }
+                CraneliftOptLevel::SpeedAndSize => {
+                    cranelift.opt_level(wasmer::CraneliftOptLevel::SpeedAndSize);
+                }
+            }
+            cranelift.push_middleware(metering);
+            cranelift.into()
+        }
+    };
+
+    wasmer::Store::new(engine)
+}
+
+impl WasmEngine {
+    /// Get a reference to the wasm engine's compiled engine.
+    pub fn compiled_engine(&self) -> &wasmtime::Engine {
+        &self.compiled_engine
+    }
+
+    fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
+        let compiled_module =
+            unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), bytes) }.unwrap();
+        Ok(compiled_module)
+    }
+
+    pub fn execution_mode(&self) -> &ExecutionMode {
+        &self.execution_mode
+    }
+
+    pub fn execution_mode_mut(&mut self) -> &mut ExecutionMode {
+        &mut self.execution_mode
+    }
+
+    /// Creates an WASM module instance and a memory instance.
+    ///
+    /// This ensures that a memory instance is properly resolved into a pre-allocated memory area,
+    /// and a host function resolver is attached to the module.
+    ///
+    /// The WASM module is also validated to not have a "start" section as we currently don't
+    /// support running it.
+    ///
+    /// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
+    pub fn instance_and_memory<R>(
+        &self,
+        wasm_module: Module,
+        protocol_version: ProtocolVersion,
+        runtime: Runtime<R>,
+    ) -> Result<Instance<R>, execution::Error>
+    where
+        R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
+        R::Error: Into<execution::Error>,
+    {
+        // match wasm_engine.execution_mode() {
+        match wasm_module {
+            Module::Interpreted {
+                original_bytes,
+                wasmi_module,
+                timestamp,
+                initial_limit,
+            } => {
+                let import_section = wasmi_module.import_section();
+                let mut memory_imports: Vec<_> = import_section
+                    .iter()
+                    .flat_map(|imports| {
+                        imports.entries().iter().filter_map(|sec| -> Option<_> {
+                            match sec.external() {
+                                External::Memory(mem)
+                                    if sec.module() == "env" && sec.field() == "memory" =>
+                                {
+                                    Some(mem.clone())
+                                }
+                                External::Memory(_)
+                                | External::Global(_)
+                                | External::Function(_)
+                                | External::Table(_) => None,
+                            }
+                        })
+                    })
+                    .collect();
+
+                let memory_limits = match memory_imports.first() {
+                    Some(mem) => mem.limits().clone(),
+                    None => {
+                        return Err(RuntimeError::Other("No imported memory".to_string()).into())
+                    }
+                };
+
+                let instrumented_wasmi_module =
+                    instrument_wasmi_module(wasmi_module, self.wasm_config, true)?;
+                let module = wasmi::Module::from_parity_wasm_module(instrumented_wasmi_module)?;
+                // let resolver =
+                let wasm_config = self.wasm_config();
+                // TODO: revisit how protocol_version check here is meant to combine with upgrade
+                // if protocol_version >= ProtocolVersion::V1_0_0 {
+                //     return Ok(v1_resolver::RuntimeModuleImportResolver::new(
+                //         wasm_config.max_memory,
+                //     ));
+                // }
+                // Err(ResolverError::UnknownProtocolVersion(protocol_version))
+
+                // Any memory entry in the wasm file without max specified is changed into an
+                // entry with hardcoded max value. This way `maximum` below is never
+                // unspecified, but for safety reasons we'll still default it.
+                let descriptor_max = memory_limits
+                    .maximum()
+                    .unwrap_or(self.wasm_config.max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if memory_limits.initial() > descriptor_max
+                    || descriptor_max > self.wasm_config.max_memory
+                {
+                    return Err(
+                        RuntimeError::Other("Module requested too much memory".into()).into(),
+                    );
+                }
+                let memory = MemoryInstance::alloc(
+                    wasmi::memory_units::Pages(memory_limits.initial() as usize),
+                    memory_limits
+                        .maximum()
+                        .map(|x| wasmi::memory_units::Pages(x as usize)),
+                )?;
+                let resolver = RuntimeModuleImportResolver {
+                    memory: memory.clone(),
+                };
+
+                let mut imports = ImportsBuilder::new();
+                imports.push_resolver("env", &resolver);
+                let not_started_module = ModuleInstance::new(&module, &imports)?;
+                if not_started_module.has_start() {
+                    return Err(execution::Error::UnsupportedWasmStart);
+                }
+                let instance = not_started_module.not_started_instance().clone();
+                // let memory = resolver.memory_ref()?;
+
+                let metering_handle = Arc::new(MeteringHandle::atomic(initial_limit));
+
+                Ok(Instance::Interpreted {
+                    original_bytes: original_bytes.clone(),
+                    module: instance,
+                    memory,
+                    runtime,
+                    timestamp,
+                    metering_handle,
+                })
+            }
+            Module::Compiled {
+                original_bytes,
+                wasmi_module,
+                // compiled_artifact,
+                wasmtime_module: compiled_module,
+                precompile_time,
+                // precompile_time,
+            } => {
+                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
+                let descriptor = compiled_module
+                    .imports()
+                    .filter_map(|import| import.ty().memory().cloned())
+                    .nth(0)
+                    .expect("should have memory");
+
+                let max_memory = self.wasm_config().max_memory as u64;
+                let descriptor_max = descriptor
+                    .maximum()
+                    .map(|pages| pages)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
+
+                Ok(Instance::Compiled {
+                    original_bytes: original_bytes.clone(),
+                    module: wasmi_module.clone(),
+                    compiled_module,
+                    precompile_time: precompile_time.clone(),
+                    runtime,
+                })
+            }
+            Module::Jitted {
+                original_bytes,
+                wasmi_module,
+                // compiled_artifact,
+                precompile_time,
+                module: compiled_module,
+                // runtime,
+            } => {
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
+                let descriptor = compiled_module
+                    .imports()
+                    .filter_map(|import| import.ty().memory().cloned())
+                    .nth(0)
+                    .expect("should have memory");
+
+                let max_memory = self.wasm_config().max_memory as u64;
+                let descriptor_max = descriptor
+                    .maximum()
+                    .map(|pages| pages)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
+
+                // aot compile
+                // let precompiled_bytes =
+                // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
+                // preprocess"); Ok(Module::Compiled(precompiled_bytes))
+
+                // todo!("compiled mode")
+                // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
+                // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
+                // &[]).expect("should create compiled module");
+
+                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
+                Ok(Instance::Compiled {
+                    original_bytes: original_bytes.clone(),
+                    module: wasmi_module.clone(),
+                    compiled_module: compiled_module.clone(),
+                    precompile_time: precompile_time.clone(),
+                    runtime,
+                })
+            }
+            Module::Singlepass {
+                original_bytes,
+                // wasmi_module,
+                wasmer_module,
                 store: mut wasmer_store,
                 timestamp,
             } => {
+                let max_memory = self.wasm_config().max_memory;
+
+                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
+                // "Module requested too much memory" is not runtime error it should be a validation
+                // pass.
+                let descriptor = wasmer_module
+                    .imports()
+                    .memories()
+                    .map(|import_type| import_type.ty().clone())
+                    .nth(0)
+                    .unwrap_or_else(|| wasmer::MemoryType::new(max_memory, Some(max_memory), true));
+
+                let descriptor_max = descriptor
+                    .maximum
+                    .map(|pages| pages.0)
+                    .unwrap_or(max_memory);
+                // Checks if wasm's memory entry has too much initial memory or non-default max
+                // memory pages exceeds the limit.
+                if descriptor.minimum.0 > descriptor_max || descriptor_max > max_memory {
+                    return Err(execution::Error::Interpreter(
+                        "Module requested too much memory".into(),
+                    ));
+                }
+
                 let preprocess_dur = timestamp.elapsed();
 
                 // let import_object = imports! {};
                 let mut import_object = wasmer::Imports::new();
                 // let memory = memory.clone();
                 // import_object.define("env", "host_function", host_function);
-                let memory_pages = wasm_engine.wasm_config().max_memory;
+                let memory_pages = self.wasm_config().max_memory;
 
                 let imports = wasmer_module.imports().into_iter().collect::<Vec<_>>();
                 let import_type = imports.iter().find_map(|import_type| {
@@ -2348,20 +3310,21 @@ where
                     ),
                 );
 
-                import_object.define(
-                    "env",
-                    "gas",
-                    wasmer::Function::new_typed_with_env(
-                        &mut wasmer_store.as_store_mut(),
-                        &function_env,
-                        move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
-                              param: u32|
-                              -> Result<(), execution::Error> {
-                            caller.data_mut().runtime.gas(Gas::new(U512::from(param)))?;
-                            Ok(())
-                        },
-                    ),
-                );
+                // TODO: Support existing gas function for already stored contracts.
+                // import_object.define(
+                //     "env",
+                //     "gas",
+                //     wasmer::Function::new_typed_with_env(
+                //         &mut wasmer_store.as_store_mut(),
+                //         &function_env,
+                //         move |mut caller: FunctionEnvMut<WasmerEnv<R>>,
+                //               param: u32|
+                //               -> Result<(), execution::Error> {
+                //             // caller.data_mut().runtime.gas(Gas::new(U512::from(param)))?;
+                //             Ok(())
+                //         },
+                //     ),
+                // );
 
                 import_object.define(
                     "env",
@@ -3624,754 +4587,40 @@ where
                         },
                     ),
                 );
-
                 let instance = wasmer::Instance::new(
                     &mut wasmer_store.as_store_mut(),
                     &wasmer_module,
                     &import_object,
-                )?;
+                )
+                .map_err(|error| {
+                    // TODO: Better error handling for instantiation
+                    execution::Error::Interpreter(error.to_string())
+                })?;
 
                 // function_env.as_mut(&mut wasmer_store.as_store_mut(), )
                 // instance.
                 match instance.exports.get_memory("memory") {
                     Ok(exported_memory) => {
+                        // instance.data
                         // dbg!(&exported_memory);
                         function_env.as_mut(&mut wasmer_store.as_store_mut()).memory =
                             Some(exported_memory.clone());
+                        // runtime.memory = Some(exported_memory.clone());
                     }
                     Err(error) => {
-                        if imported_memory.is_none() {
-                            panic!("Instance does not import/export memory which we don't currently allow {:?}", error);
-                        }
+                        // if imported_memory.is_none() {
+                        //     panic!("Instance does not import/export memory which we don't currently allow {:?}", error);
+                        // }
                     }
-                }
-
-                let call_func: TypedFunction<(), ()> = instance
-                    .exports
-                    .get_typed_function(&wasmer_store.as_store_ref(), func_name)
-                    .expect("should get wasmer call func");
-
-                call_func.call(&mut wasmer_store.as_store_mut())?;
-
-                let invoke_dur = timestamp.elapsed();
-
-                correlation_id.record_property(Property::WasmVM {
-                    original_bytes: original_bytes.clone(),
-                    preprocess_duration: preprocess_dur,
-                    invoke_duration: invoke_dur,
-                });
-
-
-                Ok(Some(RuntimeValue::I64(0)))
-            }
-        }
-    }
-}
-
-/// An error emitted by the Wasm preprocessor.
-#[derive(Debug, Clone, Error)]
-#[non_exhaustive]
-pub enum WasmValidationError {
-    /// Initial table size outside allowed bounds.
-    #[error("initial table size of {actual} exceeds allowed limit of {max}")]
-    InitialTableSizeExceeded {
-        /// Allowed maximum table size.
-        max: u32,
-        /// Actual initial table size specified in the Wasm.
-        actual: u32,
-    },
-    /// Maximum table size outside allowed bounds.
-    #[error("maximum table size of {actual} exceeds allowed limit of {max}")]
-    MaxTableSizeExceeded {
-        /// Allowed maximum table size.
-        max: u32,
-        /// Actual max table size specified in the Wasm.
-        actual: u32,
-    },
-    /// Number of the tables in a Wasm must be at most one.
-    #[error("the number of tables must be at most one")]
-    MoreThanOneTable,
-    /// Length of a br_table exceeded the maximum allowed size.
-    #[error("maximum br_table size of {actual} exceeds allowed limit of {max}")]
-    BrTableSizeExceeded {
-        /// Maximum allowed br_table length.
-        max: u32,
-        /// Actual size of a br_table in the code.
-        actual: usize,
-    },
-    /// Declared number of globals exceeds allowed limit.
-    #[error("declared number of globals ({actual}) exceeds allowed limit of {max}")]
-    TooManyGlobals {
-        /// Maximum allowed globals.
-        max: u32,
-        /// Actual number of globals declared in the Wasm.
-        actual: usize,
-    },
-    /// Module declares a function type with too many parameters.
-    #[error("use of a function type with too many parameters (limit of {max} but function declares {actual})")]
-    TooManyParameters {
-        /// Maximum allowed parameters.
-        max: u32,
-        /// Actual number of parameters a function has in the Wasm.
-        actual: usize,
-    },
-    /// Module tries to import a function that the host does not provide.
-    #[error("module imports a non-existent function")]
-    MissingHostFunction,
-    /// Opcode for a global access refers to a non-existing global
-    #[error("opcode for a global access refers to non-existing global index {index}")]
-    IncorrectGlobalOperation {
-        /// Provided index.
-        index: u32,
-    },
-    /// Missing function index.
-    #[error("missing function index {index}")]
-    MissingFunctionIndex {
-        /// Provided index.
-        index: u32,
-    },
-    /// Missing function type.
-    #[error("missing type index {index}")]
-    MissingFunctionType {
-        /// Provided index.
-        index: u32,
-    },
-    /// Unsupported WASM start section.
-    #[error("Unsupported WASM start")]
-    UnsupportedWasmStart,
-}
-
-/// An error emitted by the Wasm preprocessor.
-#[derive(Debug, Clone, Error)]
-#[non_exhaustive]
-pub enum PreprocessingError {
-    /// Unable to deserialize Wasm bytes.
-    #[error("Deserialization error: {0}")]
-    Deserialize(String),
-    /// Found opcodes forbidden by gas rules.
-    #[error(
-        "Encountered operation forbidden by gas rules. Consult instruction -> metering config map"
-    )]
-    OperationForbiddenByGasRules,
-    /// Stack limiter was unable to instrument the binary.
-    #[error("Stack limiter error")]
-    StackLimiter,
-    /// Wasm bytes is missing memory section.
-    #[error("Memory section should exist")]
-    MissingMemorySection,
-    /// The module is missing.
-    #[error("Missing module")]
-    MissingModule,
-    /// Unable to validate wasm bytes.
-    #[error("Wasm validation error: {0}")]
-    WasmValidation(#[from] WasmValidationError),
-    /// Wasmtime was unable to precompile a module
-    #[error("Precompile error: {0}")]
-    Precompile(String),
-    /// Wasmer was unable to compile a module
-    #[error(transparent)]
-    Compile(Arc<wasmer::CompileError>),
-    #[error(transparent)]
-    DeserializeModule(Arc<wasmer::DeserializeError>),
-    #[error(transparent)]
-    SerializeModule(Arc<wasmer::SerializeError>),
-}
-
-impl From<wasmer::CompileError> for PreprocessingError {
-    fn from(v: wasmer::CompileError) -> Self {
-        Self::Compile(Arc::new(v))
-    }
-}
-
-impl From<wasmer::DeserializeError> for PreprocessingError {
-    fn from(v: wasmer::DeserializeError) -> Self {
-        Self::DeserializeModule(Arc::new(v))
-    }
-}
-
-impl From<wasmer::SerializeError> for PreprocessingError {
-    fn from(v: wasmer::SerializeError) -> Self {
-        Self::SerializeModule(Arc::new(v))
-    }
-}
-
-impl From<elements::Error> for PreprocessingError {
-    fn from(error: elements::Error) -> Self {
-        PreprocessingError::Deserialize(error.to_string())
-    }
-}
-
-/// Ensures that all the references to functions and global variables in the wasm bytecode are
-/// properly declared.
-///
-/// This validates that:
-///
-/// - Start function points to a function declared in the Wasm bytecode
-/// - All exported functions are pointing to functions declared in the Wasm bytecode
-/// - `call` instructions reference a function declared in the Wasm bytecode.
-/// - `global.set`, `global.get` instructions are referencing an existing global declared in the
-///   Wasm bytecode.
-/// - All members of the "elem" section point at functions declared in the Wasm bytecode.
-fn ensure_valid_access(module: &WasmiModule) -> Result<(), WasmValidationError> {
-    let function_types_count = module
-        .type_section()
-        .map(|ts| ts.types().len())
-        .unwrap_or_default();
-
-    let mut function_count = 0_u32;
-    if let Some(import_section) = module.import_section() {
-        for import_entry in import_section.entries() {
-            if let External::Function(function_type_index) = import_entry.external() {
-                if (*function_type_index as usize) < function_types_count {
-                    function_count = function_count.saturating_add(1);
-                } else {
-                    return Err(WasmValidationError::MissingFunctionType {
-                        index: *function_type_index,
-                    });
-                }
-            }
-        }
-    }
-    if let Some(function_section) = module.function_section() {
-        for function_entry in function_section.entries() {
-            let function_type_index = function_entry.type_ref();
-            if (function_type_index as usize) < function_types_count {
-                function_count = function_count.saturating_add(1);
-            } else {
-                return Err(WasmValidationError::MissingFunctionType {
-                    index: function_type_index,
-                });
-            }
-        }
-    }
-
-    if let Some(function_index) = module.start_section() {
-        ensure_valid_function_index(function_index, function_count)?;
-    }
-    if let Some(export_section) = module.export_section() {
-        for export_entry in export_section.entries() {
-            if let Internal::Function(function_index) = export_entry.internal() {
-                ensure_valid_function_index(*function_index, function_count)?;
-            }
-        }
-    }
-
-    if let Some(code_section) = module.code_section() {
-        let global_len = module
-            .global_section()
-            .map(|global_section| global_section.entries().len())
-            .unwrap_or(0);
-
-        for instr in code_section
-            .bodies()
-            .iter()
-            .flat_map(|body| body.code().elements())
-        {
-            match instr {
-                Instruction::Call(idx) => {
-                    ensure_valid_function_index(*idx, function_count)?;
-                }
-                Instruction::GetGlobal(idx) | Instruction::SetGlobal(idx)
-                    if *idx as usize >= global_len =>
-                {
-                    return Err(WasmValidationError::IncorrectGlobalOperation { index: *idx });
-                }
-                _ => {}
-            }
-        }
-    }
-
-    if let Some(element_section) = module.elements_section() {
-        for element_segment in element_section.entries() {
-            for idx in element_segment.members() {
-                ensure_valid_function_index(*idx, function_count)?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn ensure_valid_function_index(index: u32, function_count: u32) -> Result<(), WasmValidationError> {
-    if index >= function_count {
-        return Err(WasmValidationError::MissingFunctionIndex { index });
-    }
-    Ok(())
-}
-
-/// Checks if given wasm module contains a memory section.
-fn memory_section(module: &WasmiModule) -> Option<&MemorySection> {
-    for section in module.sections() {
-        if let Section::Memory(section) = section {
-            return Some(section);
-        }
-    }
-    None
-}
-
-/// Ensures (table) section has at most one table entry, and initial, and maximum values are
-/// normalized.
-///
-/// If a maximum value is not specified it will be defaulted to 4k to prevent OOM.
-fn ensure_table_size_limit(
-    mut module: WasmiModule,
-    limit: u32,
-) -> Result<WasmiModule, WasmValidationError> {
-    if let Some(sect) = module.table_section_mut() {
-        // Table section is optional and there can be at most one.
-        if sect.entries().len() > 1 {
-            return Err(WasmValidationError::MoreThanOneTable);
-        }
-
-        if let Some(table_entry) = sect.entries_mut().first_mut() {
-            let initial = table_entry.limits().initial();
-            if initial > limit {
-                return Err(WasmValidationError::InitialTableSizeExceeded {
-                    max: limit,
-                    actual: initial,
-                });
-            }
-
-            match table_entry.limits().maximum() {
-                Some(max) => {
-                    if max > limit {
-                        return Err(WasmValidationError::MaxTableSizeExceeded {
-                            max: limit,
-                            actual: max,
-                        });
-                    }
-                }
-                None => {
-                    // rewrite wasm and provide a maximum limit for a table section
-                    *table_entry = TableType::new(initial, Some(limit))
-                }
-            }
-        }
-    }
-
-    Ok(module)
-}
-
-/// Ensure that any `br_table` instruction adheres to its immediate value limit.
-fn ensure_br_table_size_limit(module: &WasmiModule, limit: u32) -> Result<(), WasmValidationError> {
-    let code_section = if let Some(type_section) = module.code_section() {
-        type_section
-    } else {
-        return Ok(());
-    };
-    for instr in code_section
-        .bodies()
-        .iter()
-        .flat_map(|body| body.code().elements())
-    {
-        if let Instruction::BrTable(br_table_data) = instr {
-            if br_table_data.table.len() > limit as usize {
-                return Err(WasmValidationError::BrTableSizeExceeded {
-                    max: limit,
-                    actual: br_table_data.table.len(),
-                });
-            }
-        }
-    }
-    Ok(())
-}
-
-/// Ensures that module doesn't declare too many globals.
-///
-/// Globals are not limited through the `stack_height` as locals are. Neither does
-/// the linear memory limit `memory_pages` applies to them.
-fn ensure_global_variable_limit(
-    module: &WasmiModule,
-    limit: u32,
-) -> Result<(), WasmValidationError> {
-    if let Some(global_section) = module.global_section() {
-        let actual = global_section.entries().len();
-        if actual > limit as usize {
-            return Err(WasmValidationError::TooManyGlobals { max: limit, actual });
-        }
-    }
-    Ok(())
-}
-
-/// Ensure maximum numbers of parameters a function can have.
-///
-/// Those need to be limited to prevent a potentially exploitable interaction with
-/// the stack height instrumentation: The costs of executing the stack height
-/// instrumentation for an indirectly called function scales linearly with the amount
-/// of parameters of this function. Because the stack height instrumentation itself is
-/// is not weight metered its costs must be static (via this limit) and included in
-/// the costs of the instructions that cause them (call, call_indirect).
-fn ensure_parameter_limit(module: &WasmiModule, limit: u32) -> Result<(), WasmValidationError> {
-    let type_section = if let Some(type_section) = module.type_section() {
-        type_section
-    } else {
-        return Ok(());
-    };
-
-    for Type::Function(func) in type_section.types() {
-        let actual = func.params().len();
-        if actual > limit as usize {
-            return Err(WasmValidationError::TooManyParameters { max: limit, actual });
-        }
-    }
-
-    Ok(())
-}
-
-/// Ensures that Wasm module has valid imports.
-fn ensure_valid_imports(module: &WasmiModule) -> Result<(), WasmValidationError> {
-    let import_entries = module
-        .import_section()
-        .map(|is| is.entries())
-        .unwrap_or(&[]);
-
-    // Gas counter is currently considered an implementation detail.
-    //
-    // If a wasm module tries to import it will be rejected.
-
-    for import in import_entries {
-        if import.module() == DEFAULT_GAS_MODULE_NAME
-            && import.field() == INTERNAL_GAS_FUNCTION_NAME
-        {
-            return Err(WasmValidationError::MissingHostFunction);
-        }
-    }
-
-    Ok(())
-}
-
-#[derive(Clone)]
-struct WasmtimeEngine(wasmtime::Engine);
-
-impl fmt::Debug for WasmtimeEngine {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("WasmtimeEngine").finish()
-    }
-}
-
-impl std::ops::Deref for WasmtimeEngine {
-    type Target = wasmtime::Engine;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-// NOTE: Imitates persistent on disk cache for precompiled artifacts, ideally it should be something
-// like `Box<dyn ArtifactsCache>` and stick it to WasmEngine, so for instance while testing we can
-// have a global cache instance to speed up testing.
-#[derive(PartialEq, Eq, Hash)]
-struct CacheKey(
-    /// When cache is implemented as persistent on disk it's important to note that wasmer can use
-    /// host CPU's features that may not be present when persistent cache is moved to different CPU
-    /// with missing feature sets.
-    wasmer::Triple,
-    /// We're caching instrumented binary keyed by the original wasm bytes therefore we also need
-    /// to know the wasm config that's used to instrument the wasm bytes. After chainspec will
-    /// modify OpcodeCosts we need to create new cache entry to avoid incorrect execution of old
-    /// binary but under new chain configuration.
-    WasmConfig,
-    /// Raw Wasm bytes without any modification.
-    Bytes,
-);
-
-static GLOBAL_CACHE: Lazy<Mutex<HashMap<CacheKey, Bytes>>> = Lazy::new(Default::default);
-
-fn cache_get(correlation_id: &CorrelationId, cache_key: &CacheKey) -> Option<Bytes> {
-    let hash_map = GLOBAL_CACHE.lock().unwrap();
-    let precompiled = hash_map.get(cache_key)?;
-
-    Some(precompiled.clone())
-}
-
-fn cache_set(correlation_id: &CorrelationId, cache_key: CacheKey, artifact: Bytes) {
-    let mut global_cache = GLOBAL_CACHE.lock().unwrap();
-    let res = global_cache.insert(cache_key, artifact);
-    assert!(res.is_none())
-}
-
-/// Wasm preprocessor.
-#[derive(Debug, Clone)]
-pub struct WasmEngine {
-    wasm_config: WasmConfig,
-    execution_mode: ExecutionMode,
-    compiled_engine: Arc<WasmtimeEngine>,
-}
-
-fn setup_wasmtime_caching(cache_path: &Path, config: &mut wasmtime::Config) -> Result<(), String> {
-    let wasmtime_cache_root = cache_path.join("wasmtime");
-    fs::create_dir_all(&wasmtime_cache_root)
-        .map_err(|err| format!("cannot create the dirs to cache: {:?}", err))?;
-
-    // Canonicalize the path after creating the directories.
-    let wasmtime_cache_root = wasmtime_cache_root
-        .canonicalize()
-        .map_err(|err| format!("failed to canonicalize the path: {:?}", err))?;
-
-    // Write the cache config file
-    let cache_config_path = wasmtime_cache_root.join("cache-config.toml");
-
-    let config_content = format!(
-        "\
-[cache]
-enabled = true
-directory = \"{cache_dir}\"
-",
-        cache_dir = wasmtime_cache_root.display()
-    );
-    fs::write(&cache_config_path, config_content)
-        .map_err(|err| format!("cannot write the cache config: {:?}", err))?;
-
-    config
-        .cache_config_load(cache_config_path)
-        .map_err(|err| format!("failed to parse the config: {:?}", err))?;
-
-    Ok(())
-}
-
-// TODO: There are some issues with multithreaded test runner and how we set up the cache. We should
-// figure out better way to deal with this initialization.
-static GLOBAL_CACHE_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
-
-fn new_compiled_engine(wasm_config: &WasmConfig) -> WasmtimeEngine {
-    let mut config = wasmtime::Config::new();
-
-    // This should solve nondeterministic issue with access to the directory when running EE in
-    // non-compiled mode
-    {
-        let _global_cache_guard = GLOBAL_CACHE_MUTEX.lock().unwrap();
-        setup_wasmtime_caching(&Path::new("/tmp/wasmtime_test"), &mut config)
-            .expect("should setup wasmtime cache path");
-    }
-
-    config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
-    // config.async_support(false);
-    config.wasm_reference_types(false);
-    config.wasm_simd(false);
-    config.wasm_bulk_memory(false);
-    config.wasm_multi_value(false);
-    config.wasm_multi_memory(false);
-    config.wasm_module_linking(false);
-    config.wasm_threads(false);
-
-    // TODO: Tweak more
-    let wasmtime_engine = wasmtime::Engine::new(&config).expect("should create new engine");
-    WasmtimeEngine(wasmtime_engine)
-}
-
-fn make_wasmer_store(backend: WasmerBackend) -> wasmer::Store {
-    let engine: wasmer::Engine = match backend {
-        WasmerBackend::Singlepass => Singlepass::new().into(),
-        WasmerBackend::Cranelift { optimize } => {
-            let mut cranelift = Cranelift::new();
-            match optimize {
-                CraneliftOptLevel::None => {
-                    cranelift.opt_level(wasmer::CraneliftOptLevel::None);
-                }
-                CraneliftOptLevel::Speed => {
-                    cranelift.opt_level(wasmer::CraneliftOptLevel::Speed);
-                }
-                CraneliftOptLevel::SpeedAndSize => {
-                    cranelift.opt_level(wasmer::CraneliftOptLevel::SpeedAndSize);
-                }
-            }
-            cranelift.into()
-        }
-    };
-    wasmer::Store::new(engine)
-}
-
-impl WasmEngine {
-    /// Get a reference to the wasm engine's compiled engine.
-    pub fn compiled_engine(&self) -> &wasmtime::Engine {
-        &self.compiled_engine
-    }
-
-    fn deserialize_compiled(&self, bytes: &[u8]) -> Result<wasmtime::Module, execution::Error> {
-        let compiled_module =
-            unsafe { wasmtime::Module::deserialize(&self.compiled_engine(), bytes) }.unwrap();
-        Ok(compiled_module)
-    }
-
-    pub fn execution_mode(&self) -> &ExecutionMode {
-        &self.execution_mode
-    }
-
-    pub fn execution_mode_mut(&mut self) -> &mut ExecutionMode {
-        &mut self.execution_mode
-    }
-
-    /// Creates an WASM module instance and a memory instance.
-    ///
-    /// This ensures that a memory instance is properly resolved into a pre-allocated memory area,
-    /// and a host function resolver is attached to the module.
-    ///
-    /// The WASM module is also validated to not have a "start" section as we currently don't
-    /// support running it.
-    ///
-    /// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
-    pub fn instance_and_memory<R>(
-        &self,
-        wasm_module: Module,
-        protocol_version: ProtocolVersion,
-        runtime: Runtime<R>,
-    ) -> Result<Instance<R>, execution::Error>
-    where
-        R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
-        R::Error: Into<execution::Error>,
-    {
-        // match wasm_engine.execution_mode() {
-        match wasm_module {
-            Module::Noop => Ok(Instance::Noop),
-            Module::Interpreted {
-                original_bytes,
-                wasmi_module,
-                timestamp,
-            } => {
-                let module = wasmi::Module::from_parity_wasm_module(wasmi_module.clone())?;
-                let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
-                let mut imports = ImportsBuilder::new();
-                imports.push_resolver("env", &resolver);
-                let not_started_module = ModuleInstance::new(&module, &imports)?;
-                if not_started_module.has_start() {
-                    return Err(execution::Error::UnsupportedWasmStart);
-                }
-                let instance = not_started_module.not_started_instance().clone();
-                let memory = resolver.memory_ref()?;
-                Ok(Instance::Interpreted {
-                    original_bytes: original_bytes.clone(),
-                    module: instance,
-                    memory,
-                    runtime,
-                    timestamp,
-                })
-            }
-            Module::Compiled {
-                original_bytes,
-                wasmi_module,
-                // compiled_artifact,
-                wasmtime_module: compiled_module,
-                precompile_time,
-                // precompile_time,
-            } => {
-                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
-
-                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation
-                // pass.
-                let descriptor = compiled_module
-                    .imports()
-                    .filter_map(|import| import.ty().memory().cloned())
-                    .nth(0)
-                    .expect("should have memory");
-
-                let max_memory = self.wasm_config().max_memory as u64;
-                let descriptor_max = descriptor
-                    .maximum()
-                    .map(|pages| pages)
-                    .unwrap_or(max_memory);
-                // Checks if wasm's memory entry has too much initial memory or non-default max
-                // memory pages exceeds the limit.
-                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
-                    return Err(execution::Error::Interpreter(
-                        "Module requested too much memory".into(),
-                    ));
-                }
-
-                Ok(Instance::Compiled {
-                    original_bytes: original_bytes.clone(),
-                    module: wasmi_module.clone(),
-                    compiled_module,
-                    precompile_time: precompile_time.clone(),
-                    runtime,
-                })
-            }
-            Module::Jitted {
-                original_bytes,
-                wasmi_module,
-                // compiled_artifact,
-                precompile_time,
-                module: compiled_module,
-                // runtime,
-            } => {
-                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation
-                // pass.
-                let descriptor = compiled_module
-                    .imports()
-                    .filter_map(|import| import.ty().memory().cloned())
-                    .nth(0)
-                    .expect("should have memory");
-
-                let max_memory = self.wasm_config().max_memory as u64;
-                let descriptor_max = descriptor
-                    .maximum()
-                    .map(|pages| pages)
-                    .unwrap_or(max_memory);
-                // Checks if wasm's memory entry has too much initial memory or non-default max
-                // memory pages exceeds the limit.
-                if descriptor.minimum() > descriptor_max || descriptor_max > max_memory {
-                    return Err(execution::Error::Interpreter(
-                        "Module requested too much memory".into(),
-                    ));
-                }
-
-                // aot compile
-                // let precompiled_bytes =
-                // self.compiled_engine.precompile_module(&preprocessed_wasm_bytes).expect("should
-                // preprocess"); Ok(Module::Compiled(precompiled_bytes))
-
-                // todo!("compiled mode")
-                // let mut store = wasmtime::Store::new(&wasm_engine.compiled_engine(), ());
-                // let instance = wasmtime::Instance::new(&mut store, &compiled_module,
-                // &[]).expect("should create compiled module");
-
-                // let compiled_module = self.deserialize_compiled(&compiled_artifact)?;
-                Ok(Instance::Compiled {
-                    original_bytes: original_bytes.clone(),
-                    module: wasmi_module.clone(),
-                    compiled_module: compiled_module.clone(),
-                    precompile_time: precompile_time.clone(),
-                    runtime,
-                })
-            }
-            Module::Singlepass {
-                original_bytes,
-                wasmi_module,
-                wasmer_module,
-                store,
-                timestamp,
-            } => {
-                let max_memory = self.wasm_config().max_memory;
-
-                // NOTE: This is duplicated with wasmi's memory resolver in v1_resolver.rs
-                // "Module requested too much memory" is not runtime error it should be a validation
-                // pass.
-                let descriptor = wasmer_module
-                    .imports()
-                    .memories()
-                    .map(|import_type| import_type.ty().clone())
-                    .nth(0)
-                    .unwrap_or_else(|| wasmer::MemoryType::new(max_memory, Some(max_memory), true));
-
-                let descriptor_max = descriptor
-                    .maximum
-                    .map(|pages| pages.0)
-                    .unwrap_or(max_memory);
-                // Checks if wasm's memory entry has too much initial memory or non-default max
-                // memory pages exceeds the limit.
-                if descriptor.minimum.0 > descriptor_max || descriptor_max > max_memory {
-                    return Err(execution::Error::Interpreter(
-                        "Module requested too much memory".into(),
-                    ));
                 }
 
                 Ok(Instance::Singlepass {
                     original_bytes: original_bytes.clone(),
-                    module: wasmi_module.clone(),
-                    wasmer_module: wasmer_module,
-                    runtime,
-                    store: store,
+                    // module: wasmi_module.clone(),
+                    // wasmer_module: wasmer_module,
+                    instance,
+                    // runtime,
+                    store: Arc::new(RwLock::new(wasmer_store)),
                     timestamp,
                 })
             }
@@ -4382,12 +4631,25 @@ impl WasmEngine {
         CacheKey(wasmer::Triple::host(), self.wasm_config, original_bytes)
     }
 
-    fn cache_get(&self, correlation_id: &CorrelationId, original_bytes: Bytes) -> Option<Bytes> {
+    fn cache_get(
+        &self,
+        correlation_id: &CorrelationId,
+        original_bytes: Bytes,
+    ) -> Option<CachedArtifact> {
         cache_get(correlation_id, &self.make_cache_key(original_bytes))
     }
 
-    fn cache_set(&self, correlation_id: &CorrelationId, clone: Bytes, serialized_bytes: Bytes) {
-        cache_set(correlation_id, self.make_cache_key(clone), serialized_bytes)
+    fn cache_set(
+        &self,
+        correlation_id: &CorrelationId,
+        module_bytes: Bytes,
+        serialized_bytes: CachedArtifact,
+    ) {
+        cache_set(
+            correlation_id,
+            self.make_cache_key(module_bytes),
+            serialized_bytes,
+        )
     }
 
     /// Creates module specific for execution mode.
@@ -4395,66 +4657,95 @@ impl WasmEngine {
         &self,
         correlation_id: CorrelationId,
         wasm_bytes: Bytes,
+        initial_limit: u64,
     ) -> Result<Module, PreprocessingError> {
         let start = Instant::now();
-        let parity_module = deserialize_interpreted(&wasm_bytes)?;
 
         let module = match self.execution_mode {
-            ExecutionMode::Interpreted => Module::Interpreted {
-                wasmi_module: parity_module,
-                original_bytes: wasm_bytes,
-                timestamp: start,
-            },
-            ExecutionMode::Compiled { cache_artifacts } => {
-                if cache_artifacts {
-                    if let Some(precompiled_bytes) =
-                        self.cache_get(&correlation_id, wasm_bytes.clone())
-                    {
-                        correlation_id.record_property(Property::VMCacheHit {
-                            original_bytes: wasm_bytes.clone(),
-                        });
-                        let wasmtime_module = self
-                            .deserialize_compiled(&precompiled_bytes)
-                            .expect("Should deserialize");
-                        return Ok(Module::Compiled {
-                            original_bytes: wasm_bytes,
-                            wasmi_module: parity_module,
-                            precompile_time: None,
-                            wasmtime_module: wasmtime_module,
-                        });
-                    }
-                }
-                // aot compile
-                // let (precompiled_bytes, duration) = self
-                //     .precompile(wasm_bytes.clone(), wasm_bytes.clone(), cache_artifacts)
-                //     .unwrap();
-                // self.compiled_engine.precompile_module(&wasm_bytes).expect("should preprocess");
+            ExecutionMode::Interpreted { cache_artifacts: _ } => {
+                // We could cache Module instances in-mem but it wouldn't be fair comparison as wasmer does not support caching Modules - it requires Store to be cached as well. There's nothing to case in other words.
+                let wasmi_module = deserialize_interpreted(&wasm_bytes)?;
 
-                correlation_id.record_property(Property::VMCacheMiss {
-                    original_bytes: wasm_bytes.clone(),
-                });
-                let module = wasmtime::Module::new(&self.compiled_engine, &wasm_bytes).unwrap();
+                // let wasmi_module = if cache_artifacts {
+                //     match self.cache_get(&correlation_id, wasm_bytes.clone()) {
+                //         Some(precompiled_bytes) => {
+                //             precompiled_bytes.try_into_interpreted().unwrap()
+                //         }
+                //         None => {
+                //             let wasmi_module = deserialize_interpreted(&wasm_bytes)?;
+                //             self.cache_set(
+                //                 &correlation_id,
+                //                 wasm_bytes.clone(),
+                //                 CachedArtifact::Interpreted(wasmi_module.clone()),
+                //             );
+                //             wasmi_module
+                //         }
+                //     }
+                // } else {
+                //     deserialize_interpreted(&wasm_bytes)?
+                // };
 
-                if cache_artifacts {
-                    let serialized_bytes = module
-                        .serialize()
-                        .expect("should serialize wasmtime module");
-                    self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes.into());
-                }
-
-                Module::Compiled {
+                Module::Interpreted {
+                    wasmi_module,
                     original_bytes: wasm_bytes,
-                    wasmi_module: parity_module,
-                    precompile_time: None,
-                    wasmtime_module: module,
-                    // compiled_artifact: precompiled_bytes.to_owned(),
+                    timestamp: start,
+                    initial_limit,
                 }
+            }
+            ExecutionMode::Compiled { cache_artifacts } => {
+                // if cache_artifacts {
+
+                //     if let Some(precompiled_bytes) =
+                //         self.cache_get(&correlation_id, wasm_bytes.clone())
+                //     {
+                //         correlation_id.record_property(Property::VMCacheHit {
+                //             original_bytes: wasm_bytes.clone(),
+                //         });
+                //         let wasmtime_module = self
+                //             .deserialize_compiled(&precompiled_bytes.try_into_bytes().unwrap())
+                //             .expect("Should deserialize");
+                //         return Ok(Module::Compiled {
+                //             original_bytes: wasm_bytes,
+                //             wasmi_module: parity_module,
+                //             precompile_time: None,
+                //             wasmtime_module: wasmtime_module,
+                //         });
+                //     }
+                // }
+                // // aot compile
+                // // let (precompiled_bytes, duration) = self
+                // //     .precompile(wasm_bytes.clone(), wasm_bytes.clone(), cache_artifacts)
+                // //     .unwrap();
+                // // self.compiled_engine.precompile_module(&wasm_bytes).expect("should
+                // preprocess");
+
+                // correlation_id.record_property(Property::VMCacheMiss {
+                //     original_bytes: wasm_bytes.clone(),
+                // });
+                // let module = wasmtime::Module::new(&self.compiled_engine, &wasm_bytes).unwrap();
+
+                // if cache_artifacts {
+                //     let serialized_bytes = module
+                //         .serialize()
+                //         .expect("should serialize wasmtime module");
+                //     self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes.into());
+                // }
+
+                // Module::Compiled {
+                //     original_bytes: wasm_bytes,
+                //     wasmi_module: parity_module,
+                //     precompile_time: None,
+                //     wasmtime_module: module,
+                //     // compiled_artifact: precompiled_bytes.to_owned(),
+                // }
+                todo!("wasmtime engine temporarily unavailable");
             }
             ExecutionMode::JustInTime => {
                 let start = Instant::now();
                 let module =
                     wasmtime::Module::new(&self.compiled_engine, wasm_bytes.clone()).unwrap();
                 let stop = start.elapsed();
+                let parity_module = deserialize_interpreted(&wasm_bytes)?;
                 Module::Jitted {
                     original_bytes: wasm_bytes,
                     wasmi_module: parity_module,
@@ -4466,54 +4757,110 @@ impl WasmEngine {
                 backend,
                 cache_artifacts,
             } => {
-                let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
+                // let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
-                    if let Some(precompiled_bytes) =
-                        self.cache_get(&correlation_id, wasm_bytes.clone())
-                    {
-                        // We have the artifact, and we can use headless mode to just execute binary
-                        // artifact
-                        let headless_engine = wasmer::Engine::headless();
-                        let store = wasmer::Store::new(headless_engine);
-                        let wasmer_module = unsafe {
-                            wasmer::Module::deserialize(&store, precompiled_bytes.clone())
-                        }?;
-                        // let wasmer_imports_from_cache =
-                        //     wasmer_module.imports().into_iter().collect::<Vec<_>>();
+                    match self.cache_get(&correlation_id, wasm_bytes.clone()) {
+                        Some(precompiled_bytes) => {
+                            let WasmerArtifact {
+                                // wasmi_module,
+                                artifact_bytes,
+                            } = precompiled_bytes.try_into_wasmer().unwrap();
 
-                        return Ok(Module::Singlepass {
-                            original_bytes: wasm_bytes,
-                            wasmi_module: parity_module,
-                            wasmer_module,
-                            store: store,
-                            timestamp: start,
-                        });
+                            // Cached artifact is using compiled engine
+                            // let store = make_wasmer_store(backend);
+
+                            // We have the artifact, and we can use headless mode to just execute
+                            // binary // artifact
+                            let headless_engine = wasmer::Engine::headless();
+                            let store = wasmer::Store::new(headless_engine);
+
+                            let module = unsafe {
+                                wasmer::Module::deserialize(&store, artifact_bytes.clone())
+                            }?;
+                            // // let wasmer_module = unsafe {
+                            // //     wasmer::Module::deserialize(&store, precompiled_bytes.clone())
+                            // // }?;
+                            // let wasmer_artifact = precompiled_bytes.try_into_wasmer().unwrap();
+                            // let wasmer_imports_from_cache =
+                            // wasmer_module.imports().into_iter().collect::<Vec<_>>();
+
+                            return Ok(Module::Singlepass {
+                                original_bytes: wasm_bytes,
+                                // wasmi_module,
+                                wasmer_module: module,
+                                store: store,
+                                timestamp: start,
+                            });
+                        }
+                        None => {
+                            let store = make_wasmer_store(
+                                backend,
+                                initial_limit,
+                                self.wasm_config.opcode_costs(),
+                            );
+
+                            // NOTE: Potentially we can avoid this hot path by deserializing wasm
+                            // bytes twice by carrying a wasmer module, and serialize it into wasm,
+                            // then optimize when creating new stored contract.
+                            // let wasmi_module = deserialize(&wasm_bytes, self.wasm_config, false)?;
+                            let module = wasmer::Module::from_binary(&store, &wasm_bytes)
+                                .expect("should create wasmer module");
+
+                            let artifact_bytes = module.serialize()?;
+
+                            self.cache_set(
+                                &correlation_id,
+                                wasm_bytes.clone(),
+                                CachedArtifact::Wasmer(WasmerArtifact {
+                                    // wasmi_module: wasmi_module.clone(),
+                                    artifact_bytes,
+                                    // module: module.clone(),
+                                }),
+                            );
+
+                            return Ok(Module::Singlepass {
+                                original_bytes: wasm_bytes,
+                                // wasmi_module,
+                                wasmer_module: module,
+                                store: store,
+                                timestamp: start,
+                            });
+                        }
                     }
-                }
+                } else {
+                    let store =
+                        make_wasmer_store(backend, initial_limit, self.wasm_config.opcode_costs());
 
-                let wasmer_store = make_wasmer_store(backend);
-
-                let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
-                    .expect("should create wasmer module");
-
-                if cache_artifacts {
-                    correlation_id.record_property(Property::VMCacheMiss {
-                        original_bytes: wasm_bytes.clone(),
+                    let wasmi_module = deserialize_interpreted(&wasm_bytes)?;
+                    let module = wasmer::Module::from_binary(&store, &wasm_bytes)
+                        .expect("should create wasmer module");
+                    return Ok(Module::Singlepass {
+                        original_bytes: wasm_bytes,
+                        // wasmi_module,
+                        wasmer_module: module,
+                        store: store,
+                        timestamp: start,
                     });
-                    let serialized_bytes = wasmer_module.serialize()?;
-                    self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes);
-                }
+                };
+
+                // if cache_artifacts {
+                //     correlation_id.record_property(Property::VMCacheMiss {
+                //         original_bytes: wasm_bytes.clone(),
+                //     });
+                //     let serialized_bytes = wasmer_module.serialize()?;
+                //     self.cache_set(&correlation_id, wasm_bytes.clone(), serialized_bytes);
+                // }
 
                 // TODO: Cache key should be the one from StoredValue::ContractWasm which is random,
                 // there's probably collision and somehow unmodified module is cached?
 
-                Module::Singlepass {
-                    original_bytes: wasm_bytes,
-                    wasmi_module: parity_module,
-                    wasmer_module: wasmer_module,
-                    store: wasmer_store,
-                    timestamp: start,
-                }
+                // Module::Singlepass {
+                //     original_bytes: wasm_bytes,
+                //     wasmi_module: parity_module,
+                //     wasmer_module: wasmer_module,
+                //     store: wasmer_store,
+                //     timestamp: start,
+                // }
             }
         };
         Ok(module)
@@ -4524,6 +4871,7 @@ impl WasmEngine {
         Self {
             wasm_config,
             execution_mode: wasm_config.execution_mode,
+            //wasmer_store: Arc::new(make_wasmer_store(wasm_config.execution_mode)),
             compiled_engine: Arc::new(new_compiled_engine(&wasm_config)),
         }
     }
@@ -4534,8 +4882,8 @@ impl WasmEngine {
     //     cache_artifacts: bool,
     // ) -> Result<(Bytes, Option<Duration>), RuntimeError> {
     //     // if cache_artifacts {
-    //     //     if let Some(precompiled) = self.cache_get(&correlation_id, original_bytes.clone()) {
-    //     //         let deserialized_module =
+    //     //     if let Some(precompiled) = self.cache_get(&correlation_id, original_bytes.clone())
+    // {     //         let deserialized_module =
     //     //             unsafe { wasmtime::Module::deserialize(&self.compiled_engine,
     // &precompiled) }     //                 .expect("should deserialize wasmtime module");
     //     //         return Ok(());
@@ -4580,185 +4928,298 @@ impl WasmEngine {
         correlation_id: CorrelationId,
         wasm_config: WasmConfig,
         module_bytes: &[u8],
+        initial_limit: u64,
     ) -> Result<Module, PreprocessingError> {
+        dbg!(&initial_limit);
         let start = Instant::now();
 
         // NOTE: Consider using `bytes::Bytes` instead of `bytesrepr::Bytes` as its cheaper
         let module_bytes = Bytes::copy_from_slice(module_bytes);
 
+        // if let ExecutionMode::
+
         correlation_id.record_property(Property::Preprocess {
             original_bytes: module_bytes.clone(),
         });
 
-        let module = deserialize_interpreted(&module_bytes)?;
-
-        ensure_valid_access(&module)?;
-
-        if module.start_section().is_some() {
-            // Remove execution::Error::UnsupportedWasmStart as previously with wasmi it was raised
-            // when we have module instance to run, but with other backends we'd have to expend a
-            // lot of resource to first compile artifact just to validate it - we can safely exit
-            // early without doing extra work.
-            return Err(WasmValidationError::UnsupportedWasmStart.into());
-            // return Err(execution::Error::UnsupportedWasmStart);
-        }
-
-        if memory_section(&module).is_none() {
-            // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
-            // module, and panics otherwise.
-            return Err(PreprocessingError::MissingMemorySection);
-        }
-
-        let module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
-        ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
-        ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
-        ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
-        ensure_valid_imports(&module)?;
-
-        let module = pwasm_utils::externalize_mem(module, None, wasm_config.max_memory);
-        let module = pwasm_utils::inject_gas_counter(
-            module,
-            &wasm_config.opcode_costs().to_set(),
-            DEFAULT_GAS_MODULE_NAME,
-        )
-        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
-        let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
-            .map_err(|_| PreprocessingError::StackLimiter)?;
-
-        if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
-            if let Some(precompiled_bytes) = self.cache_get(&correlation_id, module_bytes.clone()) {
-                // We have the artifact, and we can use headless mode to just execute binary
-                // artifact
-                let headless_engine = wasmer::Engine::headless();
-                let store = wasmer::Store::new(headless_engine);
-                let wasmer_module =
-                    unsafe { wasmer::Module::deserialize(&store, precompiled_bytes.clone()) }?;
-
-                return Ok(Module::Singlepass {
-                    original_bytes: module_bytes,
-                    wasmi_module: module,
-                    wasmer_module,
-                    store: store,
-                    timestamp: start,
-                });
-            }
-        }
         match self.execution_mode {
-            ExecutionMode::Interpreted => Ok(Module::Interpreted {
-                original_bytes: module_bytes,
-                wasmi_module: module,
-                timestamp: start,
-            }),
-            ExecutionMode::Compiled { cache_artifacts } => {
-                // TODO: Gas injected module is used here but we might want to use `module` instead
-                // with other preprocessing done.
-                let preprocessed_wasm_bytes = Bytes::from(
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes"),
-                );
-
-                if cache_artifacts {
-                    if let Some(precompiled_bytes) =
-                        self.cache_get(&correlation_id, module_bytes.clone())
-                    {
-                        correlation_id.record_property(Property::VMCacheHit {
-                            original_bytes: module_bytes.clone(),
-                        });
-                        let wasmtime_module = unsafe {
-                            wasmtime::Module::deserialize(&self.compiled_engine, &precompiled_bytes)
+            ExecutionMode::Interpreted { cache_artifacts } => {
+                let module = if cache_artifacts {
+                    match self.cache_get(&correlation_id, module_bytes.clone()) {
+                        Some(interpreted) => {
+                            let wasm_bytes = interpreted.try_into_bytes().unwrap();
+                            deserialize_interpreted(&wasm_bytes)?
                         }
-                        .expect("should deserialize wasmtime module");
-                        return Ok(Module::Compiled {
-                            original_bytes: module_bytes,
-                            wasmi_module: module,
-                            precompile_time: None,
-                            wasmtime_module,
-                        });
+                        None => {
+                            let instrumented_module = deserialize_interpreted(&module_bytes)?;
+
+                            let instrumented_wasm_bytes =
+                                instrumented_module.clone().to_bytes().map(Bytes::from)?;
+
+                            self.cache_set(
+                                &correlation_id,
+                                module_bytes.clone(),
+                                CachedArtifact::Bytes(instrumented_wasm_bytes),
+                            );
+                            instrumented_module
+                        }
                     }
-                }
+                } else {
+                    deserialize_interpreted(&module_bytes)?
+                };
 
-                let wasmtime_module =
-                    wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
-                        .map_err(|error| PreprocessingError::Precompile(error.to_string()))?;
-
-                if cache_artifacts {
-                    correlation_id.record_property(Property::VMCacheMiss {
-                        original_bytes: module_bytes.clone(),
-                    });
-                    let serialized_bytes = wasmtime::Module::serialize(&wasmtime_module).unwrap();
-                    self.cache_set(
-                        &correlation_id,
-                        module_bytes.clone(),
-                        serialized_bytes.into(),
-                    );
-                }
-                // aot compile
-                // let (precompiled_bytes, duration) = self
-                //     .precompile(
-                //         module_bytes.clone(),
-                //         preprocessed_wasm_bytes,
-                //         cache_artifacts,
-                //     )
-                //     .map_err(PreprocessingError::Precompile)?;
-
-                Ok(Module::Compiled {
+                Ok(Module::Interpreted {
                     original_bytes: module_bytes,
                     wasmi_module: module,
-                    precompile_time: None,
-                    wasmtime_module,
-                    // compiled_artifact: precompiled_bytes,
+                    timestamp: start,
+                    initial_limit,
                 })
             }
-            ExecutionMode::JustInTime => {
-                let start = Instant::now();
 
-                let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
-                let compiled_module =
-                    wasmtime::Module::new(&self.compiled_engine, preprocessed_wasm_bytes)
-                        .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
-
-                let stop = start.elapsed();
-
-                Ok(Module::Jitted {
-                    original_bytes: module_bytes,
-                    wasmi_module: module,
-                    precompile_time: Some(stop),
-                    module: compiled_module,
-                })
+            ExecutionMode::Compiled { cache_artifacts } => {
+                todo!("wasmtime temporarily unavailable")
             }
+            ExecutionMode::JustInTime => todo!("jit temporarily unavailable"),
             ExecutionMode::Wasmer {
                 backend,
                 cache_artifacts,
             } => {
-                let preprocessed_wasm_bytes =
-                    parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
-
-                let start = Instant::now();
-
-                let mut store = make_wasmer_store(backend);
-
-                let wasmer_module =
-                    wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
-
                 if cache_artifacts {
-                    correlation_id.record_property(Property::VMCacheMiss {
-                        original_bytes: module_bytes.clone(),
-                    });
-                    let serialized_bytes = wasmer_module.serialize()?;
-                    self.cache_set(&correlation_id, module_bytes.clone(), serialized_bytes);
+                    match self.cache_get(&correlation_id, module_bytes.clone()) {
+                        Some(compiled) => {
+                            let store = wasmer::Store::new(wasmer::Engine::headless());
+
+                            let WasmerArtifact {
+                                // module,
+                                artifact_bytes,
+                            } = compiled.try_into_wasmer().unwrap();
+                            let module =
+                                unsafe { wasmer::Module::deserialize(&store, artifact_bytes) }?;
+                            Ok(Module::Singlepass {
+                                original_bytes: module_bytes,
+
+                                wasmer_module: module,
+                                store,
+                                timestamp: start,
+                            })
+                        }
+                        None => {
+                            let mut store = make_wasmer_store(
+                                backend,
+                                initial_limit,
+                                self.wasm_config.opcode_costs(),
+                            );
+
+                            // Wasmer doesn't use gas limit injector, but uses metering middleware
+                            let wasmi_module = deserialize_interpreted(&module_bytes)?;
+
+                            let instrumented_wasm_bytes = wasmi_module.clone().to_bytes().unwrap();
+
+                            let wasmer_module =
+                                wasmer::Module::from_binary(&mut store, &instrumented_wasm_bytes)?;
+
+                            let artifact_bytes = wasmer_module.serialize()?;
+
+                            self.cache_set(
+                                &correlation_id,
+                                module_bytes.clone(),
+                                CachedArtifact::Wasmer(WasmerArtifact {
+                                    // wasmi_module: wasmi_module.clone(),
+                                    // module: wasmer_module.clone(),
+                                    artifact_bytes,
+                                }),
+                            );
+                            // let WasmerArtifact { wasmi_module, module } =compiled.try_into_wasmer().unwrap();
+                            // let store = make_wasmer_store(backend);
+                            Ok(Module::Singlepass {
+                                original_bytes: module_bytes,
+                                // wasmi_module,
+                                wasmer_module: wasmer_module,
+                                store,
+                                timestamp: start,
+                            })
+                        }
+                    }
+                } else {
+                    let mut store =
+                        make_wasmer_store(backend, initial_limit, self.wasm_config.opcode_costs());
+                    let wasmi_module = deserialize_interpreted(&module_bytes)?;
+
+                    let instrumented_wasm_bytes = wasmi_module.clone().to_bytes().unwrap();
+
+                    let wasmer_module =
+                        wasmer::Module::from_binary(&mut store, &instrumented_wasm_bytes)?;
+                    Ok(Module::Singlepass {
+                        original_bytes: module_bytes,
+                        // wasmi_module,
+                        wasmer_module,
+                        store,
+                        timestamp: start,
+                    })
+                    // self.cache_set(&correlation_id, module_bytes, CachedArtifact::Wasmer(WasmerArtifact {
+                    //     wasmi_module,
+                    //     module: wasmer_module,
+                    // }))
                 }
-
-                let stop = start.elapsed();
-
-                Ok(Module::Singlepass {
-                    original_bytes: module_bytes,
-                    wasmi_module: module,
-                    store,
-                    wasmer_module: wasmer_module,
-                    timestamp: start,
-                })
             }
         }
+
+        // let module = deserialize_interpreted(&module_bytes, wasm_config)?;
+
+        // // if self.execution_mode.is_singlepass() && self.execution_mode.is_using_cache() {
+
+        // // }
+        // match self.execution_mode {
+        //     ExecutionMode::Interpreted { cache_artifacts } => {
+        //         // if cache_artifacts {
+        //         //         if let Some(precompiled_bytes) =
+        //         //             self.cache_get(&correlation_id, module_bytes.clone())
+        //         //         {
+
+        //         //         }
+        //         // }
+
+        //         Ok(Module::Interpreted {
+        //             original_bytes: module_bytes,
+        //             wasmi_module: module,
+        //             timestamp: start,
+        //         })
+        //     }
+        //     ExecutionMode::Compiled { cache_artifacts } => {
+        //         // TODO: Gas injected module is used here but we might want to use `module` instead
+        //         // with other preprocessing done.
+        //         let preprocessed_wasm_bytes = Bytes::from(
+        //             parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes"),
+        //         );
+
+        //         if cache_artifacts {
+        //             if let Some(precompiled_bytes) =
+        //                 self.cache_get(&correlation_id, module_bytes.clone())
+        //             {
+        //                 correlation_id.record_property(Property::VMCacheHit {
+        //                     original_bytes: module_bytes.clone(),
+        //                 });
+        //                 let wasmtime_module = unsafe {
+        //                     wasmtime::Module::deserialize(&self.compiled_engine, &precompiled_bytes)
+        //                 }
+        //                 .expect("should deserialize wasmtime module");
+        //                 return Ok(Module::Compiled {
+        //                     original_bytes: module_bytes,
+        //                     wasmi_module: module,
+        //                     precompile_time: None,
+        //                     wasmtime_module,
+        //                 });
+        //             }
+        //         }
+
+        //         let wasmtime_module =
+        //             wasmtime::Module::new(&self.compiled_engine, &preprocessed_wasm_bytes)
+        //                 .map_err(|error| PreprocessingError::Precompile(error.to_string()))?;
+
+        //         if cache_artifacts {
+        //             correlation_id.record_property(Property::VMCacheMiss {
+        //                 original_bytes: module_bytes.clone(),
+        //             });
+        //             let serialized_bytes = wasmtime::Module::serialize(&wasmtime_module).unwrap();
+        //             self.cache_set(
+        //                 &correlation_id,
+        //                 module_bytes.clone(),
+        //                 serialized_bytes.into(),
+        //             );
+        //         }
+        //         // aot compile
+        //         // let (precompiled_bytes, duration) = self
+        //         //     .precompile(
+        //         //         module_bytes.clone(),
+        //         //         preprocessed_wasm_bytes,
+        //         //         cache_artifacts,
+        //         //     )
+        //         //     .map_err(PreprocessingError::Precompile)?;
+
+        //         Ok(Module::Compiled {
+        //             original_bytes: module_bytes,
+        //             wasmi_module: module,
+        //             precompile_time: None,
+        //             wasmtime_module,
+        //             // compiled_artifact: precompiled_bytes,
+        //         })
+        //     }
+        //     ExecutionMode::JustInTime => {
+        //         let start = Instant::now();
+
+        //         let preprocessed_wasm_bytes =
+        //             parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+        //         let compiled_module =
+        //             wasmtime::Module::new(&self.compiled_engine, preprocessed_wasm_bytes)
+        //                 .map_err(|e| PreprocessingError::Deserialize(e.to_string()))?;
+
+        //         let stop = start.elapsed();
+
+        //         Ok(Module::Jitted {
+        //             original_bytes: module_bytes,
+        //             wasmi_module: module,
+        //             precompile_time: Some(stop),
+        //             module: compiled_module,
+        //         })
+        //     }
+        //     ExecutionMode::Wasmer {
+        //         backend,
+        //         cache_artifacts,
+        //     } => {
+        //         if cache_artifacts {
+        //             if let Some(precompiled_bytes) =
+        //                 self.cache_get(&correlation_id, module_bytes.clone())
+        //             {
+        //                 // We have the artifact, and we can use headless mode to just execute binary
+        //                 // artifact
+        //                 let headless_engine = wasmer::Engine::headless();
+        //                 let store = wasmer::Store::new(headless_engine);
+
+        //                 let wasmer_artifact = precompiled_bytes.try_into_wasmer_artifact().unwrap();
+
+        //                 let wasmer_module = unsafe {
+        //                     wasmer::Module::deserialize(&store, precompiled_bytes.clone())
+        //                 }?;
+
+        //                 return Ok(Module::Singlepass {
+        //                     original_bytes: module_bytes,
+        //                     wasmi_module: module,
+        //                     wasmer_module,
+        //                     store: store,
+        //                     timestamp: start,
+        //                 });
+        //             }
+        //         }
+
+        //         let preprocessed_wasm_bytes =
+        //             parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
+
+        //         let start = Instant::now();
+
+        //         let mut store = make_wasmer_store(backend);
+
+        //         let wasmer_module =
+        //             wasmer::Module::from_binary(&mut store, &preprocessed_wasm_bytes)?;
+
+        //         if cache_artifacts {
+        //             correlation_id.record_property(Property::VMCacheMiss {
+        //                 original_bytes: module_bytes.clone(),
+        //             });
+        //             let serialized_bytes = wasmer_module.serialize()?;
+        //             self.cache_set(&correlation_id, module_bytes.clone(), serialized_bytes);
+        //         }
+
+        //         let stop = start.elapsed();
+
+        //         Ok(Module::Singlepass {
+        //             original_bytes: module_bytes,
+        //             wasmi_module: module,
+        //             store,
+        //             wasmer_module: wasmer_module,
+        //             timestamp: start,
+        //         })
+        //     }
+        // }
         // let module = deserialize_interpreted(module_bytes)?;
     }
 
@@ -4768,8 +5229,50 @@ impl WasmEngine {
     }
 }
 
+fn instrument_wasmi_module(
+    module: WasmiModule,
+    wasm_config: WasmConfig,
+    gas_counter: bool,
+) -> Result<WasmiModule, PreprocessingError> {
+    ensure_valid_access(&module)?;
+    if module.start_section().is_some() {
+        // Remove execution::Error::UnsupportedWasmStart as previously with wasmi it was raised
+        // when we have module instance to run, but with other backends we'd have to expend a
+        // lot of resource to first compile artifact just to validate it - we can safely exit
+        // early without doing extra work.
+        return Err(WasmValidationError::UnsupportedWasmStart.into());
+        // return Err(execution::Error::UnsupportedWasmStart);
+    }
+    if memory_section(&module).is_none() {
+        // `pwasm_utils::externalize_mem` expects a non-empty memory section to exist in the
+        // module, and panics otherwise.
+        // return Err(PreprocessingError::MissingMemorySection);
+        // module.memory_section_mut().entries_mut().push()
+    }
+    let mut module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
+    ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
+    ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
+    ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
+    ensure_valid_imports(&module)?;
+    // let mut module = pwasm_utils::externalize_mem(module, None, wasm_config.max_memory);
+    if gas_counter {
+        module = pwasm_utils::inject_gas_counter(
+            module,
+            &wasm_config.opcode_costs().to_set(),
+            DEFAULT_GAS_MODULE_NAME,
+        )
+        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
+    }
+    let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
+        .map_err(|_| PreprocessingError::StackLimiter)?;
+    Ok(module)
+}
+
 #[cfg(test)]
 mod tests {
+    use casper_types::contracts::DEFAULT_ENTRY_POINT_NAME;
+    use parity_wasm::{builder, elements::Instructions};
+
     use super::*;
 
     #[test]
@@ -4785,4 +5288,49 @@ mod tests {
             execution::Error::Revert(ApiError::User(100))
         ));
     }
+    fn make_do_nothing() -> Vec<u8> {
+        let module = builder::module()
+            .function()
+            // A signature with 0 params and no return type
+            .signature()
+            .build()
+            // main() marks given function as a start() node
+            // .main()
+            .body()
+            .with_instructions(Instructions::new(vec![Instruction::Nop, Instruction::End]))
+            .build()
+            .build()
+            // Export above function
+            .export()
+            .field(DEFAULT_ENTRY_POINT_NAME)
+            .build()
+            // Memory section is mandatory
+            .memory()
+            .build()
+            .build();
+
+        parity_wasm::serialize(module).expect("should serialize")
+    }
+
+    // #[test]
+    // fn reuse_and_cache_wasmer() {
+    //     let wasm_config = WasmConfig {
+    //         execution_mode: ExecutionMode::Wasmer {
+    //             backend: WasmerBackend::Singlepass,
+    //             cache_artifacts: true,
+    //         },
+    //         ..Default::default()
+    //     };
+    //     let wasm_engine = WasmEngine::new(wasm_config);
+
+    //     let c = CorrelationId::new();
+
+    //     let wasm_bytes = make_do_nothing();
+
+    //     let module = wasm_engine.preprocess(c, wasm_config, &wasm_bytes).unwrap();
+
+    //     // let runtime = Runtime::new(EngineConfig::default(), RuntimeContext::new());
+
+    //     // wasm_engine.instance_and_memory(wasm_module, ProtocolVersion::V1_0_0, runtime)
+    // }
 }

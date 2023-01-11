@@ -1,6 +1,7 @@
 //! The `gas` module is used for working with Gas including converting to and from Motes.
 
 use core::{
+    convert::TryInto,
     fmt,
     iter::Sum,
     ops::{Add, AddAssign, Div, Mul, Sub},
@@ -23,6 +24,13 @@ impl Gas {
     /// Returns the inner `U512` value.
     pub fn value(&self) -> U512 {
         self.0
+    }
+
+    /// Returns gas in u64.
+    ///
+    /// TODO: Gas should be represented as u64 for compatibility with wasmer.
+    pub fn value_u64(&self) -> u64 {
+        self.0.try_into().unwrap()
     }
 
     /// Converts the given `motes` to `Gas` by dividing them by `conv_rate`.

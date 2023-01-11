@@ -183,7 +183,7 @@ fn should_try_to_exercise_cache() {
     let start1 = Instant::now();
     builder.exec_instrumented(instrumented!(exec1)).commit();
     let stop1 = start1.elapsed();
-    eprintln!("elapsed1 {:?}", stop1);
+    eprintln!("elapsed1 {:?} gas {}", stop1, builder.last_exec_gas_cost());
 
     let maybe_error = builder.get_error();
     assert!(
@@ -208,7 +208,7 @@ fn should_try_to_exercise_cache() {
         "{:?}",
         maybe_error
     );
-    eprintln!("elapsed2 {:?}", stop2);
+    eprintln!("elapsed2 {:?} gas {}", stop2, builder.last_exec_gas_cost());
 }
 const ARG_ACCOUNTS: &str = "accounts";
 const ARG_SEED_AMOUNT: &str = "seed_amount";
