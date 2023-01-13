@@ -57,7 +57,11 @@ where
     fn write<T: ToBytes + CLTyped>(&mut self, uref: URef, value: T) -> Result<(), Error> {
         let cl_value = CLValue::from_t(value).map_err(|_| Error::CLValue)?;
         self.context
-            .metered_write_gs(uref.into(), StoredValue::CLValue(cl_value))
+            .metered_write_gs(
+                &mut self.system_context(),
+                uref.into(),
+                StoredValue::CLValue(cl_value),
+            )
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Storage))
     }
 
@@ -200,7 +204,7 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        // let gas_counter = self.context.gas_counter();
 
         self.context
             .access_rights_extend(&[source, target.into_add()]);
@@ -213,7 +217,7 @@ where
             .call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Transfer))?;
 
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
 
         cl_value.into_t().map_err(|_| Error::CLValue)
     }
@@ -234,7 +238,7 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        // let gas_counter = self.context.gas_counter();
 
         let mint_contract_hash = self.get_mint_contract().map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
@@ -247,7 +251,7 @@ where
                 args_values,
             )
             .map_err(|error| <Option<Error>>::from(error).unwrap_or(Error::MintError))?;
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
         cl_value
             .into_t::<Result<(), mint::Error>>()
             .map_err(|_| Error::CLValue)?

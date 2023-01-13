@@ -43,7 +43,7 @@ use wasmer::{
     FunctionEnvMut, ModuleMiddleware, Pages, TypedFunction,
 };
 use wasmer_compiler_singlepass::Singlepass;
-use wasmer_middlewares::metering::{self, MeteringPoints};
+use wasmer_middlewares::metering;
 
 const DEFAULT_GAS_MODULE_NAME: &str = "env";
 /// Name of the internal gas function injected by [`pwasm_utils::inject_gas_counter`].
@@ -425,43 +425,6 @@ impl AtomicMeteringHandle {
     }
 }
 
-#[derive(Debug)]
-pub enum MeteringHandle {
-    Atomic(AtomicMeteringHandle),
-    Wasmer {
-        store: Arc<RwLock<wasmer::Store>>,
-        instance: wasmer::Instance,
-    },
-}
-
-impl MeteringHandle {
-    pub(crate) fn get_remaining_points(&self) -> Option<u64> {
-        match self {
-            MeteringHandle::Atomic(metering_handle) => metering_handle.get_remaining_points(),
-            MeteringHandle::Wasmer { store, instance } => {
-                let mut store = store.write().unwrap();
-                match metering::get_remaining_points(&mut store.as_store_mut(), &instance) {
-                    MeteringPoints::Remaining(remaining) => Some(remaining),
-                    MeteringPoints::Exhausted => None,
-                }
-            }
-        }
-    }
-    pub(crate) fn set_remaining_points(&self, points: u64) {
-        match self {
-            MeteringHandle::Atomic(metering_handle) => metering_handle.set_remaining_points(points),
-            MeteringHandle::Wasmer { store, instance } => {
-                let mut store = store.write().unwrap();
-                metering::set_remaining_points(&mut store.as_store_mut(), instance, points)
-            }
-        }
-    }
-
-    pub(crate) fn atomic(initial_limit: u64) -> MeteringHandle {
-        MeteringHandle::Atomic(AtomicMeteringHandle::with_limit(initial_limit))
-    }
-}
-
 /// Warmed up instance of a wasm module used for execution.
 pub enum Instance<R: Clone>
 // where
@@ -474,7 +437,6 @@ pub enum Instance<R: Clone>
         memory: MemoryRef,
         runtime: Runtime<R>,
         timestamp: Instant,
-        metering_handle: Arc<MeteringHandle>,
     },
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
@@ -494,8 +456,8 @@ pub enum Instance<R: Clone>
         /// There is no separate "compile" step that turns a wasm bytes into a wasmer module
         // wasmer_module: wasmer::Module,
         // runtime: Runtime<R>,
-        store: Arc<RwLock<wasmer::Store>>,
         timestamp: Instant,
+        store: wasmer::Store,
         instance: wasmer::Instance,
     },
 }
@@ -536,8 +498,52 @@ where
 // }
 
 pub trait FunctionContext {
+    /// Read from Wasm memory
     fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError>;
+    /// Write to Wasm memory
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError>;
+    /// Get remaining points
+    fn get_remaining_points(&mut self) -> MeteringPoints;
+    /// Set remaining points
+    fn set_remaining_points(&mut self, points: u64);
+}
+
+pub struct SystemContext(Arc<AtomicU64>);
+
+impl FunctionContext for SystemContext {
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+        todo!("System does not have access to a linear memory")
+    }
+
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
+        todo!("System does not have access to a linear memory")
+    }
+
+    fn get_remaining_points(&mut self) -> MeteringPoints {
+        let points = self.0.load(Ordering::SeqCst);
+        MeteringPoints::Remaining(points)
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        self.0.store(points, Ordering::SeqCst);
+    }
+}
+
+pub(crate) fn charge_gas(context: &mut impl FunctionContext, amount: u64) -> MeteringPoints {
+    let prev = context.get_remaining_points();
+    match prev {
+        MeteringPoints::Remaining(remaining_points) => match remaining_points.checked_sub(amount) {
+            Some(new_remaining_points) => {
+                context.set_remaining_points(new_remaining_points);
+                MeteringPoints::Remaining(new_remaining_points)
+            }
+            None => {
+                context.set_remaining_points(0);
+                MeteringPoints::Exhausted
+            }
+        },
+        MeteringPoints::Exhausted => MeteringPoints::Exhausted,
+    }
 }
 
 pub struct WasmiAdapter {
@@ -558,6 +564,14 @@ impl FunctionContext for WasmiAdapter {
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
         self.memory.set(offset, data)?;
         Ok(())
+    }
+
+    fn get_remaining_points(&mut self) -> Option<u64> {
+        todo!()
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        todo!()
     }
 }
 
@@ -587,12 +601,86 @@ impl<'a> FunctionContext for WasmtimeAdapter<'a> {
             .copy_from_slice(buffer);
         Ok(())
     }
+
+    fn get_remaining_points(&mut self) -> Option<u64> {
+        todo!()
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        todo!()
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum MeteringPoints {
+    Remaining(u64),
+    Exhausted,
+}
+
+impl From<metering::MeteringPoints> for MeteringPoints {
+    fn from(v: metering::MeteringPoints) -> Self {
+        match v {
+            metering::MeteringPoints::Remaining(points) => MeteringPoints::Remaining(points),
+            metering::MeteringPoints::Exhausted => MeteringPoints::Exhausted,
+        }
+    }
 }
 
 struct WasmerAdapter<'a>(wasmer::MemoryView<'a>);
 impl<'a> WasmerAdapter<'a> {
     fn new(memory_view: wasmer::MemoryView<'a>) -> Self {
         Self(memory_view)
+    }
+}
+
+struct WasmerEnvAdapter<'a, R: Clone> {
+    pub(crate) caller: FunctionEnvMut<'a, WasmerEnv<R>>,
+}
+
+impl<'a, R> WasmerEnvAdapter<'a, R>
+where
+    R: Clone + 'static,
+    WasmerEnv<R>: Send,
+{
+    fn new(caller: FunctionEnvMut<'a, WasmerEnv<R>>) -> Self {
+        Self { caller }
+    }
+}
+
+impl<'a, R> FunctionContext for WasmerEnvAdapter<'a, R>
+where
+    R: Clone + 'static,
+    WasmerEnv<R>: Send,
+{
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        let view = wasmer_memory.view(&self.caller);
+        let mut vec = vec![0; size];
+        view.read(offset as u64, &mut vec)?;
+        Ok(vec)
+    }
+
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
+        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        let view = wasmer_memory.view(&self.caller);
+        // let mut vec = vec![0; size];
+        view.write(offset as u64, data)?;
+        Ok(())
+    }
+
+    fn get_remaining_points(&mut self) -> Option<u64> {
+        let instance = self.caller.data().instance.as_ref().unwrap().clone();
+        match metering::get_remaining_points(&mut self.caller.as_store_mut(), &instance) {
+            metering::MeteringPoints::Remaining(remaining_points) => Some(remaining_points),
+            metering::MeteringPoints::Exhausted => None,
+        }
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        let instance = self.caller.data().instance.as_ref().unwrap().clone();
+        metering::set_remaining_points(&mut self.caller.as_store_mut(), &instance, points);
     }
 }
 
@@ -606,6 +694,14 @@ impl<'a> FunctionContext for WasmerAdapter<'a> {
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
         self.0.write(offset as u64, data)?;
         Ok(())
+    }
+
+    fn get_remaining_points(&mut self) -> Option<u64> {
+        todo!()
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        todo!()
     }
 }
 
@@ -622,6 +718,7 @@ fn caller_adapter_and_runtime<'b, 'c, 'd: 'c, R: Clone>(
 struct WasmerEnv<R: Clone> {
     runtime: Runtime<R>,
     memory: Option<wasmer::Memory>,
+    instance: Option<wasmer::Instance>,
 }
 
 impl<R> Instance<R>
@@ -636,6 +733,7 @@ where
             Instance::Singlepass { .. } => unreachable!("available only from wasmi externals"),
         }
     }
+
     /// Invokes exported function
     pub fn invoke_export(
         &mut self,
@@ -643,6 +741,7 @@ where
         wasm_engine: &WasmEngine,
         func_name: &str,
         args: Vec<RuntimeValue>,
+        remaining_points: &mut Option<MeteringPoints>,
     ) -> Result<Option<RuntimeValue>, RuntimeError> {
         match self {
             Instance::Interpreted {
@@ -651,7 +750,6 @@ where
                 memory,
                 runtime,
                 timestamp,
-                metering_handle,
             } => {
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
                     args.into_iter().map(|value| value.into()).collect();
@@ -662,7 +760,6 @@ where
                     // remaining_points: initial_limit,
                     memory: memory.clone(),
                     // exhausted_points,
-                    metering_handle: metering_handle.clone(),
                 };
 
                 let preprocess_dur = timestamp.elapsed();
@@ -1934,17 +2031,22 @@ where
                 // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
 
                 let call_func: TypedFunction<(), ()> = {
-                    let store = wasmer_store.read().unwrap();
+                    // let store = wasmer_store.read().unwrap();
                     instance
                         .exports
-                        .get_typed_function(&store.as_store_ref(), func_name)
+                        .get_typed_function(&wasmer_store.as_store_ref(), func_name)
                         .expect("should get wasmer call func")
                 };
 
-                let _call_result = {
-                    let mut store = wasmer_store.write().unwrap();
-                    call_func.call(&mut store.as_store_mut())
-                }?;
+                let result = call_func.call(&mut wasmer_store.as_store_mut());
+
+                *remaining_points = Some(
+                    metering::get_remaining_points(&mut wasmer_store.as_store_mut(), &instance)
+                        .into(),
+                );
+                dbg!(remaining_points);
+
+                result?;
 
                 let invoke_dur = timestamp.elapsed();
 
@@ -1958,71 +2060,6 @@ where
             }
         }
     }
-
-    pub(crate) fn get_metering_handle(&self) -> Arc<MeteringHandle> {
-        match self {
-            Instance::Interpreted {
-                metering_handle, ..
-            } => Arc::clone(metering_handle),
-            Instance::Compiled {
-                original_bytes,
-                precompile_time,
-                module,
-                compiled_module,
-                runtime,
-            } => todo!(),
-            Instance::Singlepass {
-                original_bytes,
-                store,
-                timestamp,
-                instance,
-            } => Arc::new(MeteringHandle::Wasmer {
-                store: store.clone(),
-                instance: instance.clone(),
-            }),
-        }
-    }
-
-    // pub(crate) fn set_remaining_points(&mut self, points: u64) {
-    //     self.get_metering_handle().set_remaining_points(points)
-    //     // match self {
-    //     //     Instance::Interpreted {
-    //     //         metering_handle, ..
-    //     //     } => {
-    //     //         metering_handle.set_remaining_points(points);
-    //     //     }
-    //     //     Instance::Compiled { .. } => todo!(),
-    //     //     Instance::Singlepass {
-    //     //         store, instance, ..
-    //     //     } => {
-    //     //         metering::set_remaining_points(store, &instance, points);
-    //     //     }
-    //     // }
-    // }
-
-    // pub(crate) fn get_remaining_points(&mut self) -> Option<u64> {
-    //     self.get_metering_hnadle().
-    //     // match self {
-    //     //     Instance::Interpreted {
-    //     //         remaining_points: initial_limit,
-    //     //         exhausted_points,
-    //     //         ..
-    //     //     } => {
-    //     //         if *exhausted_points {
-    //     //             None
-    //     //         } else {
-    //     //             Some(*initial_limit)
-    //     //         }
-    //     //     }
-    //     //     Instance::Compiled { .. } => None,
-    //     //     Instance::Singlepass {
-    //     //         store, instance, ..
-    //     //     } => match metering::get_remaining_points(store, &instance) {
-    //     //         MeteringPoints::Remaining(remaining_points) => Some(remaining_points),
-    //     //         MeteringPoints::Exhausted => None,
-    //     //     },
-    //     // }
-    // }
 }
 
 /// An error emitted by the Wasm preprocessor.
@@ -2713,15 +2750,12 @@ impl WasmEngine {
                 let instance = not_started_module.not_started_instance().clone();
                 // let memory = resolver.memory_ref()?;
 
-                let metering_handle = Arc::new(MeteringHandle::atomic(initial_limit));
-
                 Ok(Instance::Interpreted {
                     original_bytes: original_bytes.clone(),
                     module: instance,
                     memory,
                     runtime,
                     timestamp,
-                    metering_handle,
                 })
             }
             Module::Compiled {
@@ -2879,115 +2913,16 @@ impl WasmEngine {
                 // let memory_obj = memory;
                 // // import_object.mem
 
-                let wasmer_env = WasmerEnv {
+                let mut wasmer_env = WasmerEnv {
                     runtime,
                     memory: imported_memory.clone(),
+                    // Instance is not yet known but we have to create this object first.
+                    // Is it possible to create WasmerEnv *after* instance is created, and supply env during function call?
+                    instance: None,
                 };
 
                 let mut function_env =
                     FunctionEnv::new(&mut wasmer_store.as_store_mut(), wasmer_env);
-
-                // let gas_func = wasmer::Function::new_typed_with_env(
-                //     &mut wasmer_store.as_store_mut(),
-                //     &function_env,
-                //     |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                //      gas_arg: u32|
-                //      -> Result<(), execution::Error> {
-                //         env.data_mut().runtime.gas(Gas::new(gas_arg.into()))
-                //     },
-                // );
-
-                // let revert_func = wasmer::Function::new_typed_with_env(
-                //     &mut wasmer_store.as_store_mut(),
-                //     &function_env,
-                //     |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                //      status: u32|
-                //      -> Result<(), execution::Error> {
-                //         let error = env.data_mut().runtime.casper_revert(status).unwrap_err();
-                //         Err(error)
-                //     },
-                // );
-
-                // let mem2 = memory.clone();
-                // let new_uref_func = wasmer::Function::new_typed_with_env(
-                //     &mut wasmer_store.as_store_mut(),
-                //     &function_env,
-                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                //           uref_ptr: u32,
-                //           value_ptr: u32,
-                //           value_size: u32|
-                //           -> Result<(), execution::Error> {
-                //         // let cloned_mem = mem2;
-                //         let mut function_context =
-                // WasmerAdapter::new(mem2.view(&env.as_store_ref()));
-
-                //         env.data_mut().runtime.casper_new_uref(
-                //             function_context,
-                //             uref_ptr,
-                //             value_ptr,
-                //             value_size,
-                //         )?;
-                //         Ok(())
-                //     },
-                // );
-                // let mem2 = memory.clone();
-                // let get_main_purse_func = wasmer::Function::new_typed_with_env(
-                //     &mut wasmer_store.as_store_mut(),
-                //     &function_env,
-                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                //           dest_ptr: u32|
-                //           -> Result<(), execution::Error> {
-                //         let mut function_context =
-                // WasmerAdapter::new(mem2.view(&env.as_store_ref()));         env.
-                // data_mut()             .runtime
-                //             .casper_get_main_purse(function_context, dest_ptr)?;
-                //         Ok(())
-                //     },
-                // );
-
-                // let memory = memory.clone();
-
-                // let write_func = wasmer::Function::new_typed_with_env(
-                //     &mut wasmer_store.as_store_mut(),
-                //     &function_env,
-                //     move |mut env: FunctionEnvMut<WasmerEnv<R>>,
-                //           key_ptr: u32,
-                //           key_size: u32,
-                //           value_ptr: u32,
-                //           value_size: u32|
-                //           -> Result<(), execution::Error> {
-                //         let mut function_context =
-                // WasmerAdapter::new(memory.view(&env.as_store_ref()));
-                //         env.data_mut().runtime.casper_write(
-                //             function_context,
-                //             key_ptr,
-                //             key_size,
-                //             value_ptr,
-                //             value_size,
-                //         )?;
-                //         Ok(())
-                //     },
-                // );
-
-                //                import_object.define("env", "gas",
-                // wasmer::Extern::from(gas_func));
-                // import_object.define("env", "casper_revert", wasmer::Extern::from(revert_func));
-
-                //                import_object.define(
-                //     "env",
-                //     "casper_new_uref",
-                //     wasmer::Extern::from(new_uref_func),
-                // );
-                //                import_object.define(
-                //     "env",
-                //     "casper_get_main_purse",
-                //     wasmer::Extern::from(get_main_purse_func),
-                // );
-
-                //                import_object.define("env", "casper_write",
-                // wasmer::Extern::from(write_func));
-
-                //
 
                 if let Some(imported_memory) = &imported_memory {
                     import_object.define(
@@ -3337,12 +3272,17 @@ impl WasmEngine {
                               value_ptr,
                               value_size|
                               -> Result<(), execution::Error> {
-                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+                            // let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
 
-                            let view = wasmer_memory.view(&caller);
-                            let mut function_context = WasmerAdapter::new(view);
+                            // let view = wasmer_memory.view(&caller);
+                            // let mut function_context = WasmerAdapter::new(view);
 
-                            caller.data_mut().runtime.casper_new_uref(
+                            let mut function_context = WasmerEnvAdapter::new(caller);
+
+                            let mut runtime_clone =
+                                function_context.caller.data_mut().runtime.clone();
+
+                            runtime_clone.casper_new_uref(
                                 function_context,
                                 uref_ptr,
                                 value_ptr,
@@ -3390,12 +3330,12 @@ impl WasmEngine {
                               value_ptr: u32,
                               value_size: u32|
                               -> Result<(), execution::Error> {
-                            let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+                            let mut function_context = WasmerEnvAdapter::new(caller);
 
-                            let view = wasmer_memory.view(&caller);
-                            let mut function_context = WasmerAdapter::new(view);
+                            let mut runtime_clone =
+                                function_context.caller.data_mut().runtime.clone();
 
-                            caller.data_mut().runtime.casper_write(
+                            runtime_clone.casper_write(
                                 function_context,
                                 key_ptr,
                                 key_size,
@@ -4597,6 +4537,10 @@ impl WasmEngine {
                     execution::Error::Interpreter(error.to_string())
                 })?;
 
+                function_env
+                    .as_mut(&mut wasmer_store.as_store_mut())
+                    .instance = Some(instance.clone());
+
                 // function_env.as_mut(&mut wasmer_store.as_store_mut(), )
                 // instance.
                 match instance.exports.get_memory("memory") {
@@ -4620,7 +4564,8 @@ impl WasmEngine {
                     // wasmer_module: wasmer_module,
                     instance,
                     // runtime,
-                    store: Arc::new(RwLock::new(wasmer_store)),
+                    // store: Arc::new(RwLock::new(wasmer_store)),
+                    store: wasmer_store,
                     timestamp,
                 })
             }
@@ -4930,7 +4875,7 @@ impl WasmEngine {
         module_bytes: &[u8],
         initial_limit: u64,
     ) -> Result<Module, PreprocessingError> {
-        dbg!(&initial_limit);
+        // dbg!(&initial_limit);
         let start = Instant::now();
 
         // NOTE: Consider using `bytes::Bytes` instead of `bytesrepr::Bytes` as its cheaper

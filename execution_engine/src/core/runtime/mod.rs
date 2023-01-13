@@ -15,7 +15,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     convert::{TryFrom, TryInto},
     iter::FromIterator,
-    sync::{Arc, Mutex, RwLock},
+    sync::{atomic::Ordering, Arc, Mutex, RwLock},
 };
 
 use tracing::error;
@@ -53,8 +53,8 @@ use crate::{
         host_function_costs::{Cost, HostFunction},
         newtypes::{CorrelationId, Property},
         wasm_engine::{
-            self, FunctionContext, Instance, MeteringHandle, Module, PreprocessingError,
-            RuntimeValue, WasmEngine, WasmiModule,
+            self, FunctionContext, Instance, Module, PreprocessingError, RuntimeValue,
+            SystemContext, WasmEngine, WasmiModule,
         },
     },
     storage::global_state::StateReader,
@@ -212,7 +212,7 @@ where
     /// contract calls into mint to create new purses).
     pub(crate) fn charge_system_contract_call<T>(&mut self, amount: T) -> Result<(), Error>
     where
-        T: Into<Gas>,
+        T: Into<u64>,
     {
         if self.host_function_flag.is_in_host_function_scope()
             || self.is_system_immediate_caller()?
@@ -221,7 +221,8 @@ where
             // handling a host function call or a system contract calls other system contract.
             return Ok(());
         }
-        self.context.charge_system_contract_call(amount)
+        // self.context.charge_system_contract_call(amount)
+        self.context_mut().charge_gas(amount.into())
     }
 
     fn get_module_from_entry_points(
@@ -671,7 +672,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
 
         let mint_hash = self.context.get_system_contract(MINT)?;
         let base_key = Key::from(mint_hash);
@@ -772,10 +773,17 @@ where
         // Charge just for the amount that particular entry point cost - using gas cost from the
         // isolated runtime might have a recursive costs whenever system contract calls other system
         // contract.
-        // self.gas(match mint_runtime.gas_counter().checked_sub(gas_counter) {
-        //     None => gas_counter,
-        //     Some(new_gas) => new_gas,
-        // })?;
+        self.context_mut().charge_gas(
+            match mint_runtime
+                .context()
+                .gas_counter()
+                .load(Ordering::SeqCst)
+                .checked_sub(gas_counter)
+            {
+                None => gas_counter,
+                Some(new_gas) => new_gas,
+            },
+        )?;
 
         // Result still contains a result, but the entrypoints logic does not exit early on errors.
         let ret = result?;
@@ -801,7 +809,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context().gas_counter().load(Ordering::SeqCst);
 
         let handle_payment_hash = self.context.get_system_contract(HANDLE_PAYMENT)?;
         let base_key = Key::from(handle_payment_hash);
@@ -865,10 +873,18 @@ where
             _ => CLValue::from_t(()).map_err(Self::reverter),
         };
 
-        let cost = match runtime.context().gas_counter().checked_sub(gas_counter) {
-            None => gas_counter,
-            Some(new_gas) => new_gas,
-        };
+        // Charge for the gas spent during execution in an isolated runtime.
+        self.context_mut().charge_gas(
+            match runtime
+                .context()
+                .gas_counter()
+                .load(Ordering::SeqCst)
+                .checked_sub(gas_counter)
+            {
+                None => gas_counter,
+                Some(new_gas) => new_gas,
+            },
+        )?;
 
         let ret = result?;
         let urefs = utils::extract_urefs(&ret)?;
@@ -885,11 +901,11 @@ where
         // NOTE: This method (unlike other call_host_* methods) already runs on its own runtime
         // context.
         self.stack = Some(stack);
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        // let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
         let amount: U512 =
             Self::get_named_argument(self.context.args(), standard_payment::ARG_AMOUNT)?;
         let result = self.pay(amount).map_err(Self::reverter);
-        self.context.set_remaining_points(gas_counter);
+        // debug_assert_eq!(gas_counter, self.context.gas_counter());
         result
     }
 
@@ -901,7 +917,7 @@ where
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
 
         let auction_hash = self.context.get_system_contract(AUCTION)?;
         let base_key = Key::from(auction_hash);
@@ -1078,7 +1094,12 @@ where
         };
 
         // Charge for the gas spent during execution in an isolated runtime.
-        let gas = match runtime.context.gas_counter().checked_sub(gas_counter) {
+        let gas = match runtime
+            .context
+            .gas_counter()
+            .load(Ordering::SeqCst)
+            .checked_sub(gas_counter)
+        {
             None => gas_counter,
             Some(new_gas) => new_gas,
         };
@@ -1308,7 +1329,7 @@ where
         let is_system_account = self.context.get_caller() == PublicKey::System.to_account_hash();
         // Is the immediate caller a system contract, such as when the auction calls the mint.
         let is_caller_system_contract =
-            self.is_system_contract(self.context.access_rights().context_key())?;
+            self.is_system_contract(self.context.access_rights_context_key())?;
         // Checks if the contract we're about to call is a system contract.
         let is_calling_system_contract = self.is_system_contract(context_key)?;
         // uref attenuation is necessary in the following circumstances:
@@ -1401,20 +1422,23 @@ where
             self.wasm_engine
                 .instance_and_memory(module, protocol_version, runtime.clone())?;
 
-        // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
-        let metering_handle = instance.get_metering_handle();
-        let remaining_points = self
-            .context()
-            .get_remaining_points()
-            .ok_or(Error::GasLimit)?;
-        metering_handle.set_remaining_points(remaining_points.value_u64());
-        runtime.context_mut().metering_handle = metering_handle;
+        // // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
+        // let metering_handle = instance.get_metering_handle();
+        // let remaining_points = self
+        //     .context()
+        //     .get_remaining_points()
+        //     .ok_or(Error::GasLimit)?;
+        // metering_handle.set_remaining_points(remaining_points.value_u64());
+        // runtime.context_mut().metering_handle = Some(metering_handle);
+
+        let mut remaining_points = None;
 
         let result = instance.invoke_export(
             self.context.correlation_id().clone(),
             &self.wasm_engine,
             entry_point.name(),
             Vec::new(),
+            &mut remaining_points,
         );
 
         // todo!("execute_contract invoke result {:?}", result);
@@ -1422,14 +1446,14 @@ where
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
         // counter from there to our counter.
-        if let Some(remaining_points) = runtime.context.get_remaining_points() {
-            self.context.set_remaining_points(remaining_points);
-        }
+        // if let Some(remaining_points) = runtime.context.get_remaining_points() {
+        //     self.context.set_remaining_points(remaining_points);
+        // }
 
-        {
-            // let transfers = self.context.transfers_mut();
-            // *transfers = runtime.context.transfers().to_owned();
-        }
+        // {
+        //     // let transfers = self.context.transfers_mut();
+        //     // *transfers = runtime.context.transfers().to_owned();
+        // }
 
         let error = match result {
             Err(error) => error,
@@ -1659,9 +1683,10 @@ where
 
     fn create_contract_package(
         &mut self,
+        context: &mut impl FunctionContext,
         is_locked: ContractPackageStatus,
     ) -> Result<(ContractPackage, URef), Error> {
-        let access_key = self.context.new_unit_uref()?;
+        let access_key = self.context.new_unit_uref(context)?;
         let contract_package = ContractPackage::new(
             access_key,
             ContractVersions::default(),
@@ -1675,12 +1700,13 @@ where
 
     pub(crate) fn create_contract_package_at_hash(
         &mut self,
+        context: &mut impl FunctionContext,
         lock_status: ContractPackageStatus,
     ) -> Result<([u8; 32], [u8; 32]), Error> {
         let addr = self.context.new_hash_address()?;
-        let (contract_package, access_key) = self.create_contract_package(lock_status)?;
+        let (contract_package, access_key) = self.create_contract_package(context, lock_status)?;
         self.context
-            .metered_write_gs_unsafe(Key::Hash(addr), contract_package)?;
+            .metered_write_gs_unsafe(context, Key::Hash(addr), contract_package)?;
         Ok((addr, access_key.addr()))
     }
 
@@ -2063,16 +2089,19 @@ where
         value_size: u32,
     ) -> Result<(), Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
+        self.charge_host_function_call2(
+            &mut context,
             &host_function_costs.new_uref,
             [uref_ptr, value_ptr, value_size],
         )?;
         // scoped_instrumenter.add_property("value_size", value_size);
         // let memory = self.instance.interpreted_memory();
 
-        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size)?;
+        let cl_value: CLValue = t_from_memory(&context, value_ptr, value_size)?;
 
-        let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
+        let uref = self
+            .context
+            .new_uref(&mut context, StoredValue::CLValue(cl_value))?;
 
         let bytes = uref.into_bytes().map_err(Error::from)?;
         context.memory_write(uref_ptr, &bytes)?;
@@ -2354,13 +2383,13 @@ where
         &mut self,
         mint_contract_hash: ContractHash,
     ) -> Result<U512, Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
         let call_result = self.call_contract(
             mint_contract_hash,
             mint::METHOD_READ_BASE_ROUND_REWARD,
             RuntimeArgs::default(),
         );
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
 
         let reward = call_result?.into_t()?;
         Ok(reward)
@@ -2369,14 +2398,14 @@ where
     /// Calls the `mint` method on the mint contract at the given mint
     /// contract key
     fn mint_mint(&mut self, mint_contract_hash: ContractHash, amount: U512) -> Result<URef, Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
             runtime_args
         };
         let call_result = self.call_contract(mint_contract_hash, mint::METHOD_MINT, runtime_args);
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
 
         let result: Result<URef, mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -2389,7 +2418,7 @@ where
         mint_contract_hash: ContractHash,
         amount: U512,
     ) -> Result<(), Error> {
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
@@ -2400,7 +2429,7 @@ where
             mint::METHOD_REDUCE_TOTAL_SUPPLY,
             runtime_args,
         );
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
 
         let result: Result<(), mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -2466,10 +2495,10 @@ where
             runtime_args
         };
 
-        let gas_counter = self.context.get_remaining_points().ok_or(Error::GasLimit)?;
+        // let gas_counter = self.context.gas_counter().load(Ordering::SeqCst);
         let call_result =
             self.call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values);
-        self.context.set_remaining_points(gas_counter);
+        // self.context.set_remaining_points(gas_counter);
 
         Ok(call_result?.into_t()?)
     }
@@ -3161,6 +3190,24 @@ where
         Ok(())
     }
 
+    /// Calculate gas cost for a host function
+    pub(crate) fn charge_host_function_call2<T>(
+        &mut self,
+        context: &mut impl FunctionContext,
+        host_function: &HostFunction<T>,
+        weights: T,
+    ) -> Result<(), Error>
+    where
+        T: AsRef<[Cost]> + Copy,
+    {
+        let cost = host_function.calculate_gas_cost(weights);
+        // self.context.charge_gas(cost)?;
+
+        self.charge_gas2(context, cost)?;
+
+        Ok(())
+    }
+
     /// Creates a dictionary
     pub fn new_dictionary(
         &mut self,
@@ -3466,7 +3513,7 @@ where
         ExecutionResult::Success {
             execution_journal: self.context().execution_journal(),
             transfers: self.context().transfers().to_owned(),
-            cost: self.context().gas_counter(),
+            cost: self.context().gas_counter().load(Ordering::SeqCst).into(),
         }
     }
 
@@ -3475,7 +3522,7 @@ where
             error: error.into(),
             execution_journal: self.context().execution_journal(),
             transfers: self.context().transfers().to_owned(),
-            cost: self.context().gas_counter(),
+            cost: self.context().gas_counter().load(Ordering::SeqCst).into(),
         }
     }
 
@@ -3498,5 +3545,9 @@ where
         function_context.memory_write(out_ptr, &random_bytes)?;
 
         Ok(Ok(()))
+    }
+
+    pub(crate) fn system_context(&self) -> SystemContext {
+        SystemContext(self.context().gas_counter())
     }
 }

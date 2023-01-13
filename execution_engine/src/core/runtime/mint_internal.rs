@@ -78,7 +78,7 @@ where
     fn new_uref<T: CLTyped + ToBytes>(&mut self, init: T) -> Result<URef, Error> {
         let cl_value: CLValue = CLValue::from_t(init).map_err(|_| Error::CLValue)?;
         self.context
-            .new_uref(StoredValue::CLValue(cl_value))
+            .new_uref(&mut self.system_context(), StoredValue::CLValue(cl_value))
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::NewURef))
     }
 
@@ -100,7 +100,11 @@ where
     fn write<T: CLTyped + ToBytes>(&mut self, uref: URef, value: T) -> Result<(), Error> {
         let cl_value = CLValue::from_t(value).map_err(|_| Error::CLValue)?;
         self.context
-            .metered_write_gs(Key::URef(uref), StoredValue::CLValue(cl_value))
+            .metered_write_gs(
+                &mut self.system_context(),
+                Key::URef(uref),
+                StoredValue::CLValue(cl_value),
+            )
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Storage))
     }
 

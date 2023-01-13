@@ -101,6 +101,7 @@ fn should_execute_wasm_without_imports() {
         .commit();
     builder.expect_success().commit();
 }
+
 #[ignore]
 #[test]
 fn should_run_endless_loop() {
@@ -116,7 +117,7 @@ fn should_run_endless_loop() {
     let start = Instant::now();
     builder.exec_instrumented(instrumented!(exec));
     let end = start.elapsed();
-    eprintln!("elapsed {:?}", end);
+    eprintln!("elapsed {:?} gas {}", end, builder.last_exec_gas_cost());
     builder.commit();
 
     let maybe_error = builder.get_error();

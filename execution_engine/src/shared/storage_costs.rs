@@ -30,9 +30,9 @@ impl StorageCosts {
     }
 
     /// Calculates gas cost for storing `bytes`.
-    pub fn calculate_gas_cost(&self, bytes: usize) -> Gas {
-        let value = U512::from(self.gas_per_byte) * U512::from(bytes);
-        Gas::new(value)
+    pub fn calculate_gas_cost(&self, bytes: usize) -> u64 {
+        let value = u64::from(self.gas_per_byte) * (bytes as u64);
+        value
     }
 }
 
@@ -87,20 +87,20 @@ pub mod tests {
     fn should_calculate_gas_cost() {
         let storage_costs = StorageCosts::default();
 
-        let cost = storage_costs.calculate_gas_cost(SMALL_WEIGHT);
+        let cost = storage_costs.calculate_gas_cost(SMALL_WEIGHT) as usize;
 
-        let expected_cost = U512::from(DEFAULT_GAS_PER_BYTE_COST) * U512::from(SMALL_WEIGHT);
-        assert_eq!(cost, Gas::new(expected_cost));
+        let expected_cost = (DEFAULT_GAS_PER_BYTE_COST as usize) * SMALL_WEIGHT;
+        assert_eq!(cost, expected_cost);
     }
 
     #[test]
     fn should_calculate_big_gas_cost() {
         let storage_costs = StorageCosts::default();
 
-        let cost = storage_costs.calculate_gas_cost(LARGE_WEIGHT);
+        let cost = storage_costs.calculate_gas_cost(LARGE_WEIGHT) as usize;
 
-        let expected_cost = U512::from(DEFAULT_GAS_PER_BYTE_COST) * U512::from(LARGE_WEIGHT);
-        assert_eq!(cost, Gas::new(expected_cost));
+        let expected_cost = (DEFAULT_GAS_PER_BYTE_COST as usize) * LARGE_WEIGHT;
+        assert_eq!(cost, expected_cost);
     }
 }
 

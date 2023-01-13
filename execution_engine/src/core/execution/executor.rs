@@ -2,7 +2,7 @@ use std::{
     cell::RefCell,
     collections::BTreeSet,
     rc::Rc,
-    sync::{Arc, RwLock},
+    sync::{atomic::Ordering, Arc, RwLock},
 };
 
 use casper_types::{
@@ -28,7 +28,7 @@ use crate::{
     },
     shared::{
         newtypes::CorrelationId,
-        wasm_engine::{Instance, MeteringHandle, Module, WasmEngine},
+        wasm_engine::{Instance, Module, WasmEngine},
     },
     storage::global_state::StateReader,
 };
@@ -106,7 +106,7 @@ impl Executor {
             Arc::new(RwLock::new(generator))
         };
 
-        let metering_handle = Arc::new(MeteringHandle::atomic(gas_limit.value_u64()));
+        // let metering_handle = Arc::new(MeteringHandle::atomic(gas_limit.value_u64()));
 
         let context = self.create_runtime_context(
             EntryPointType::Session,
@@ -119,7 +119,6 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
-            metering_handle,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -169,27 +168,19 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                // This should be Wasm based metering handle. Before invoke, but after instance_and_memory.
-                let metering_handle = instance.get_metering_handle();
-                runtime.context_mut().metering_handle = metering_handle;
+                let mut remaining_points = None;
 
                 let result = instance.invoke_export(
                     correlation_id,
                     &self.wasm_engine,
                     DEFAULT_ENTRY_POINT_NAME,
                     Vec::new(),
+                    &mut remaining_points,
                 );
-
-                // dbg!(&initial_limit, instance.remaining_points());
-                // if let Some(remaining_points) = instance.get_metering_handle().get_remaining_points() {
-                //     let gas_used = initial_limit.checked_sub(remaining_points).unwrap();
-                //     dbg!(gas_used);
-                // }
-
-                // instance.points
 
                 match result {
                     Ok(_) => {
+                        eprintln!("remaining points after invoke {:?}", remaining_points);
                         return runtime.into_success();
                     }
                     Err(error) => match error.into_execution_error() {
@@ -252,7 +243,7 @@ impl Executor {
             Arc::new(RwLock::new(generator))
         };
 
-        let payment_metering = Arc::new(MeteringHandle::atomic(payment_gas_limit.value_u64()));
+        // let payment_metering = Arc::new(MeteringHandle::atomic(payment_gas_limit.value_u64()));
 
         let runtime_context = self.create_runtime_context(
             EntryPointType::Session,
@@ -265,7 +256,6 @@ impl Executor {
             blocktime,
             deploy_hash,
             payment_gas_limit,
-            payment_metering,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -282,19 +272,19 @@ impl Executor {
 
         let result = runtime.call_host_standard_payment(stack);
 
-        let cost = runtime.context().gas_counter();
+        let cost = runtime.context().gas_counter().load(Ordering::SeqCst);
 
         match result {
             Ok(()) => ExecutionResult::Success {
                 execution_journal: runtime.context().execution_journal(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost,
+                cost: Gas::from(cost),
             },
             Err(error) => ExecutionResult::Failure {
                 execution_journal,
                 error: error.into(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost,
+                cost: Gas::from(cost),
             },
         }
     }
@@ -380,8 +370,6 @@ impl Executor {
         let access_rights = contract.extract_access_rights(contract_hash);
         let base_key = Key::from(contract_hash);
 
-        let metering_handle = Arc::new(MeteringHandle::atomic(gas_limit.value_u64()));
-
         let runtime_context = self.create_runtime_context(
             EntryPointType::Contract,
             runtime_args.clone(),
@@ -393,7 +381,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
-            metering_handle,
+            // metering_handle,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -417,14 +405,22 @@ impl Executor {
                 Ok(ret) => ExecutionResult::Success {
                     execution_journal: runtime.context().execution_journal(),
                     transfers: runtime.context().transfers().to_owned(),
-                    cost: runtime.context().gas_counter(),
+                    cost: runtime
+                        .context()
+                        .gas_counter()
+                        .load(Ordering::SeqCst)
+                        .into(),
                 }
                 .take_with_ret(ret),
                 Err(error) => ExecutionResult::Failure {
                     execution_journal,
                     error: Error::CLValue(error).into(),
                     transfers: runtime.context().transfers().to_owned(),
-                    cost: runtime.context().gas_counter(),
+                    cost: runtime
+                        .context()
+                        .gas_counter()
+                        .load(Ordering::SeqCst)
+                        .into(),
                 }
                 .take_without_ret(),
             },
@@ -432,7 +428,11 @@ impl Executor {
                 execution_journal,
                 error: error.into(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
+                cost: runtime
+                    .context()
+                    .gas_counter()
+                    .load(Ordering::SeqCst)
+                    .into(),
             }
             .take_without_ret(),
         }
@@ -452,7 +452,6 @@ impl Executor {
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
-        metering_handle: Arc<MeteringHandle>,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -464,7 +463,7 @@ impl Executor {
         R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
     {
-        let gas_counter = Gas::default();
+        let gas_counter = u64::default();
         let transfers = Vec::default();
 
         RuntimeContext::new(
@@ -479,7 +478,7 @@ impl Executor {
             blocktime,
             deploy_hash,
             gas_limit,
-            metering_handle,
+            gas_counter,
             address_generator,
             protocol_version,
             correlation_id.clone(),

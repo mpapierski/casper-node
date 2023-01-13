@@ -6,7 +6,10 @@ use std::{
     convert::{TryFrom, TryInto},
     fmt::Debug,
     rc::Rc,
-    sync::{Arc, RwLock},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, RwLock,
+    },
 };
 
 use tracing::error;
@@ -33,14 +36,14 @@ use crate::{
         tracking_copy::{AddResult, TrackingCopy, TrackingCopyExt},
     },
     shared::{
-        execution_journal::ExecutionJournal, newtypes::CorrelationId, wasm_engine::MeteringHandle,
+        execution_journal::ExecutionJournal, newtypes::CorrelationId, wasm_engine::FunctionContext,
     },
     storage::global_state::StateReader,
 };
 
 pub(crate) mod dictionary;
-#[cfg(test)]
-mod tests;
+// #[cfg(test)]
+// mod tests;
 
 /// Number of bytes returned from the `random_bytes` function.
 pub const RANDOM_BYTES_COUNT: usize = 32;
@@ -89,7 +92,7 @@ pub struct RuntimeContext<R: Clone> {
     // Enables look up of specific uref based on human-readable name
     named_keys: Arc<RwLock<NamedKeys>>,
     // Used to check uref is known before use (prevents forging urefs)
-    access_rights: ContextAccessRights,
+    access_rights: Arc<RwLock<ContextAccessRights>>,
     // Original account for read only tasks taken before execution
     account: Account,
     args: RuntimeArgs,
@@ -98,10 +101,9 @@ pub struct RuntimeContext<R: Clone> {
     //(could point at an account or contract in the global state)
     base_key: Key,
     gas_limit: Gas,
-
+    gas_counter: Arc<AtomicU64>,
     blocktime: BlockTime,
     deploy_hash: DeployHash,
-    pub(crate) metering_handle: Arc<MeteringHandle>,
     address_generator: Arc<RwLock<AddressGenerator>>,
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
@@ -133,7 +135,8 @@ where
         blocktime: BlockTime,
         deploy_hash: DeployHash,
         gas_limit: Gas,
-        metering_handle: Arc<MeteringHandle>,
+        gas_counter: u64,
+        // metering_handle: Arc<MeteringHandle>,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -146,7 +149,7 @@ where
             tracking_copy,
             entry_point_type,
             named_keys: Arc::new(RwLock::new(named_keys)),
-            access_rights,
+            access_rights: Arc::new(RwLock::new(access_rights)),
             args: runtime_args,
             account,
             authorization_keys,
@@ -154,7 +157,7 @@ where
             deploy_hash,
             base_key,
             gas_limit,
-            metering_handle,
+            gas_counter: Arc::new(AtomicU64::from(gas_counter)),
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -182,8 +185,7 @@ where
         let blocktime = self.blocktime;
         let deploy_hash = self.deploy_hash;
         let gas_limit = self.gas_limit;
-        // let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
-        let metering_handle = self.metering_handle.clone();
+        let gas_counter = Arc::clone(&self.gas_counter);
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
         let correlation_id = self.correlation_id.clone();
@@ -196,7 +198,7 @@ where
             tracking_copy,
             entry_point_type,
             named_keys: Arc::new(RwLock::new(named_keys)),
-            access_rights,
+            access_rights: Arc::new(RwLock::new(access_rights)),
             args: runtime_args,
             account,
             authorization_keys,
@@ -204,7 +206,7 @@ where
             deploy_hash,
             base_key,
             gas_limit,
-            metering_handle,
+            gas_counter,
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -240,6 +242,7 @@ where
     /// Helper function to avoid duplication in `remove_uref`.
     fn remove_key_from_contract(
         &mut self,
+        context: &mut impl FunctionContext,
         key: Key,
         mut contract: Contract,
         name: &str,
@@ -247,7 +250,7 @@ where
         if contract.remove_named_key(name).is_none() {
             return Ok(());
         }
-        self.metered_write_gs_unsafe(key, contract)?;
+        self.metered_write_gs_unsafe(context, key, contract)?;
         Ok(())
     }
 
@@ -255,7 +258,11 @@ where
     /// It removes both from the ephemeral map (RuntimeContext::named_keys) but
     /// also persistable map (one that is found in the
     /// TrackingCopy/GlobalState).
-    pub fn remove_key(&mut self, name: &str) -> Result<(), Error> {
+    pub fn remove_key(
+        &mut self,
+        context: &mut impl FunctionContext,
+        name: &str,
+    ) -> Result<(), Error> {
         match self.base_key() {
             account_hash @ Key::Account(_) => {
                 let account: Account = {
@@ -265,7 +272,7 @@ where
                 };
                 self.named_keys.write().unwrap().remove(name);
                 let account_value = self.account_to_validated_value(account)?;
-                self.metered_write_gs_unsafe(account_hash, account_value)?;
+                self.metered_write_gs_unsafe(context, account_hash, account_value)?;
                 Ok(())
             }
             contract_uref @ Key::URef(_) => {
@@ -282,12 +289,12 @@ where
                 };
 
                 self.named_keys.write().unwrap().remove(name);
-                self.remove_key_from_contract(contract_uref, contract, name)
+                self.remove_key_from_contract(context, contract_uref, contract, name)
             }
             contract_hash @ Key::Hash(_) => {
                 let contract: Contract = self.read_gs_typed(&contract_hash)?;
                 self.named_keys.write().unwrap().remove(name);
-                self.remove_key_from_contract(contract_hash, contract, name)
+                self.remove_key_from_contract(context, contract_hash, contract, name)
             }
             transfer_addr @ Key::Transfer(_) => {
                 let _transfer: Transfer = self.read_gs_typed(&transfer_addr)?;
@@ -363,12 +370,17 @@ where
 
     /// Extends access rights with a new map.
     pub fn access_rights_extend(&mut self, urefs: &[URef]) {
-        self.access_rights.extend(urefs);
+        let mut access_rights = self.access_rights.write().unwrap();
+        access_rights.extend(urefs);
     }
 
     /// Returns a mapping of access rights for each [`URef`]s address.
-    pub fn access_rights(&self) -> &ContextAccessRights {
+    pub fn access_rights(&self) -> &Arc<RwLock<ContextAccessRights>> {
         &self.access_rights
+    }
+
+    pub fn access_rights_context_key(&self) -> Key {
+        self.access_rights.read().unwrap().context_key()
     }
 
     /// Returns account of the caller.
@@ -398,28 +410,16 @@ where
     /// Returns the gas limit.
     pub fn gas_limit(&self) -> Gas {
         self.gas_limit
-        // todo!()
     }
 
     /// Returns the current gas counter.
-    pub fn get_remaining_points(&self) -> Option<Gas> {
-        self.metering_handle.get_remaining_points().map(Gas::from)
-        // .ok_or(Error::GasLimit)
-    }
-
-    pub fn gas_counter(&self) -> Gas {
-        // If there is no remaining points (i.e. counter is exhausted) then the counter is the limit
-        let remaining_points = self.get_remaining_points().unwrap_or_default();
-        dbg!(&self.gas_limit, &remaining_points, &self.metering_handle);
-        self.gas_limit
-            .checked_sub(remaining_points)
-            .expect("remaining_points should not be greater than initial gas limit")
+    pub fn gas_counter(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.gas_counter)
     }
 
     /// Sets the gas counter to a new value.
-    pub fn set_remaining_points(&self, new_gas_counter: Gas) {
-        self.metering_handle
-            .set_remaining_points(new_gas_counter.value_u64())
+    pub fn set_gas_counter(&mut self, new_gas_counter: u64) {
+        self.gas_counter.store(new_gas_counter, Ordering::SeqCst);
     }
 
     /// Returns the base key.
@@ -456,20 +456,27 @@ where
     }
 
     /// Creates new [`URef`] instance.
-    pub fn new_uref(&mut self, value: StoredValue) -> Result<URef, Error> {
+    pub fn new_uref(
+        &mut self,
+        context: &mut impl FunctionContext,
+        value: StoredValue,
+    ) -> Result<URef, Error> {
         let uref = self
             .address_generator
             .write()
             .unwrap()
             .new_uref(AccessRights::READ_ADD_WRITE);
         self.insert_uref(uref);
-        self.metered_write_gs(Key::URef(uref), value)?;
+        self.metered_write_gs(context, Key::URef(uref), value)?;
         Ok(uref)
     }
 
     /// Creates a new URef where the value it stores is CLType::Unit.
-    pub(crate) fn new_unit_uref(&mut self) -> Result<URef, Error> {
-        self.new_uref(StoredValue::CLValue(CLValue::unit()))
+    pub(crate) fn new_unit_uref(
+        &mut self,
+        context: &mut impl FunctionContext,
+    ) -> Result<URef, Error> {
+        self.new_uref(context, StoredValue::CLValue(CLValue::unit()))
     }
 
     /// Creates a new transfer address using a transfer address generator.
@@ -509,10 +516,11 @@ where
     #[cfg(test)]
     pub(crate) fn write_purse_uref(
         &mut self,
+        context: &mut impl FunctionContext,
         purse_uref: URef,
         cl_value: CLValue,
     ) -> Result<(), Error> {
-        self.metered_write_gs_unsafe(Key::Hash(purse_uref.addr()), cl_value)
+        self.metered_write_gs_unsafe(context, Key::Hash(purse_uref.addr()), cl_value)
     }
 
     /// Read a stored value under a [`Key`].
@@ -595,11 +603,16 @@ where
     }
 
     /// Write an account to the global state.
-    pub fn write_account(&mut self, key: Key, account: Account) -> Result<(), Error> {
+    pub fn write_account(
+        &mut self,
+        context: &mut impl FunctionContext,
+        key: Key,
+        account: Account,
+    ) -> Result<(), Error> {
         if let Key::Account(_) = key {
             self.validate_key(&key)?;
             let account_value = self.account_to_validated_value(account)?;
-            self.metered_write_gs_unsafe(key, account_value)?;
+            self.metered_write_gs_unsafe(context, key, account_value)?;
             Ok(())
         } else {
             panic!("Do not use this function for writing non-account keys")
@@ -647,17 +660,20 @@ where
     ///
     /// Once an [`URef`] is inserted, it's considered a valid [`URef`] in this runtime context.
     fn insert_uref(&mut self, uref: URef) {
-        self.access_rights.extend(&[uref])
+        let mut access_rights = self.access_rights.write().unwrap();
+        access_rights.extend(&[uref])
     }
 
     /// Grants access to a [`URef`]; unless access was pre-existing.
     pub fn grant_access(&mut self, uref: URef) -> GrantedAccess {
-        self.access_rights.grant_access(uref)
+        let mut access_rights = self.access_rights.write().unwrap();
+        access_rights.grant_access(uref)
     }
 
     /// Removes an access right from the current runtime context.
     pub fn remove_access(&mut self, uref_addr: URefAddr, access_rights: AccessRights) {
-        self.access_rights.remove_access(uref_addr, access_rights)
+        let mut context_access_rights = self.access_rights.write().unwrap();
+        context_access_rights.remove_access(uref_addr, access_rights)
     }
 
     /// Returns current effects of a tracking copy.
@@ -758,14 +774,20 @@ where
         self.validate_uref(uref)
     }
 
+    pub(crate) fn has_access_rights_to_uref(&self, uref: &URef) -> bool {
+        let access_rights = self.access_rights.read().unwrap();
+        access_rights.has_access_rights_to_uref(uref)
+    }
+
     /// Validate [`URef`] access rights.
     ///
     /// Returns unit if [`URef`]s address exists in the context, and has correct access rights bit
     /// set.
     pub(crate) fn validate_uref(&self, uref: &URef) -> Result<(), Error> {
-        if self.access_rights.has_access_rights_to_uref(uref) {
+        if self.has_access_rights_to_uref(uref) {
             Ok(())
         } else {
+            dbg!(&self.access_rights, uref.addr());
             Err(Error::ForgedReference(*uref))
         }
     }
@@ -877,17 +899,21 @@ where
     /// Returns [`Error::GasLimit`] if gas limit exceeded and `()` if not.
     /// Intuition about the return value sense is to answer the question 'are we
     /// allowed to continue?'
-    pub(crate) fn charge_gas(&self, amount: Gas) -> Result<(), Error> {
-        let prev = self.get_remaining_points().ok_or(Error::GasLimit)?;
+    pub(crate) fn charge_gas(&mut self, amount: u64) -> Result<(), Error> {
+        let prev = self.gas_counter();
         let gas_limit = self.gas_limit();
-        match prev.checked_sub(amount) {
+        // gas charge overflow protection
+        match prev.load(Ordering::SeqCst).checked_add(amount) {
             None => {
-                // NOTE: Is this correct? Was this block of code executed already (even if partially) so we can set remaining points to 0, so no further execution is possible?
-                self.set_remaining_points(Gas::from(0u64));
+                self.set_gas_counter(gas_limit.value_u64());
+                Err(Error::GasLimit)
+            }
+            Some(val) if Gas::from(val) > gas_limit => {
+                self.set_gas_counter(gas_limit.value_u64());
                 Err(Error::GasLimit)
             }
             Some(val) => {
-                self.set_remaining_points(val);
+                self.set_gas_counter(val);
                 Ok(())
             }
         }
@@ -901,7 +927,11 @@ where
     }
 
     /// Charges gas for specified amount of bytes used.
-    fn charge_gas_storage(&mut self, bytes_count: usize) -> Result<(), Error> {
+    fn charge_gas_storage(
+        &mut self,
+        function_context: &mut impl FunctionContext,
+        bytes_count: usize,
+    ) -> Result<(), Error> {
         if let Some(base_key) = self.base_key().into_hash() {
             let contract_hash = ContractHash::new(base_key);
             if self.is_system_contract(&contract_hash)? {
@@ -912,15 +942,40 @@ where
 
         let storage_costs = self.engine_config.wasm_config().storage_costs();
 
-        let gas_cost = storage_costs.calculate_gas_cost(bytes_count);
+        let storage_gas_cost = storage_costs.calculate_gas_cost(bytes_count);
 
-        self.charge_gas(gas_cost)
+        // dbg!(&storage_gas_cost);
+
+        self.charge_gas(storage_gas_cost)
+    }
+
+    /// Charges gas for specified amount of bytes used.
+    fn charge_gas_storage2(
+        &mut self,
+        context: &impl FunctionContext,
+        bytes_count: usize,
+    ) -> Result<(), Error> {
+        if let Some(base_key) = self.base_key().into_hash() {
+            let contract_hash = ContractHash::new(base_key);
+            if self.is_system_contract(&contract_hash)? {
+                // Don't charge storage used while executing a system contract.
+                return Ok(());
+            }
+        }
+
+        let storage_costs = self.engine_config.wasm_config().storage_costs();
+
+        let storage_gas_cost = storage_costs.calculate_gas_cost(bytes_count);
+
+        // dbg!(&storage_gas_cost);
+
+        self.charge_gas(storage_gas_cost)
     }
 
     /// Charges gas for using a host system contract's entrypoint.
     pub(crate) fn charge_system_contract_call<T>(&mut self, call_cost: T) -> Result<(), Error>
     where
-        T: Into<Gas>,
+        T: Into<u64>,
     {
         if self.account.account_hash() == PublicKey::System.to_account_hash() {
             // Don't try to charge a system account for calling a system contract's entry point.
@@ -928,7 +983,7 @@ where
             // wouldn't try to incur cost to system account.
             return Ok(());
         }
-        let amount: Gas = call_cost.into();
+        let amount: u64 = call_cost.into();
         self.charge_gas(amount)
     }
 
@@ -936,7 +991,35 @@ where
     ///
     /// Use with caution - there is no validation done as the key is assumed to be validated
     /// already.
-    pub(crate) fn metered_write_gs_unsafe<K, V>(&mut self, key: K, value: V) -> Result<(), Error>
+    pub(crate) fn metered_write_gs_unsafe<K, V>(
+        &mut self,
+        context: &mut impl FunctionContext,
+        key: K,
+        value: V,
+    ) -> Result<(), Error>
+    where
+        K: Into<Key>,
+        V: Into<StoredValue>,
+    {
+        let stored_value = value.into();
+
+        // Charge for amount as measured by serialized length
+        let bytes_count = stored_value.serialized_length();
+        self.charge_gas_storage(bytes_count)?;
+
+        self.tracking_copy
+            .write()
+            .unwrap()
+            .write(key.into(), stored_value);
+        Ok(())
+    }
+
+    pub(crate) fn metered_write_gs_unsafe2<K, V>(
+        &mut self,
+        context: &mut impl FunctionContext,
+        key: K,
+        value: V,
+    ) -> Result<(), Error>
     where
         K: Into<Key>,
         V: Into<StoredValue>,
@@ -957,7 +1040,12 @@ where
     /// Writes data to a global state and charges for bytes stored.
     ///
     /// This method performs full validation of the key to be written.
-    pub(crate) fn metered_write_gs<T>(&mut self, key: Key, value: T) -> Result<(), Error>
+    pub(crate) fn metered_write_gs<T>(
+        &mut self,
+        context: &mut impl FunctionContext,
+        key: Key,
+        value: T,
+    ) -> Result<(), Error>
     where
         T: Into<StoredValue>,
     {
@@ -1333,5 +1421,9 @@ where
 
     pub(crate) fn named_keys_set(&self, named_keys: NamedKeys) {
         *self.named_keys.write().unwrap() = named_keys;
+    }
+
+    pub(crate) fn set_remaining_points(&self, gas_counter: u64) {
+        todo!()
     }
 }

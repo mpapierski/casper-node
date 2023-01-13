@@ -22,7 +22,7 @@ use crate::{
     core::{execution, resolvers::v1_function_index::FunctionIndex},
     shared::{
         host_function_costs::{Cost, HostFunction, DEFAULT_HOST_FUNCTION_NEW_DICTIONARY},
-        wasm_engine::{FunctionContext, MeteringHandle, WasmiAdapter},
+        wasm_engine::{FunctionContext, WasmiAdapter},
     },
     storage::global_state::StateReader,
 };
@@ -40,7 +40,6 @@ where
     pub runtime: &'a mut Runtime<R>,
     // pub module: ModuleRef,
     pub memory: MemoryRef,
-    pub metering_handle: Arc<MeteringHandle>,
 }
 
 impl<'b, R> Externals for WasmiExternals<'b, R>
@@ -238,9 +237,10 @@ where
                 // globals[remaining_points_index] -= self.accumulated_cost;
 
                 let gas_arg_64bit: u64 = gas_arg.into();
-                self.runtime
-                    .context()
-                    .charge_gas(Gas::from(gas_arg_64bit))?;
+
+                // self.runtime
+                //     .charge_gas(&mut function_context, gas_arg_64bit)?;
+                // .charge_gas(Gas::from(gas_arg_64bit))?;
 
                 // if *self.remaining_points < gas_arg.into() {
                 //     *self.exhausted_points = true;
@@ -533,7 +533,7 @@ where
                 let package_status = ContractPackageStatus::new(is_locked);
                 let (hash_addr, access_addr) = self
                     .runtime
-                    .create_contract_package_at_hash(package_status)?;
+                    .create_contract_package_at_hash(&mut function_context, package_status)?;
 
                 self.runtime
                     .function_address(&mut function_context, hash_addr, hash_dest_ptr)?;
