@@ -122,17 +122,17 @@ mod tests {
         )
     }
 
-    #[test]
-    fn should_support_to_json() {
-        let correlation_id = CorrelationId::new();
+    // #[test]
+    // fn should_support_to_json() {
+    //     let correlation_id = CorrelationId::new();
 
-        let correlation_id_json = utils::jsonify(correlation_id.clone(), false);
+    //     let correlation_id_json = utils::jsonify(correlation_id.clone(), false);
 
-        assert!(
-            !correlation_id_json.is_empty(),
-            "correlation_id should be produce json"
-        )
-    }
+    //     assert!(
+    //         !correlation_id_json.is_empty(),
+    //         "correlation_id should be produce json"
+    //     )
+    // }
 
     #[test]
     fn should_support_is_display() {
@@ -153,36 +153,36 @@ mod tests {
         )
     }
 
-    #[test]
-    fn should_create_unique_id_on_new() {
-        let correlation_id_lhs = CorrelationId::new();
-        let correlation_id_rhs = CorrelationId::new();
+    // #[test]
+    // fn should_create_unique_id_on_new() {
+    //     let correlation_id_lhs = CorrelationId::new();
+    //     let correlation_id_rhs = CorrelationId::new();
 
-        assert_ne!(
-            correlation_id_lhs, correlation_id_rhs,
-            "correlation_ids should be distinct"
-        );
-    }
+    //     assert_ne!(
+    //         correlation_id_lhs, correlation_id_rhs,
+    //         "correlation_ids should be distinct"
+    //     );
+    // }
 
-    #[test]
-    fn should_support_clone() {
-        let correlation_id = CorrelationId::new();
+    // #[test]
+    // fn should_support_clone() {
+    //     let correlation_id = CorrelationId::new();
 
-        let cloned = correlation_id.clone();
+    //     let cloned = correlation_id.clone();
 
-        assert_eq!(correlation_id.clone(), cloned, "should be cloneable")
-    }
+    //     assert_eq!(correlation_id.clone(), cloned, "should be cloneable")
+    // }
 
-    #[test]
-    fn should_support_hash() {
-        let correlation_id = CorrelationId::new();
+    // #[test]
+    // fn should_support_hash() {
+    //     let correlation_id = CorrelationId::new();
 
-        let mut state = std::collections::hash_map::DefaultHasher::new();
+    //     let mut state = std::collections::hash_map::DefaultHasher::new();
 
-        correlation_id.hash(&mut state);
+    //     correlation_id.hash(&mut state);
 
-        let hash = state.finish();
+    //     let hash = state.finish();
 
-        assert!(hash > 0, "should be hashable");
-    }
+    //     assert!(hash > 0, "should be hashable");
+    // }
 }

@@ -690,6 +690,14 @@ impl fmt::Display for ApiError {
     }
 }
 
+#[doc(hidden)]
+pub const SUCCESS: i32 = 0;
+
+#[doc(hidden)]
+pub fn i32_from_error(api_error: ApiError) -> i32 {
+    u32::from(api_error) as i32
+}
+
 // This function is not intended to be used by third party crates.
 #[doc(hidden)]
 pub fn i32_from<T>(result: Result<(), T>) -> i32
@@ -697,11 +705,8 @@ where
     ApiError: From<T>,
 {
     match result {
-        Ok(()) => 0,
-        Err(error) => {
-            let api_error = ApiError::from(error);
-            u32::from(api_error) as i32
-        }
+        Ok(()) => SUCCESS,
+        Err(error) => i32_from_error(error.into()),
     }
 }
 
@@ -710,7 +715,7 @@ where
 /// [docs for `ApiError`](ApiError#mappings).
 pub fn result_from(value: i32) -> Result<(), ApiError> {
     match value {
-        0 => Ok(()),
+        i if i == SUCCESS => Ok(()),
         _ => Err(ApiError::from(value as u32)),
     }
 }

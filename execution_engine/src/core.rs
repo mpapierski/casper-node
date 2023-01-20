@@ -1,7 +1,6 @@
 //! The core of the smart contract execution logic.
 pub mod engine_state;
 pub mod execution;
-pub mod resolvers;
 pub mod runtime;
 pub mod runtime_context;
 pub mod tracking_copy;

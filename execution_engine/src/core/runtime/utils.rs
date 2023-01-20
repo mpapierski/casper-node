@@ -1,20 +1,11 @@
 use std::collections::BTreeMap;
 
-use parity_wasm::elements::Module;
-use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
-
 use casper_types::{
     contracts::NamedKeys, AccessRights, CLType, CLValue, Key, ProtocolVersion, PublicKey,
     RuntimeArgs, URef, URefAddr, U128, U256, U512,
 };
 
-use crate::{
-    core::{
-        execution::Error,
-        resolvers::{self, memory_resolver::MemoryResolver},
-    },
-    shared::wasm_config::WasmConfig,
-};
+use crate::{core::execution::Error, shared::wasm_config::WasmConfig};
 
 /// Removes `rights_to_disable` from all urefs in `args` matching the address `uref_addr`.
 pub(crate) fn attenuate_uref_in_args(

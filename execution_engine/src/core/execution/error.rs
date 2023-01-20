@@ -9,7 +9,7 @@ use casper_types::{
 };
 
 use crate::{
-    core::{resolvers::error::ResolverError, runtime::stack},
+    core::runtime::stack,
     shared::wasm_engine::{self, PreprocessingError, RuntimeError},
     storage,
 };
@@ -66,9 +66,6 @@ pub enum Error {
     /// A stored smart contract incorrectly called a ret function.
     #[error("Return")]
     Ret(Vec<URef>),
-    /// Error using WASM host function resolver.
-    #[error("Resolver error: {}", _0)]
-    Resolver(ResolverError),
     /// Reverts execution with a provided status
     #[error("{}", _0)]
     Revert(ApiError),
@@ -197,40 +194,6 @@ impl Error {
     }
 }
 
-impl wasmi::HostError for Error {}
-
-/// Error indirection for wasmtime::Trap errors.
-///
-/// wasmtime::Trap does not expose the error itself that occurred during execution, only the source
-/// of error. In our case the source would point at a variant of [`Error`]. We need the [`Error`]
-/// itself so we have to wrap it before creating a Trap object.
-#[derive(Error, Debug)]
-#[error("{}", source)]
-struct Indirect {
-    #[source]
-    source: Error,
-}
-
-impl From<Error> for wasmtime::Trap {
-    fn from(source: Error) -> Self {
-        let indirect = Indirect { source };
-        let boxed: Box<dyn std::error::Error + Send + Sync> = Box::new(indirect);
-        wasmtime::Trap::from(boxed)
-    }
-}
-
-impl From<wasmi::Error> for Error {
-    fn from(error: wasmi::Error) -> Self {
-        match error
-            .as_host_error()
-            .and_then(|host_error| host_error.downcast_ref::<Error>())
-        {
-            Some(error) => error.clone(),
-            None => Error::Interpreter(error.into()),
-        }
-    }
-}
-
 impl From<RuntimeError> for Error {
     fn from(runtime_error: RuntimeError) -> Self {
         match runtime_error.into_execution_error() {
@@ -259,12 +222,6 @@ impl From<bytesrepr::Error> for Error {
 impl From<elements::Error> for Error {
     fn from(e: elements::Error) -> Self {
         Error::ParityWasm(e)
-    }
-}
-
-impl From<ResolverError> for Error {
-    fn from(err: ResolverError) -> Self {
-        Error::Resolver(err)
     }
 }
 

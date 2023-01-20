@@ -1,13 +1,11 @@
 //! This module contains executor state of the WASM code.
 mod auction_internal;
-pub(crate) mod externals;
 mod handle_payment_internal;
 mod host_function_flag;
 mod mint_internal;
 pub mod stack;
 mod standard_payment_internal;
 pub(crate) mod utils;
-mod wasmi_args_parser;
 
 use std::{
     borrow::Cow,
@@ -22,12 +20,14 @@ use tracing::error;
 
 use casper_types::{
     account::{Account, AccountHash, ActionType, Weight},
+    api_error,
     bytesrepr::{self, Bytes, FromBytes, ToBytes},
     contracts::{
         self, Contract, ContractPackage, ContractPackageStatus, ContractVersion, ContractVersions,
         DisabledVersions, EntryPoint, EntryPointAccess, EntryPoints, Group, Groups, NamedKeys,
         DEFAULT_ENTRY_POINT_NAME,
     },
+    crypto,
     system::{
         self,
         auction::{self, EraInfo},
@@ -53,8 +53,8 @@ use crate::{
         host_function_costs::{Cost, HostFunction},
         newtypes::{CorrelationId, Property},
         wasm_engine::{
-            self, FunctionContext, Module, PreprocessingError, RuntimeValue, WasmEngine,
-            WasmiModule,
+            self, host_interface::WasmHostInterface, FunctionContext, Module, PreprocessingError,
+            WasmEngine, WasmiModule,
         },
     },
     storage::global_state::StateReader,
@@ -75,7 +75,7 @@ enum CallContractIdentifier {
     },
 }
 
-use super::{engine_state::ExecutionResult, resolvers::v1_function_index::FunctionIndex};
+use super::engine_state::ExecutionResult;
 
 pub fn bytes_from_memory(
     context: &impl FunctionContext,
@@ -103,9 +103,6 @@ pub struct Runtime<R: Clone> {
     pub(crate) stack: Option<RuntimeStack>,
     pub(crate) host_function_flag: HostFunctionFlag,
     pub(crate) wasm_engine: WasmEngine,
-    // HACK: Runtime shouldn't know about this detail, it's here because of difficult lifetime
-    // issues when dealing with wasmtime's Store object.
-    pub wasmtime_memory: Option<wasmtime::Memory>,
 }
 
 impl<R> Runtime<R>
@@ -127,7 +124,6 @@ where
             stack: None,
             host_function_flag: HostFunctionFlag::default(),
             wasm_engine,
-            wasmtime_memory: None,
         }
     }
 
@@ -147,7 +143,6 @@ where
             stack: Some(stack),
             host_function_flag: self.host_function_flag.clone(),
             wasm_engine: self.wasm_engine.clone(),
-            wasmtime_memory: self.wasmtime_memory.clone(),
         }
     }
 
@@ -162,7 +157,6 @@ where
             stack: Some(stack),
             host_function_flag: self.host_function_flag.clone(),
             wasm_engine: self.wasm_engine.clone(),
-            wasmtime_memory: self.wasmtime_memory,
         }
     }
 
@@ -468,58 +462,6 @@ where
         context
             .memory_write(dest_ptr, &blocktime)
             .map_err(|e| Error::Interpreter(e.into()).into())
-    }
-
-    /// Load the uref known by the given name into the Wasm memory
-    pub fn load_call_stack(
-        &mut self,
-        mut context: impl FunctionContext,
-        // (Output) Pointer to number of elements in the call stack.
-        call_stack_len_ptr: u32,
-        // (Output) Pointer to size in bytes of the serialized call stack.
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-        let call_stack = match self.try_get_stack() {
-            Ok(stack) => stack.call_stack_elements(),
-            Err(_error) => return Ok(Err(ApiError::Unhandled)),
-        };
-        let call_stack_len: u32 = match call_stack.len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::OutOfMemory)),
-        };
-        let call_stack_len_bytes = call_stack_len.to_le_bytes();
-
-        context
-            .memory_write(call_stack_len_ptr, &call_stack_len_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        if call_stack_len == 0 {
-            return Ok(Ok(()));
-        }
-
-        let call_stack_cl_value = CLValue::from_t(call_stack.clone()).map_err(Error::CLValue)?;
-
-        let call_stack_cl_value_bytes_len: u32 =
-            match call_stack_cl_value.inner_bytes().len().try_into() {
-                Ok(value) => value,
-                Err(_) => return Ok(Err(ApiError::OutOfMemory)),
-            };
-
-        if let Err(error) = self.write_host_buffer(call_stack_cl_value) {
-            return Ok(Err(error));
-        }
-
-        let call_stack_cl_value_bytes_len_bytes = call_stack_cl_value_bytes_len.to_le_bytes();
-
-        context
-            .memory_write(result_size_ptr, &call_stack_cl_value_bytes_len_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
     }
 
     /// Return some bytes from the memory and terminate the current `sub_call`. Note that the return
@@ -1508,56 +1450,6 @@ where
         }
     }
 
-    pub(crate) fn casper_call_contract(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_hash_ptr: u32,
-        contract_hash_size: u32,
-        entry_point_name_ptr: u32,
-        entry_point_name_size: u32,
-        args_ptr: u32,
-        args_size: u32,
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let host_function_costs = self.config().wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
-            &host_function_costs.call_contract,
-            [
-                contract_hash_ptr,
-                contract_hash_size,
-                entry_point_name_ptr,
-                entry_point_name_size,
-                args_ptr,
-                args_size,
-                result_size_ptr,
-            ],
-        )?;
-
-        let contract_hash: ContractHash = {
-            let contract_hash_bytes =
-                context.memory_read(contract_hash_ptr, contract_hash_size as usize)?;
-            bytesrepr::deserialize(contract_hash_bytes)?
-        };
-        let entry_point_name: String = {
-            let entry_point_name_bytes =
-                context.memory_read(entry_point_name_ptr, entry_point_name_size as usize)?;
-            bytesrepr::deserialize(entry_point_name_bytes)?
-        };
-        let args_bytes: Vec<u8> = {
-            let args_size: u32 = args_size;
-            bytes_from_memory(&mut context, args_ptr, args_size)?
-        };
-
-        let ret = self.call_contract_host_buffer(
-            context,
-            contract_hash,
-            &entry_point_name,
-            args_bytes,
-            result_size_ptr,
-        )?;
-        Ok(ret)
-    }
-
     fn manage_call_contract_host_buffer(
         &mut self,
         mut context: impl FunctionContext,
@@ -1884,68 +1776,6 @@ where
         Ok(Ok(()))
     }
 
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn casper_add_contract_version(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_package_hash_ptr: u32,
-        contract_package_hash_size: u32,
-        version_ptr: u32,
-        entry_points_ptr: u32,
-        entry_points_size: u32,
-        named_keys_ptr: u32,
-        named_keys_size: u32,
-        output_ptr: u32,
-        output_size: u32,
-        bytes_written_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let host_function_costs = self.config().wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
-            &host_function_costs.add_contract_version,
-            [
-                contract_package_hash_ptr,
-                contract_package_hash_size,
-                version_ptr,
-                entry_points_ptr,
-                entry_points_size,
-                named_keys_ptr,
-                named_keys_size,
-                output_ptr,
-                output_size,
-                bytes_written_ptr,
-            ],
-        )?;
-
-        let contract_package_hash: ContractPackageHash = {
-            let contract_package_hash_bytes = context.memory_read(
-                contract_package_hash_ptr,
-                contract_package_hash_size as usize,
-            )?;
-            bytesrepr::deserialize(contract_package_hash_bytes)?
-        };
-        let entry_points: EntryPoints = {
-            let entry_points_bytes =
-                context.memory_read(entry_points_ptr, entry_points_size as usize)?;
-            bytesrepr::deserialize(entry_points_bytes)?
-        };
-        let named_keys: NamedKeys = {
-            let named_keys_bytes = context.memory_read(named_keys_ptr, named_keys_size as usize)?;
-            bytesrepr::deserialize(named_keys_bytes)?
-        };
-
-        let ret = self.add_contract_version(
-            context,
-            contract_package_hash,
-            entry_points,
-            named_keys,
-            output_ptr,
-            output_size as usize,
-            bytes_written_ptr,
-            version_ptr,
-        )?;
-        Ok(ret)
-    }
-
     fn disable_contract_version(
         &mut self,
         contract_package_hash: ContractPackageHash,
@@ -1971,42 +1801,6 @@ where
             .metered_write_gs_unsafe(contract_package_key, contract_package)?;
 
         Ok(Ok(()))
-    }
-
-    pub(crate) fn casper_disable_contract_version(
-        &mut self,
-        context: impl FunctionContext,
-        package_key_ptr: u32,
-        package_key_size: u32,
-        contract_hash_ptr: u32,
-        contract_hash_size: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
-            &host_function_costs.disable_contract_version,
-            [
-                package_key_ptr,
-                package_key_size,
-                contract_hash_ptr,
-                contract_hash_size,
-            ],
-        )?;
-
-        let contract_package_hash: ContractPackageHash = {
-            let contract_package_hash_bytes =
-                context.memory_read(package_key_ptr, package_key_size as usize)?;
-            bytesrepr::deserialize(contract_package_hash_bytes)?
-        };
-
-        let contract_hash: ContractHash = {
-            let contract_hash_bytes =
-                context.memory_read(contract_hash_ptr, contract_hash_size as usize)?;
-            bytesrepr::deserialize(contract_hash_bytes)?
-        };
-
-        let ret = self.disable_contract_version(contract_package_hash, contract_hash)?;
-
-        Ok(ret)
     }
 
     /// Writes function address (`hash_bytes`) into the Wasm memory (at
@@ -2967,33 +2761,6 @@ where
         Ok(Ok(()))
     }
 
-    pub(crate) fn casper_remove_contract_user_group(
-        &mut self,
-        mut context: impl FunctionContext,
-        package_key_ptr: u32,
-        package_key_size: u32,
-        label_ptr: u32,
-        label_size: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let host_function_costs = self.config().wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
-            &host_function_costs.remove_contract_user_group,
-            [package_key_ptr, package_key_size, label_ptr, label_size],
-        )?;
-        let package_key = {
-            let package_key_bytes =
-                context.memory_read(package_key_ptr, package_key_size as usize)?;
-            bytesrepr::deserialize(package_key_bytes)?
-        };
-        let label: Group = {
-            let label_bytes = context.memory_read(label_ptr, label_size as usize)?;
-            bytesrepr::deserialize(label_bytes)?
-        };
-
-        let ret = self.remove_contract_user_group(package_key, label)?;
-        Ok(ret)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn provision_contract_user_group_uref(
         &mut self,
@@ -3134,158 +2901,6 @@ where
         Ok(())
     }
 
-    /// Creates a dictionary
-    pub fn new_dictionary(
-        &mut self,
-        mut context: impl FunctionContext,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        // check we can write to the host buffer
-        if let Err(err) = self.check_host_buffer() {
-            return Ok(Err(err));
-        }
-
-        // Create new URef
-        let new_uref = self.context.new_unit_uref()?;
-
-        // create CLValue for return value
-        let new_uref_value = CLValue::from_t(new_uref)?;
-        let value_size = new_uref_value.inner_bytes().len();
-        // write return value to buffer
-        if let Err(err) = self.write_host_buffer(new_uref_value) {
-            return Ok(Err(err));
-        }
-        // Write return value size to output location
-        let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        context
-            .memory_write(output_size_ptr, &output_size_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
-    }
-
-    /// Reads the `value` under a `key` in a dictionary
-    pub fn dictionary_get(
-        &mut self,
-        mut context: impl FunctionContext,
-        uref_ptr: u32,
-        uref_size: u32,
-        dictionary_item_key_bytes_ptr: u32,
-        dictionary_item_key_bytes_size: u32,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        // check we can write to the host buffer
-        if let Err(err) = self.check_host_buffer() {
-            return Ok(Err(err));
-        }
-
-        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
-        let dictionary_item_key_bytes = bytes_from_memory(
-            &mut context,
-            dictionary_item_key_bytes_ptr,
-            dictionary_item_key_bytes_size,
-        )?;
-
-        let dictionary_item_key = if let Ok(item_key) = String::from_utf8(dictionary_item_key_bytes)
-        {
-            item_key
-        } else {
-            return Ok(Err(ApiError::InvalidDictionaryItemKey));
-        };
-
-        let cl_value = match self.context.dictionary_get(uref, &dictionary_item_key)? {
-            Some(cl_value) => cl_value,
-            None => return Ok(Err(ApiError::ValueNotFound)),
-        };
-
-        let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::BufferTooSmall)),
-        };
-
-        if let Err(error) = self.write_host_buffer(cl_value) {
-            return Ok(Err(error));
-        }
-
-        let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        context
-            .memory_write(output_size_ptr, &value_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
-    }
-
-    /// Reads the `value` under a `Key::Dictionary`.
-    pub(crate) fn casper_dictionary_read(
-        &mut self,
-        mut context: impl FunctionContext,
-        key_ptr: u32,
-        key_size: u32,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let host_function_costs = self.config.wasm_config().take_host_function_costs();
-
-        self.charge_host_function_call(
-            &host_function_costs.read_value,
-            [key_ptr, key_size, output_size_ptr],
-        )?;
-
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-
-        let dictionary_key: Key = t_from_memory(&mut context, key_ptr, key_size)?;
-        let cl_value = match self.context.dictionary_read(dictionary_key)? {
-            Some(cl_value) => cl_value,
-            None => return Ok(Err(ApiError::ValueNotFound)),
-        };
-
-        let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::BufferTooSmall)),
-        };
-
-        if let Err(error) = self.write_host_buffer(cl_value) {
-            return Ok(Err(error));
-        }
-
-        let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        context
-            .memory_write(output_size_ptr, &value_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
-    }
-
-    /// Writes a `key`, `value` pair in a dictionary
-    pub fn dictionary_put(
-        &mut self,
-        mut context: impl FunctionContext,
-        uref_ptr: u32,
-        uref_size: u32,
-        key_ptr: u32,
-        key_size: u32,
-        value_ptr: u32,
-        value_size: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
-        let dictionary_item_key_bytes = bytes_from_memory(&mut context, key_ptr, key_size)?;
-        if dictionary_item_key_bytes.len() > DICTIONARY_ITEM_KEY_MAX_LENGTH {
-            return Ok(Err(ApiError::DictionaryItemKeyExceedsLength));
-        }
-        let dictionary_item_key = if let Ok(item_key) = String::from_utf8(dictionary_item_key_bytes)
-        {
-            item_key
-        } else {
-            return Ok(Err(ApiError::InvalidDictionaryItemKey));
-        };
-        let cl_value = t_from_memory(&mut context, value_ptr, value_size)?;
-        self.context
-            .dictionary_put(uref, &dictionary_item_key, cl_value)?;
-        Ok(Ok(()))
-    }
-
     /// Reverts contract execution with a status specified.
     pub(crate) fn casper_revert(&mut self, status: u32) -> Result<(), Error> {
         // Err(Error::Revert(api_error:))
@@ -3386,55 +3001,6 @@ where
         }
     }
 
-    pub(crate) fn casper_load_authorization_keys(
-        &mut self,
-        mut context: impl FunctionContext,
-        len_ptr: u32,
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        self.charge_host_function_call(&HostFunction::fixed(10_000), [len_ptr, result_size_ptr])?;
-
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-
-        // A set of keys is converted into a vector so it can be written to a host buffer
-        let authorization_keys =
-            Vec::from_iter(self.context.authorization_keys().clone().into_iter());
-
-        let total_keys: u32 = match authorization_keys.len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::OutOfMemory)),
-        };
-        let total_keys_bytes = total_keys.to_le_bytes();
-        if let Err(error) = context.memory_write(len_ptr, &total_keys_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
-
-        if total_keys == 0 {
-            // No need to do anything else, we leave host buffer empty.
-            return Ok(Ok(()));
-        }
-
-        let authorization_keys = CLValue::from_t(authorization_keys).map_err(Error::CLValue)?;
-
-        let length: u32 = match authorization_keys.inner_bytes().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::OutOfMemory)),
-        };
-        if let Err(error) = self.write_host_buffer(authorization_keys) {
-            return Ok(Err(error));
-        }
-
-        let length_bytes = length.to_le_bytes();
-        if let Err(error) = context.memory_write(result_size_ptr, &length_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
-
-        Ok(Ok(()))
-    }
-
     pub(crate) fn into_success(self) -> ExecutionResult {
         ExecutionResult::Success {
             execution_journal: self.context().execution_journal(),
@@ -3451,25 +3017,900 @@ where
             cost: self.context().gas_counter(),
         }
     }
+}
 
-    pub(crate) fn casper_random_bytes(
+impl<R> WasmHostInterface for Runtime<R>
+where
+    R: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
+    R::Error: Into<Error>,
+{
+    type Error = Error;
+    fn gas(&mut self, _context: impl FunctionContext, param: u32) -> Result<(), Self::Error> {
+        // todo!("not yet implemented: {}", stringify!(gas));
+        Runtime::gas(self, Gas::from(param))
+    }
+
+    fn casper_read_value(
         &mut self,
-        mut function_context: impl FunctionContext,
+        _context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        output_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_add(
+        &mut self,
+        _context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        value_ptr: u32,
+        value_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_revert(
+        &mut self,
+        _context: impl FunctionContext,
+        param: u32,
+    ) -> Result<(), Self::Error> {
+        todo!()
+    }
+
+    fn casper_ret(
+        &mut self,
+        _context: impl FunctionContext,
+        value_ptr: u32,
+        value_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_phase(
+        &mut self,
+        _context: impl FunctionContext,
+        dest_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_is_valid_uref(
+        &mut self,
+        _context: impl FunctionContext,
+        uref_ptr: u32,
+        uref_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_add_associated_key(
+        &mut self,
+        _context: impl FunctionContext,
+        account_hash_ptr: u32,
+        account_hash_size: u32,
+        weight: i32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_remove_associated_key(
+        &mut self,
+        _context: impl FunctionContext,
+        account_hash_ptr: u32,
+        account_hash_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_update_associated_key(
+        &mut self,
+        _context: impl FunctionContext,
+        account_hash_ptr: u32,
+        account_hash_size: u32,
+        weight: i32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_set_action_threshold(
+        &mut self,
+        _context: impl FunctionContext,
+        permission_level: u32,
+        permission_threshold: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_caller(
+        &mut self,
+        _context: impl FunctionContext,
+        output_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_blocktime(
+        &mut self,
+        _context: impl FunctionContext,
+        dest_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_new_uref(
+        &mut self,
+        context: impl FunctionContext,
+        uref_ptr: u32,
+        value_ptr: u32,
+        value_size: u32,
+    ) -> Result<(), Self::Error> {
+        Runtime::casper_new_uref(self, context, uref_ptr, value_ptr, value_size)
+    }
+
+    fn casper_create_purse(
+        &mut self,
+        _context: impl FunctionContext,
+        dest_ptr: u32,
+        dest_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_write(
+        &mut self,
+        context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        value_ptr: u32,
+        value_size: u32,
+    ) -> Result<(), Self::Error> {
+        Runtime::casper_write(self, context, key_ptr, key_size, value_ptr, value_size)
+    }
+
+    fn casper_get_main_purse(
+        &mut self,
+        context: impl FunctionContext,
+        dest_ptr: u32,
+    ) -> Result<(), Self::Error> {
+        Runtime::casper_get_main_purse(self, context, dest_ptr)
+    }
+
+    fn casper_get_named_arg_size(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_named_arg(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        dest_ptr: u32,
+        dest_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_transfer_to_account(
+        &mut self,
+        _context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        amount_ptr: u32,
+        amount_size: u32,
+        id_ptr: u32,
+        id_size: u32,
+        result_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_has_key(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_key(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        output_ptr: u32,
+        output_size: u32,
+        bytes_written: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_put_key(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+        key_ptr: u32,
+        key_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_remove_key(
+        &mut self,
+        _context: impl FunctionContext,
+        name_ptr: u32,
+        name_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_print(
+        &mut self,
+        _context: impl FunctionContext,
+        text_ptr: u32,
+        text_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_transfer_from_purse_to_purse(
+        &mut self,
+        _context: impl FunctionContext,
+        source_ptr: u32,
+        source_size: u32,
+        target_ptr: u32,
+        target_size: u32,
+        amount_ptr: u32,
+        amount_size: u32,
+        id_ptr: u32,
+        id_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_transfer_from_purse_to_account(
+        &mut self,
+        _context: impl FunctionContext,
+        source_ptr: u32,
+        source_size: u32,
+        key_ptr: u32,
+        key_size: u32,
+        amount_ptr: u32,
+        amount_size: u32,
+        id_ptr: u32,
+        id_size: u32,
+        result_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_balance(
+        &mut self,
+        _context: impl FunctionContext,
+        ptr: u32,
+        ptr_size: u32,
+        output_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_read_host_buffer(
+        &mut self,
+        _context: impl FunctionContext,
+        dest_ptr: u32,
+        dest_size: u32,
+        bytes_written_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_get_system_contract(
+        &mut self,
+        _context: impl FunctionContext,
+        system_contract_index: u32,
+        dest_ptr: u32,
+        dest_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_load_named_keys(
+        &mut self,
+        _context: impl FunctionContext,
+        total_keys_ptr: u32,
+        result_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_create_contract_package_at_hash(
+        &mut self,
+        _context: impl FunctionContext,
+        hash_dest_ptr: u32,
+        access_dest_ptr: u32,
+        is_locked: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_create_contract_user_group(
+        &mut self,
+        _context: impl FunctionContext,
+        package_key_ptr: u32,
+        package_key_size: u32,
+        label_ptr: u32,
+        label_size: u32,
+        num_new_urefs: u32,
+        existing_urefs_ptr: u32,
+        existing_urefs_size: u32,
+        output_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_provision_contract_user_group_uref(
+        &mut self,
+        _context: impl FunctionContext,
+        package_ptr: u32,
+        package_size: u32,
+        label_ptr: u32,
+        label_size: u32,
+        value_size_ptr: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_remove_contract_user_group(
+        &mut self,
+        context: impl FunctionContext,
+        package_key_ptr: u32,
+        package_key_size: u32,
+        label_ptr: u32,
+        label_size: u32,
+    ) -> Result<i32, Self::Error> {
+        let host_function_costs = self.config().wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.remove_contract_user_group,
+            [package_key_ptr, package_key_size, label_ptr, label_size],
+        )?;
+        let package_key = {
+            let package_key_bytes =
+                context.memory_read(package_key_ptr, package_key_size as usize)?;
+            bytesrepr::deserialize(package_key_bytes)?
+        };
+        let label: Group = {
+            let label_bytes = context.memory_read(label_ptr, label_size as usize)?;
+            bytesrepr::deserialize(label_bytes)?
+        };
+
+        let ret = self.remove_contract_user_group(package_key, label)?;
+        Ok(api_error::i32_from(ret))
+    }
+
+    fn casper_remove_contract_user_group_urefs(
+        &mut self,
+        _context: impl FunctionContext,
+        package_ptr: u32,
+        package_size: u32,
+        label_ptr: u32,
+        label_size: u32,
+        urefs_ptr: u32,
+        urefs_size: u32,
+    ) -> Result<u32, Self::Error> {
+        todo!()
+    }
+
+    fn casper_call_versioned_contract(
+        &mut self,
+        mut context: impl FunctionContext,
+        contract_package_hash_ptr: u32,
+        contract_package_hash_size: u32,
+        contract_version_ptr: u32,
+        contract_package_size: u32,
+        entry_point_name_ptr: u32,
+        entry_point_name_size: u32,
+        args_ptr: u32,
+        args_size: u32,
+        result_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        let host_function_costs = self.config().wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.call_versioned_contract,
+            [
+                contract_package_hash_ptr,
+                contract_package_hash_size,
+                contract_version_ptr,
+                contract_package_size,
+                entry_point_name_ptr,
+                entry_point_name_size,
+                args_ptr,
+                args_size,
+                result_size_ptr,
+            ],
+        )?;
+
+        let contract_package_hash: ContractPackageHash = t_from_memory(
+            &mut context,
+            contract_package_hash_ptr,
+            contract_package_hash_size,
+        )?;
+        let contract_version: Option<ContractVersion> =
+            t_from_memory(&mut context, contract_version_ptr, contract_package_size)?;
+        let entry_point_name: String =
+            t_from_memory(&mut context, entry_point_name_ptr, entry_point_name_size)?;
+        let args_bytes: Vec<u8> = { bytes_from_memory(&mut context, args_ptr, args_size)? };
+
+        let ret = self.call_versioned_contract_host_buffer(
+            context,
+            contract_package_hash,
+            contract_version,
+            entry_point_name,
+            args_bytes,
+            result_size_ptr,
+        )?;
+        Ok(api_error::i32_from(ret))
+    }
+
+    fn casper_add_contract_version(
+        &mut self,
+        context: impl FunctionContext,
+        contract_package_hash_ptr: u32,
+        contract_package_hash_size: u32,
+        version_ptr: u32,
+        entry_points_ptr: u32,
+        entry_points_size: u32,
+        named_keys_ptr: u32,
+        named_keys_size: u32,
+        output_ptr: u32,
+        output_size: u32,
+        bytes_written_ptr: u32,
+    ) -> Result<i32, Error> {
+        let host_function_costs = self.config().wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.add_contract_version,
+            [
+                contract_package_hash_ptr,
+                contract_package_hash_size,
+                version_ptr,
+                entry_points_ptr,
+                entry_points_size,
+                named_keys_ptr,
+                named_keys_size,
+                output_ptr,
+                output_size,
+                bytes_written_ptr,
+            ],
+        )?;
+
+        let contract_package_hash: ContractPackageHash = {
+            let contract_package_hash_bytes = context.memory_read(
+                contract_package_hash_ptr,
+                contract_package_hash_size as usize,
+            )?;
+            bytesrepr::deserialize(contract_package_hash_bytes)?
+        };
+        let entry_points: EntryPoints = {
+            let entry_points_bytes =
+                context.memory_read(entry_points_ptr, entry_points_size as usize)?;
+            bytesrepr::deserialize(entry_points_bytes)?
+        };
+        let named_keys: NamedKeys = {
+            let named_keys_bytes = context.memory_read(named_keys_ptr, named_keys_size as usize)?;
+            bytesrepr::deserialize(named_keys_bytes)?
+        };
+
+        let ret = self.add_contract_version(
+            context,
+            contract_package_hash,
+            entry_points,
+            named_keys,
+            output_ptr,
+            output_size as usize,
+            bytes_written_ptr,
+            version_ptr,
+        )?;
+        Ok(api_error::i32_from(ret))
+    }
+
+    fn casper_call_contract(
+        &mut self,
+        mut context: impl FunctionContext,
+        contract_hash_ptr: u32,
+        contract_hash_size: u32,
+        entry_point_name_ptr: u32,
+        entry_point_name_size: u32,
+        args_ptr: u32,
+        args_size: u32,
+        result_size_ptr: u32,
+    ) -> Result<i32, Error> {
+        let host_function_costs = self.config().wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.call_contract,
+            [
+                contract_hash_ptr,
+                contract_hash_size,
+                entry_point_name_ptr,
+                entry_point_name_size,
+                args_ptr,
+                args_size,
+                result_size_ptr,
+            ],
+        )?;
+
+        let contract_hash: ContractHash = {
+            let contract_hash_bytes =
+                context.memory_read(contract_hash_ptr, contract_hash_size as usize)?;
+            bytesrepr::deserialize(contract_hash_bytes)?
+        };
+        let entry_point_name: String = {
+            let entry_point_name_bytes =
+                context.memory_read(entry_point_name_ptr, entry_point_name_size as usize)?;
+            bytesrepr::deserialize(entry_point_name_bytes)?
+        };
+        let args_bytes: Vec<u8> = {
+            let args_size: u32 = args_size;
+            bytes_from_memory(&mut context, args_ptr, args_size)?
+        };
+
+        let ret = self.call_contract_host_buffer(
+            context,
+            contract_hash,
+            &entry_point_name,
+            args_bytes,
+            result_size_ptr,
+        )?;
+        Ok(api_error::i32_from(ret))
+    }
+
+    /// Load the uref known by the given name into the Wasm memory
+    ///
+    /// * call_stack_len_ptr -- (Output) Pointer to number of elements in the call stack.
+    /// * result_size_ptr -- Pointer to size in bytes of the serialized call stack.
+    fn casper_load_call_stack(
+        &mut self,
+        mut context: impl FunctionContext,
+        call_stack_len_ptr: u32,
+        result_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        if !self.can_write_to_host_buffer() {
+            // Exit early if the host buffer is already occupied
+            return Ok(api_error::i32_from(Err(ApiError::HostBufferFull)));
+        }
+        let call_stack = match self.try_get_stack() {
+            Ok(stack) => stack.call_stack_elements(),
+            Err(_error) => return Ok(api_error::i32_from(Err(ApiError::Unhandled))),
+        };
+        let call_stack_len: u32 = match call_stack.len().try_into() {
+            Ok(value) => value,
+            Err(_) => return Ok(api_error::i32_from(Err(ApiError::OutOfMemory))),
+        };
+        let call_stack_len_bytes = call_stack_len.to_le_bytes();
+
+        context
+            .memory_write(call_stack_len_ptr, &call_stack_len_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
+
+        if call_stack_len == 0 {
+            return Ok(api_error::SUCCESS);
+        }
+
+        let call_stack_cl_value = CLValue::from_t(call_stack.clone()).map_err(Error::CLValue)?;
+
+        let call_stack_cl_value_bytes_len: u32 =
+            match call_stack_cl_value.inner_bytes().len().try_into() {
+                Ok(value) => value,
+                Err(_) => return Ok(api_error::i32_from(Err(ApiError::OutOfMemory))),
+            };
+
+        if let Err(error) = self.write_host_buffer(call_stack_cl_value) {
+            return Ok(api_error::i32_from(Err(error)));
+        }
+
+        let call_stack_cl_value_bytes_len_bytes = call_stack_cl_value_bytes_len.to_le_bytes();
+
+        context.memory_write(result_size_ptr, &call_stack_cl_value_bytes_len_bytes)?;
+
+        Ok(api_error::SUCCESS)
+    }
+    /// Creates a dictionary
+    fn casper_new_dictionary(
+        &mut self,
+        mut context: impl FunctionContext,
+        output_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        // check we can write to the host buffer
+        if let Err(err) = self.check_host_buffer() {
+            return Ok(api_error::i32_from(Err(err)));
+        }
+
+        // Create new URef
+        let new_uref = self.context.new_unit_uref()?;
+
+        // create CLValue for return value
+        let new_uref_value = CLValue::from_t(new_uref)?;
+        let value_size = new_uref_value.inner_bytes().len();
+        // write return value to buffer
+        if let Err(err) = self.write_host_buffer(new_uref_value) {
+            return Ok(api_error::i32_from(Err(err)));
+        }
+        // Write return value size to output location
+        let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
+        context.memory_write(output_size_ptr, &output_size_bytes)?;
+
+        Ok(api_error::SUCCESS)
+    }
+
+    /// Reads the `value` under a `key` in a dictionary
+    fn casper_dictionary_get(
+        &mut self,
+        mut context: impl FunctionContext,
+        uref_ptr: u32,
+        uref_size: u32,
+        dictionary_item_key_bytes_ptr: u32,
+        dictionary_item_key_bytes_size: u32,
+        output_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        // check we can write to the host buffer
+        if let Err(err) = self.check_host_buffer() {
+            return Ok(api_error::i32_from(Err(err)));
+        }
+
+        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
+        let dictionary_item_key_bytes = bytes_from_memory(
+            &mut context,
+            dictionary_item_key_bytes_ptr,
+            dictionary_item_key_bytes_size,
+        )?;
+
+        let dictionary_item_key = if let Ok(item_key) = String::from_utf8(dictionary_item_key_bytes)
+        {
+            item_key
+        } else {
+            return Ok(api_error::i32_from(Err(ApiError::InvalidDictionaryItemKey)));
+        };
+
+        let cl_value = match self.context.dictionary_get(uref, &dictionary_item_key)? {
+            Some(cl_value) => cl_value,
+            None => return Ok(api_error::i32_from(Err(ApiError::ValueNotFound))),
+        };
+
+        let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
+            Ok(value) => value,
+            Err(_) => return Ok(api_error::i32_from(Err(ApiError::BufferTooSmall))),
+        };
+
+        if let Err(error) = self.write_host_buffer(cl_value) {
+            return Ok(api_error::i32_from(Err(error)));
+        }
+
+        let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
+        context
+            .memory_write(output_size_ptr, &value_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
+
+        Ok(api_error::SUCCESS)
+    }
+
+    /// Writes a `key`, `value` pair in a dictionary
+    fn casper_dictionary_put(
+        &mut self,
+        mut context: impl FunctionContext,
+        uref_ptr: u32,
+        uref_size: u32,
+        key_bytes_ptr: u32,
+        key_bytes_size: u32,
+        value_ptr: u32,
+        value_ptr_size: u32,
+    ) -> Result<i32, Self::Error> {
+        let uref: URef = t_from_memory(&mut context, uref_ptr, uref_size)?;
+        let dictionary_item_key_bytes =
+            context.memory_read(key_bytes_ptr, key_bytes_size as usize)?;
+        if dictionary_item_key_bytes.len() > DICTIONARY_ITEM_KEY_MAX_LENGTH {
+            return Ok(api_error::i32_from(Err(
+                ApiError::DictionaryItemKeyExceedsLength,
+            )));
+        }
+        let dictionary_item_key = if let Ok(item_key) = String::from_utf8(dictionary_item_key_bytes)
+        {
+            item_key
+        } else {
+            return Ok(api_error::i32_from(Err(ApiError::InvalidDictionaryItemKey)));
+        };
+        let cl_value = t_from_memory(&mut context, value_ptr, value_ptr_size)?;
+        self.context
+            .dictionary_put(uref, &dictionary_item_key, cl_value)?;
+        Ok(api_error::SUCCESS)
+    }
+
+    fn casper_blake2b(
+        &mut self,
+        mut context: impl FunctionContext,
+        in_ptr: u32,
+        in_size: u32,
         out_ptr: u32,
         out_size: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
+    ) -> Result<i32, Self::Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.blake2b,
+            [in_ptr, in_size, out_ptr, out_size],
+        )?;
+        let input: Vec<u8> = {
+            let size = in_size as usize;
+            context.memory_read(in_ptr, size)?
+        };
+
+        let digest = crypto::blake2b(&input);
+
+        let result = if digest.len() != out_size as usize {
+            Err(ApiError::BufferTooSmall)
+        } else {
+            Ok(())
+        };
+        if result.is_err() {
+            return Ok(api_error::i32_from(result));
+        }
+
+        context.memory_write(out_ptr, &digest)?;
+
+        Ok(api_error::SUCCESS)
+    }
+
+    fn casper_load_authorization_keys(
+        &mut self,
+        mut context: impl FunctionContext,
+        len_ptr: u32,
+        result_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        self.charge_host_function_call(&HostFunction::fixed(10_000), [len_ptr, result_size_ptr])?;
+
+        if !self.can_write_to_host_buffer() {
+            // Exit early if the host buffer is already occupied
+            return Ok(api_error::i32_from(Err(ApiError::HostBufferFull)));
+        }
+
+        // A set of keys is converted into a vector so it can be written to a host buffer
+        let authorization_keys =
+            Vec::from_iter(self.context.authorization_keys().clone().into_iter());
+
+        let total_keys: u32 = match authorization_keys.len().try_into() {
+            Ok(value) => value,
+            Err(_) => return Ok(api_error::i32_from(Err(ApiError::OutOfMemory))),
+        };
+        let total_keys_bytes = total_keys.to_le_bytes();
+        if let Err(error) = context.memory_write(len_ptr, &total_keys_bytes) {
+            return Err(Error::Interpreter(error.into()).into());
+        }
+
+        if total_keys == 0 {
+            // No need to do anything else, we leave host buffer empty.
+            return Ok(api_error::SUCCESS);
+        }
+
+        let authorization_keys = CLValue::from_t(authorization_keys).map_err(Error::CLValue)?;
+
+        let length: u32 = match authorization_keys.inner_bytes().len().try_into() {
+            Ok(value) => value,
+            Err(_) => return Ok(api_error::i32_from(Err(ApiError::OutOfMemory))),
+        };
+        if let Err(error) = self.write_host_buffer(authorization_keys) {
+            return Ok(api_error::i32_from(Err(error)));
+        }
+
+        let length_bytes = length.to_le_bytes();
+        if let Err(error) = context.memory_write(result_size_ptr, &length_bytes) {
+            return Err(Error::Interpreter(error.into()).into());
+        }
+
+        Ok(api_error::SUCCESS)
+    }
+
+    fn casper_disable_contract_version(
+        &mut self,
+        context: impl FunctionContext,
+        package_key_ptr: u32,
+        package_key_size: u32,
+        contract_hash_ptr: u32,
+        contract_hash_size: u32,
+    ) -> Result<i32, Self::Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(
+            &host_function_costs.disable_contract_version,
+            [
+                package_key_ptr,
+                package_key_size,
+                contract_hash_ptr,
+                contract_hash_size,
+            ],
+        )?;
+
+        let contract_package_hash: ContractPackageHash = {
+            let contract_package_hash_bytes =
+                context.memory_read(package_key_ptr, package_key_size as usize)?;
+            bytesrepr::deserialize(contract_package_hash_bytes)?
+        };
+
+        let contract_hash: ContractHash = {
+            let contract_hash_bytes =
+                context.memory_read(contract_hash_ptr, contract_hash_size as usize)?;
+            bytesrepr::deserialize(contract_hash_bytes)?
+        };
+
+        let ret = self.disable_contract_version(contract_package_hash, contract_hash)?;
+
+        Ok(api_error::i32_from(ret))
+    }
+
+    fn casper_dictionary_read(
+        &mut self,
+        mut context: impl FunctionContext,
+        key_ptr: u32,
+        key_size: u32,
+        output_size_ptr: u32,
+    ) -> Result<i32, Self::Error> {
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+
+        self.charge_host_function_call(
+            &host_function_costs.read_value,
+            [key_ptr, key_size, output_size_ptr],
+        )?;
+
+        if !self.can_write_to_host_buffer() {
+            // Exit early if the host buffer is already occupied
+            return Ok(api_error::i32_from(Err(ApiError::HostBufferFull)));
+        }
+
+        let dictionary_key: Key = t_from_memory(&mut context, key_ptr, key_size)?;
+        let cl_value = match self.context.dictionary_read(dictionary_key)? {
+            Some(cl_value) => cl_value,
+            None => return Ok(api_error::i32_from(Err(ApiError::ValueNotFound))),
+        };
+
+        let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
+            Ok(value) => value,
+            Err(_) => return Ok(api_error::i32_from(Err(ApiError::BufferTooSmall))),
+        };
+
+        if let Err(error) = self.write_host_buffer(cl_value) {
+            return Ok(api_error::i32_from(Err(error)));
+        }
+
+        let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
+        context
+            .memory_write(output_size_ptr, &value_bytes)
+            .map_err(|e| Error::Interpreter(e.into()))?;
+
+        Ok(api_error::SUCCESS)
+    }
+
+    fn casper_random_bytes(
+        &mut self,
+        mut context: impl FunctionContext,
+        out_ptr: u32,
+        out_size: u32,
+    ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
 
         self.charge_host_function_call(&host_function_costs.random_bytes, [out_ptr, out_size])?;
 
         let random_bytes = self.context.random_bytes()?;
 
-        if random_bytes.len() != out_size as usize {
-            return Ok(Err(ApiError::BufferTooSmall));
-        }
+        let api_result = if random_bytes.len() != out_size as usize {
+            Err(ApiError::BufferTooSmall)
+        } else {
+            context.memory_write(out_ptr, &random_bytes)?;
+            Ok(())
+        };
 
-        function_context.memory_write(out_ptr, &random_bytes)?;
-
-        Ok(Ok(()))
+        Ok(api_error::i32_from(api_result))
     }
 }
