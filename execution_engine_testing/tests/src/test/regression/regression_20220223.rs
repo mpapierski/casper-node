@@ -11,7 +11,7 @@ use casper_execution_engine::core::{
 use casper_types::{
     self,
     account::AccountHash,
-    api_error::ApiError,
+api_error::ApiError,
     runtime_args,
     system::auction::{
         DelegationRate, ARG_AMOUNT, ARG_DELEGATION_RATE, ARG_DELEGATOR, ARG_PUBLIC_KEY,

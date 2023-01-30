@@ -1,0 +1,23 @@
+[package]
+name = "halo2-test"
+version = "0.1.0"
+authors = ["Karan Dhareshwar <karan@casperlabs.io>", "Michał Papierski <michal@casperlabs.io>"]
+edition = "2018"
+
+[[bin]]
+name = "halo2_test"
+path = "src/main.rs"
+bench = false
+doctest = false
+test = false
+
+[dependencies]
+casper-contract = { path = "../../../contract", features = ["test-support"] }
+casper-types = { path = "../../../../types" }
+halo2_proofs = { version = "0.2.0", default-features = false, features = [] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2.8", features = ["js"] }
+
+#[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+#rand = { version = "0.8.5" }

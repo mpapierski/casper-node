@@ -18,3 +18,4 @@ mod system_costs;
 mod tutorial;
 mod upgrade;
 mod wasmless_transfer;
+mod halo2_test;
