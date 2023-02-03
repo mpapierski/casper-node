@@ -1,27 +1,21 @@
-use crate::{core::execution, for_each_host_function};
+use thiserror::Error;
 
-use super::FunctionContext;
+use crate::shared::wasm_engine::FunctionContext;
+
+use crate::for_each_host_function;
 
 macro_rules! define_trait_methods {
-    ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {
+    (@optional_ret) => { () };
+    (@optional_ret $ret:tt) => { $ret };
+
+    ($($(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {
         $(
-            #[allow(unused)]
-            fn $name(&mut self, _context: impl FunctionContext $($(,$arg: $argty)*)?) -> Result<$ret, Self::Error>;
-            // define_trait_methods!(@define $proposal fn $name($($($arg: $argty),*)?) -> $ret);
+            $(#[$cfg])?
+            fn $name(&mut self, _context: impl FunctionContext $($(,$arg: $argty)*)?) -> Result<define_trait_methods!(@optional_ret $($ret)?), Self::Error> {
+                todo!()
+            }
         )*
     };
-
-    // (@define core fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-    //     fn $name(&mut self, context: impl FunctionContext $($(,$arg: $argty)*)?) -> $ret;
-    // };
-
-    // (@define test fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-    //     #[cfg(feature = "test-support")]
-    // };
-
-    // (@define internal fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-    //     fn $name(&mut self, context: impl FunctionContext $($(,$arg: $argty)*)?) -> $ret;
-    // };
 }
 
 pub(crate) trait WasmHostInterface {
@@ -30,20 +24,27 @@ pub(crate) trait WasmHostInterface {
     for_each_host_function!(define_trait_methods);
 }
 
-// macro_rules! visit_internal_functions {
-//     ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident)*) => {
-//         [$(
-//             visit_internal_functions!(@define $proposal fn $name($($($arg: $argty),*)?) -> $ret);
-//         )*]
-//     };
+#[cfg(test)]
+pub(crate) struct HostStub;
 
-//     (@define core fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-//     };
+#[cfg(test)]
+#[derive(Error, Debug)]
+#[error("stub error")]
+pub(crate) struct StubError;
 
-//     (@define test fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-//     };
+#[cfg(test)]
+impl WasmHostInterface for HostStub {
+    type Error = StubError;
+}
 
-//     (@define internal fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:ident) => {
-//         stringify!($name),
-//     };
-// }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    struct MockHost;
+    impl WasmHostInterface for MockHost {
+        type Error = ();
+    }
+
+    #[test]
+    fn codegen() {}
+}

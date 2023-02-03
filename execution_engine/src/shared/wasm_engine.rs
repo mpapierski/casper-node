@@ -695,8 +695,7 @@ where
                     memory: imported_memory.clone(),
                 };
 
-                let mut function_env =
-                    FunctionEnv::new(&mut wasmer_store.as_store_mut(), wasmer_env);
+                let function_env = FunctionEnv::new(&mut wasmer_store.as_store_mut(), wasmer_env);
 
                 let mut import_object =
                     wasmer_backend::make_wasmer_imports("env", &mut wasmer_store, &function_env);

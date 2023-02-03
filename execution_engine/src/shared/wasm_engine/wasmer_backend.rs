@@ -47,27 +47,34 @@ where
     let mut import_object = Imports::new();
 
     macro_rules! visit_host_function {
-        ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {{
+        (@optional_ret) => { () };
+        (@optional_ret $ret:tt) => { $ret };
+
+        ($($(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {{
             $(
+                $(#[$cfg])?
+                {
                 let func = Function::new_typed_with_env(
                     &mut store.as_store_mut(),
                     env,
                     |
                         mut caller: FunctionEnvMut<WasmerEnv<H>>,
                         $($($arg: $argty),*)?
-                    | -> Result<$ret, RuntimeError> {
+                    | -> Result<visit_host_function!(@optional_ret $($ret)?), RuntimeError> {
                         let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
                         let view = wasmer_memory.view(&caller);
                         let function_context = WasmerAdapter::new(view);
 
-                        match caller.data_mut().host.$name(function_context, $($($arg ),*)?) {
-                            Ok(result) => Ok(result),
-                            Err(error) => Err(RuntimeError::user(error.into())),
-                        }
+                        let res: visit_host_function!(@optional_ret $($ret)?) = match caller.data_mut().host.$name(function_context, $($($arg ),*)?) {
+                            Ok(result) => result,
+                            Err(error) => return Err(RuntimeError::user(error.into())),
+                        };
+                        Ok(res)
                     }
                 );
 
                 import_object.define(env_name, stringify!($name), func);
+                }
             )*
         }};
     }
@@ -75,4 +82,25 @@ where
     for_each_host_function!(visit_host_function);
 
     import_object
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shared::wasm_engine::host_interface::HostStub;
+
+    use super::*;
+    use wasmer::{FunctionEnv, Store};
+
+    #[test]
+    fn should_test_wasmer_import_object() {
+        let mut store = Store::default();
+        let wasmer_env = WasmerEnv {
+            host: HostStub,
+            memory: None,
+        };
+
+        let function_env = FunctionEnv::new(&mut store.as_store_mut(), wasmer_env);
+
+        let _imports = make_wasmer_imports("env", &mut store, &function_env);
+    }
 }

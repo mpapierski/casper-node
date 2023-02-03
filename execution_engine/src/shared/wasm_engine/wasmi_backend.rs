@@ -54,11 +54,12 @@ impl FunctionContext for WasmiAdapter {
 }
 
 macro_rules! visit_host_function_enum {
-    ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {
+    ($( $(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {
         #[allow(non_camel_case_types)]
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
         enum HostFunctionIndex {
         $(
+            $(#[$cfg])?
             $name,
         )*
         }
@@ -75,19 +76,16 @@ struct WasmiHostFunction {
     index: HostFunctionIndex,
 }
 
-// fn make_host_function_table() -> Vec<WasmiHostFunction> {
-//     let mut result = for_each_host_function!(visit_host_function);
-//     // This is necessary for binary search later
-//     result.sort_by_key(|host_func| host_func.name);
-//     result
-// }
-
 macro_rules! visit_host_function {
-    ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {
+    (@optional_ret) => { () };
+    (@optional_ret $ret:tt) => { $ret };
+
+    ($( $(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {
         &[ $(
+            $(#[$cfg])?
             {
                 let params = <($($($argty),*)?,)>::VALUE_TYPES;
-                let ret = <$ret>::OPTIONAL_VALUE_TYPE;
+                let ret = <visit_host_function!(@optional_ret $($ret)?)>::OPTIONAL_VALUE_TYPE;
 
                 WasmiHostFunction { name: stringify!($name), params, ret, index: HostFunctionIndex::$name }
             }
@@ -95,17 +93,7 @@ macro_rules! visit_host_function {
     }
 }
 
-const HOST_FUNCTIONS_ARRAY: &'static [WasmiHostFunction] =
-    for_each_host_function!(visit_host_function);
-
-fn make_host_function_table() -> Vec<&'static WasmiHostFunction> {
-    let mut result: Vec<&WasmiHostFunction> = HOST_FUNCTIONS_ARRAY.iter().map(|h| h).collect();
-    // This is necessary for binary search later
-    result.sort_by_key(|host_func| host_func.name);
-    result
-}
-
-static HOST_FUNCTIONS: Lazy<Vec<&'static WasmiHostFunction>> = Lazy::new(make_host_function_table);
+const HOST_FUNCTIONS: &'static [WasmiHostFunction] = for_each_host_function!(visit_host_function);
 
 pub(crate) struct WasmiResolver {
     memory: RefCell<Option<MemoryRef>>,
@@ -127,11 +115,10 @@ impl WasmiResolver {
 
 impl ModuleImportResolver for WasmiResolver {
     fn resolve_func(&self, field_name: &str, _signature: &Signature) -> Result<FuncRef, Error> {
-        let host_funcs = Lazy::force(&HOST_FUNCTIONS);
-        let idx = host_funcs
+        let idx = HOST_FUNCTIONS
             .binary_search_by_key(&field_name, |host_func| host_func.name)
             .map_err(|_| Error::Instantiation(format!("Export {} not found", field_name)))?;
-        let host_func = host_funcs.get(idx).unwrap(); // SAFETY: binary search returned Ok(idx)
+        let host_func = HOST_FUNCTIONS.get(idx).unwrap(); // SAFETY: binary search returned Ok(idx)
         let signature = Signature::new(host_func.params, host_func.ret);
         Ok(FuncInstance::alloc_host(signature, idx))
     }
@@ -213,29 +200,53 @@ where
         let wasmi_adapter = WasmiAdapter::new(self.memory.clone());
 
         macro_rules! visit_host_function {
-            ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {
-                {
-                    let host_func = HOST_FUNCTIONS.get(index).unwrap(); // SAFETY: resolver returns an index in the table
-                    match host_func.index {
+            (@optional_ret) => { () };
+            (@optional_ret $ret:tt) => { $ret };
+
+            ($($(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {{
+                let host_func = HOST_FUNCTIONS.get(index).unwrap(); // SAFETY: resolver returns an index in the table
+                match host_func.index {
                     $(
-                        HostFunctionIndex::$name => {
-                            let mut param_idx = 0;
-                            let res: $ret = self.host.$name(
-                                wasmi_adapter,
-                                $($({
-                                let $arg: $argty = args.nth_checked(param_idx)?;
-                                param_idx += 1;
-                                $arg
-                            } ),*)?
-                            ).map_err(make_wasmi_host_error)?;
-                            res.to_runtime_value()
-                        }
-                    )*
+                    $(#[$cfg])?
+                    HostFunctionIndex::$name => {
+                        let mut param_idx = 0;
+                        let res: visit_host_function!(@optional_ret $($ret)?) = self.host.$name(
+                            wasmi_adapter,
+                            $($({
+                            let $arg: $argty = args.nth_checked(param_idx)?;
+                            param_idx += 1;
+                            $arg
+                        } ),*)?
+                        ).map_err(make_wasmi_host_error)?;
+                        res.to_runtime_value()
+                    }
+                    )+
                 }
-            }}
+            }};
         }
 
         let result = for_each_host_function!(visit_host_function);
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_array_is_sorted() {
+        // If this test fails, then you need to sort all the host function definition in the
+        // `for_each_host_function` macro.
+        let names: Vec<&str> = HOST_FUNCTIONS.iter().map(|host| host.name).collect();
+        let mut names_sorted = names.clone();
+        names_sorted.sort();
+        assert_eq!(names, names_sorted);
+
+        if cfg!(feature = "test-support") {
+            assert!(names_sorted.contains(&"casper_print"));
+        } else {
+            assert!(!names_sorted.contains(&"casper_print"));
+        }
     }
 }

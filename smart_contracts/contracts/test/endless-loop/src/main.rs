@@ -19,7 +19,7 @@ pub extern "C" fn call() {
 
     loop {
         let _ = account::get_main_purse();
-        let mut data: Vec<u8> = vec![0u8; 4096].into();
+        let mut data: Vec<u8> = vec![0u8; 4096];
 
         value.to_big_endian(&mut data);
         value += U512::one();
@@ -27,6 +27,4 @@ pub extern "C" fn call() {
 
         storage::write(uref, Bytes::from(data));
     }
-
-    assert!(false);
 }

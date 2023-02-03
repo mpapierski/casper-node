@@ -3,8 +3,6 @@
 
 extern crate alloc;
 
-use core::convert::TryInto;
-
 use alloc::{string::ToString, vec::Vec};
 
 use casper_contract::{
@@ -17,8 +15,7 @@ use casper_types::{
         EntryPoint, EntryPointAccess, EntryPointType, EntryPoints, NamedKeys,
         CONTRACT_INITIAL_VERSION,
     },
-    runtime_args, ApiError, CLType, ContractHash, ContractPackageHash, ContractVersion, Key,
-    RuntimeArgs,
+    runtime_args, CLType, ContractHash, ContractPackageHash, ContractVersion, Key, RuntimeArgs,
 };
 
 const PACKAGE_HASH_KEY: &str = "package_hash_key";

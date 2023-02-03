@@ -40,6 +40,8 @@ pub fn revert<T: Into<ApiError>>(error: T) -> ! {
     }
 }
 
+/// Macro that prints the assertions through [`print`] function, and if assertion fails, it reverts
+/// with a User(line number).
 #[cfg(feature = "test-support")]
 #[macro_export]
 macro_rules! assert_here {

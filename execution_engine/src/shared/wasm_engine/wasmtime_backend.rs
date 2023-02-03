@@ -74,12 +74,7 @@ where
     (WasmtimeAdapter { data }, &mut runtime.host)
 }
 
-pub(crate) fn make_linker_object<H>(
-    env_name: &str,
-    engine: &Engine,
-    // store: &mut impl AsStoreMut,
-    // env: &FunctionEnv<WasmerEnv<H>>,
-) -> Linker<WasmtimeEnv<H>>
+pub(crate) fn make_linker_object<H>(env_name: &str, engine: &Engine) -> Linker<WasmtimeEnv<H>>
 where
     H: WasmHostInterface,
     H::Error: std::error::Error + Send + Sync + 'static,
@@ -87,28 +82,13 @@ where
     let mut linker = Linker::new(engine);
 
     macro_rules! visit_host_function {
-        ($( @$proposal:ident fn $name:ident $(( $($arg:ident: $argty:ty),* ))? -> $ret:tt)*) => {{
+        (@optional_ret) => { () };
+        (@optional_ret $ret:tt) => { $ret };
+
+        ($($(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {{
             $(
-                // let func = Function::new_typed_with_env(
-                //     &mut store.as_store_mut(),
-                //     env,
-                //     |
-                //         mut caller: FunctionEnvMut<WasmerEnv<H>>,
-                //         $($($arg: $argty),*)?
-                //     | -> Result<$ret, RuntimeError> {
-                //         let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
-                //         let view = wasmer_memory.view(&caller);
-                //         let function_context = WasmerAdapter::new(view);
-
-                //         match caller.data_mut().host.$name(function_context, $($($arg ),*)?) {
-                //             Ok(result) => Ok(result),
-                //             Err(error) => Err(RuntimeError::user(error.into())),
-                //         }
-                //     }
-                // );
-
-                // import_object.define(env_name, stringify!($name), func);
-
+                $(#[$cfg])?
+                {
                 linker
                     .func_wrap(
                         env_name,
@@ -117,31 +97,24 @@ where
                             mut caller: Caller<WasmtimeEnv<H>>,
                             $($($arg: $argty),*)?
                         | {
-                            // todo!()
                             let (function_context, host) =
                                 caller_adapter_and_runtime(&mut caller);
 
-                                match host.$name(
+                                let ret: visit_host_function!(@optional_ret $($ret)?) = match host.$name(
                                     function_context,
                                     $($($arg ),*)?,
                                 ) {
-                                    Ok(result) => Ok(result),
+                                    Ok(result) => result,
                                     Err(error) => {
                                         return Err(make_wasmtime_trap(error))
                                     }
-                                }
+                                };
 
-                            // let ret = runtime.read(
-                            //     function_context,
-                            //     key_ptr,
-                            //     key_size,
-                            //     output_size_ptr,
-                            // )?;
-                            // Ok(api_error::i32_from(ret))
+                                Ok(ret)
                         },
                     )
                     .unwrap();
-
+                }
             )*
         }};
     }
@@ -149,4 +122,16 @@ where
     for_each_host_function!(visit_host_function);
 
     linker
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::shared::wasm_engine::host_interface::HostStub;
+
+    use super::make_linker_object;
+
+    #[test]
+    fn should_test_wasmtime_linker_object() {
+        let _linker = make_linker_object::<HostStub>("env", &Default::default());
+    }
 }
