@@ -1,6 +1,7 @@
 use std::{
     borrow::{BorrowMut, Cow},
     cell::RefCell,
+    collections::HashMap,
 };
 
 use once_cell::sync::Lazy;
@@ -56,7 +57,7 @@ impl FunctionContext for WasmiAdapter {
 macro_rules! visit_host_function_enum {
     ($( $(#[$cfg:meta])? fn $name:ident $(( $($arg:ident: $argty:ty),* ))? $(-> $ret:tt)?;)*) => {
         #[allow(non_camel_case_types)]
-        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Copy, Clone)]
         enum HostFunctionIndex {
         $(
             $(#[$cfg])?
@@ -70,9 +71,13 @@ for_each_host_function!(visit_host_function_enum);
 
 #[derive(Debug)]
 struct WasmiHostFunction {
+    /// Name of the host function
     name: &'static str,
+    /// List of parameters a host function accepts.
     params: &'static [ValueType],
-    ret: Option<ValueType>,
+    /// Return type of the host function.
+    return_type: Option<ValueType>,
+    /// A value used in [`WasmiExternals`] to delegate calls in a match statement.
     index: HostFunctionIndex,
 }
 
@@ -85,9 +90,9 @@ macro_rules! visit_host_function {
             $(#[$cfg])?
             {
                 let params = <($($($argty),*)?,)>::VALUE_TYPES;
-                let ret = <visit_host_function!(@optional_ret $($ret)?)>::OPTIONAL_VALUE_TYPE;
+                let return_type = <visit_host_function!(@optional_ret $($ret)?)>::OPTIONAL_VALUE_TYPE;
 
-                WasmiHostFunction { name: stringify!($name), params, ret, index: HostFunctionIndex::$name }
+                WasmiHostFunction { name: stringify!($name), params, return_type, index: HostFunctionIndex::$name }
             }
         ,)* ]
     }
@@ -113,14 +118,26 @@ impl WasmiResolver {
     }
 }
 
+/// Lookup table from host function name to a definition to allow O(1) lookups.
+static NAME_LOOKUP_TABLE: Lazy<HashMap<&'static str, &'static WasmiHostFunction>> =
+    Lazy::new(|| {
+        let mut map = HashMap::new();
+        for func in HOST_FUNCTIONS.iter() {
+            map.insert(func.name, func);
+        }
+        map
+    });
+
 impl ModuleImportResolver for WasmiResolver {
     fn resolve_func(&self, field_name: &str, _signature: &Signature) -> Result<FuncRef, Error> {
-        let idx = HOST_FUNCTIONS
-            .binary_search_by_key(&field_name, |host_func| host_func.name)
-            .map_err(|_| Error::Instantiation(format!("Export {} not found", field_name)))?;
-        let host_func = HOST_FUNCTIONS.get(idx).unwrap(); // SAFETY: binary search returned Ok(idx)
-        let signature = Signature::new(host_func.params, host_func.ret);
-        Ok(FuncInstance::alloc_host(signature, idx))
+        let host_func = NAME_LOOKUP_TABLE
+            .get(field_name)
+            .ok_or_else(|| Error::Instantiation(format!("Export {} not found", field_name)))?;
+        let signature = Signature::new(host_func.params, host_func.return_type);
+        Ok(FuncInstance::alloc_host(
+            signature,
+            host_func.index as usize,
+        ))
     }
 
     fn resolve_memory(
@@ -235,18 +252,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ensure_array_is_sorted() {
-        // If this test fails, then you need to sort all the host function definition in the
-        // `for_each_host_function` macro.
-        let names: Vec<&str> = HOST_FUNCTIONS.iter().map(|host| host.name).collect();
-        let mut names_sorted = names.clone();
-        names_sorted.sort();
-        assert_eq!(names, names_sorted);
-
+    fn cfg_attribute_is_respected_in_macro() {
         if cfg!(feature = "test-support") {
-            assert!(names_sorted.contains(&"casper_print"));
+            assert!(NAME_LOOKUP_TABLE.contains_key(&"casper_print"));
         } else {
-            assert!(!names_sorted.contains(&"casper_print"));
+            assert!(!NAME_LOOKUP_TABLE.contains_key(&"casper_print"));
         }
     }
 }

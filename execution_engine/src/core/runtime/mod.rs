@@ -310,20 +310,6 @@ where
         Ok(Ok(()))
     }
 
-    /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
-    pub(crate) fn casper_get_main_purse(
-        &mut self,
-        mut context: impl FunctionContext,
-        dest_ptr: u32,
-    ) -> Result<(), Error> {
-        let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
-        let purse = self.context.get_main_purse()?;
-        let bytes = purse.into_bytes().map_err(Error::from)?;
-        context.memory_write(dest_ptr, &bytes)?;
-        Ok(())
-    }
-
     /// Gets the immediate caller of the current execution
     fn get_immediate_caller(&self) -> Option<&CallStackElement> {
         self.stack.as_ref().and_then(|stack| stack.previous_frame())
@@ -1590,36 +1576,6 @@ where
             .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
-    // /// Generates new unforgable reference and adds it to the context's
-    // /// access_rights set.
-    // pub(crate) fn casper_new_uref(&mut self, cl_value: CLValue) -> Result<URef, Error> {
-    //     let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
-    //     Ok(uref)
-    // }
-    pub(crate) fn casper_new_uref(
-        &mut self,
-        mut context: impl FunctionContext,
-        uref_ptr: u32,
-        value_ptr: u32,
-        value_size: u32,
-    ) -> Result<(), Error> {
-        let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(
-            &host_function_costs.new_uref,
-            [uref_ptr, value_ptr, value_size],
-        )?;
-        // scoped_instrumenter.add_property("value_size", value_size);
-        // let memory = self.instance.interpreted_memory();
-
-        let cl_value: CLValue = t_from_memory(&mut context, value_ptr, value_size)?;
-
-        let uref = self.context.new_uref(StoredValue::CLValue(cl_value))?;
-
-        let bytes = uref.into_bytes().map_err(Error::from)?;
-        context.memory_write(uref_ptr, &bytes)?;
-        Ok(())
-    }
-
     /// Records a transfer.
     fn record_transfer(
         &mut self,
@@ -2424,7 +2380,7 @@ where
     ) -> Result<(), Error> {
         let phase = self.context.phase();
         let bytes = phase.into_bytes().map_err(Error::BytesRepr)?;
-        context.memory_write(dest_ptr, &bytes);
+        context.memory_write(dest_ptr, &bytes)?;
         Ok(())
     }
 
@@ -2583,6 +2539,7 @@ where
         Ok(())
     }
 
+    /// Generates new unforgable reference and adds it to the context's access_rights set.
     fn casper_new_uref(
         &mut self,
         mut context: impl FunctionContext,
@@ -2652,12 +2609,18 @@ where
         Ok(())
     }
 
+    /// Writes runtime context's account main purse to dest_ptr in the Wasm memory.
     fn casper_get_main_purse(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         dest_ptr: u32,
     ) -> Result<(), Self::Error> {
-        Runtime::casper_get_main_purse(self, context, dest_ptr)
+        let host_function_costs = self.config.wasm_config().take_host_function_costs();
+        self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
+        let purse = self.context.get_main_purse()?;
+        let bytes = purse.into_bytes().map_err(Error::from)?;
+        context.memory_write(dest_ptr, &bytes)?;
+        Ok(())
     }
 
     fn casper_get_named_arg_size(
