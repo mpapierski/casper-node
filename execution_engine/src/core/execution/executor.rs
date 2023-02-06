@@ -159,11 +159,11 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                let result = instance.invoke_export::<()>(
+                let result = instance.invoke_export::<(), _>(
                     Some(correlation_id),
                     &self.wasm_engine,
                     DEFAULT_ENTRY_POINT_NAME,
-                    &[],
+                    (),
                 );
 
                 match result {

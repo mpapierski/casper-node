@@ -4,6 +4,7 @@ use casper_types::{
     blake2b,
     bytesrepr::{self, FromBytes, ToBytes},
 };
+
 use once_cell::sync::Lazy;
 use parity_wasm::elements::{
     self, External, Instruction, Internal, MemorySection, Section, TableType, Type,
@@ -19,6 +20,7 @@ use std::{
     error::Error,
     fmt::{self, Formatter},
     fs,
+    ops::Deref,
     path::Path,
     sync::{Arc, Mutex, RwLock},
     time::{Duration, Instant},
@@ -26,6 +28,7 @@ use std::{
 use thiserror::Error;
 use wasmer::{AsStoreMut, AsStoreRef, Cranelift, FunctionEnv, TypedFunction};
 use wasmer_compiler_singlepass::Singlepass;
+use wasmi::WasmType;
 
 pub mod host_interface;
 mod macros;
@@ -47,7 +50,7 @@ pub const DEFAULT_MAX_GLOBALS: u32 = 256;
 pub const DEFAULT_MAX_PARAMETER_COUNT: u32 = 256;
 
 pub use parity_wasm::elements::Module as WasmiModule;
-use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
+// use wasmi::{ImportsBuilder, MemoryRef, ModuleInstance, ModuleRef};
 use wasmtime::{
     AsContext, AsContextMut, Caller, Extern, ExternType, InstanceAllocationStrategy, Memory,
     MemoryType, StoreContextMut, Trap,
@@ -58,10 +61,7 @@ use crate::core::execution;
 use self::{
     host_interface::WasmHostInterface,
     wasmer_backend::{WasmerAdapter, WasmerEnv},
-    wasmi_backend::{
-        interop::{FromWasmiResult, ToWasmiParams, ToWasmiResult},
-        WasmiExternals, WasmiResolver,
-    },
+    wasmi_backend::{make_wasmi_linker, WasmiEngine, WasmiEnv},
     wasmtime_backend::WasmtimeEnv,
 };
 
@@ -246,6 +246,7 @@ pub enum Module {
         original_bytes: Bytes,
         module: wasmi::Module,
         timestamp: Instant,
+        engine: WasmiEngine,
     },
     Compiled {
         original_bytes: Bytes,
@@ -294,6 +295,8 @@ pub enum RuntimeError {
     #[error(transparent)]
     WasmiError(Arc<wasmi::Error>),
     #[error(transparent)]
+    WasmiTrap(Arc<wasmi::core::Trap>),
+    #[error(transparent)]
     WasmtimeError(#[from] wasmtime::Trap),
     #[error(transparent)]
     WasmerError(#[from] wasmer::RuntimeError),
@@ -307,6 +310,8 @@ pub enum RuntimeError {
     UnsupportedWasmStart,
     #[error("module requested too much memory")]
     ModuleRequestedTooMuchMemory,
+    #[error("{0}")]
+    WasmiMemoryError(Arc<wasmi::errors::MemoryError>),
 }
 
 impl From<wasmer::InstantiationError> for RuntimeError {
@@ -335,13 +340,44 @@ impl RuntimeError {
         match &self {
             RuntimeError::WasmiError(wasmi_error) => {
                 // todo!()
-                match wasmi_error.as_host_error().and_then(|host_error| {
-                    host_error.downcast_ref::<wasmi_backend::IndirectHostError<T>>()
-                }) {
-                    Some(indirect) => Ok(indirect.source.clone()),
-                    None => Err(self),
-                }
+                // match wasmi_error.as_host_error().and_then(|host_error| {
+                //     host_error.
+                // downcast_ref::<wasmi_backend::IndirectHostError<T>>()
+                // }) {
+                //     Some(indirect) => Ok(indirect.source.clone()),
+                //     None => Err(self),
+                // }
                 // Ok(error)
+
+                match wasmi_error.deref() {
+                    wasmi::Error::Trap(trap) => {
+                        let maybe_error: Option<&wasmi_backend::IndirectHostError<T>> =
+                            trap.downcast_ref();
+
+                        match maybe_error {
+                            Some(error) => return Ok(error.source.clone()),
+                            None => return Err(self),
+                        }
+                    }
+                    _ => Err(self),
+                }
+            }
+            RuntimeError::WasmiTrap(wasmi_trap) => {
+                // todo!()
+                // match wasmi_error.as_host_error().and_then(|host_error| {
+                //     host_error.
+                // downcast_ref::<wasmi_backend::IndirectHostError<execution::Error>>()
+                // }) {
+                //     Some(indirect) => Ok(indirect.source.clone()),
+                //     None => Err(self),
+                // }
+                // Ok(error)
+                let maybe_error: Option<&wasmi_backend::IndirectHostError<T>> =
+                    wasmi_trap.downcast_ref();
+                match maybe_error {
+                    Some(error) => return Ok(error.source.clone()),
+                    None => return Err(self),
+                }
             }
             RuntimeError::WasmtimeError(wasmtime_trap) => {
                 match wasmtime_trap
@@ -373,38 +409,6 @@ impl Into<String> for RuntimeError {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum RuntimeValue {
-    I32(i32),
-    I64(i64),
-    F32(f32),
-    F64(f64),
-}
-
-impl From<wasmi::RuntimeValue> for RuntimeValue {
-    fn from(runtime_value: wasmi::RuntimeValue) -> Self {
-        match runtime_value {
-            wasmi::RuntimeValue::I32(value) => RuntimeValue::I32(value),
-            wasmi::RuntimeValue::I64(value) => RuntimeValue::I64(value),
-            // NOTE: Why wasmi implements F32/F64 newtypes? Is F64->f64 conversion safe even though
-            // they claim they're compatible with rust's IEEE 754-2008?
-            wasmi::RuntimeValue::F32(value) => RuntimeValue::F32(f32::from(value)),
-            wasmi::RuntimeValue::F64(value) => RuntimeValue::F64(f64::from(value)),
-        }
-    }
-}
-
-impl Into<wasmi::RuntimeValue> for RuntimeValue {
-    fn into(self) -> wasmi::RuntimeValue {
-        match self {
-            RuntimeValue::I32(value) => wasmi::RuntimeValue::I32(value),
-            RuntimeValue::I64(value) => wasmi::RuntimeValue::I64(value),
-            RuntimeValue::F32(value) => wasmi::RuntimeValue::F32(value.into()),
-            RuntimeValue::F64(value) => wasmi::RuntimeValue::F64(value.into()),
-        }
-    }
-}
-
 /// Warmed up instance of a wasm module used for execution.
 pub enum Instance<H>
 where
@@ -413,11 +417,14 @@ where
 {
     Interpreted {
         original_bytes: Bytes,
-        module: ModuleRef,
-        memory: MemoryRef,
+        // module: wasmi::Module,
+        instance: wasmi::Instance,
         // runtime: Runtime<H>,
-        runtime: H,
+        // runtime: H,
         timestamp: Instant,
+        engine: WasmiEngine,
+        store: wasmi::Store<WasmiEnv<H>>,
+        // interpreted_engine: WasmiEngine,
     },
     // NOTE: Instance should contain wasmtime::Instance instead but we need to hold Store that has
     // a lifetime and a generic R
@@ -455,25 +462,6 @@ where
 // }
 // unsafe impl<R> Sync for Instance<R> where R: Sync {}
 
-// impl<H> fmt::Debug for Instance<H>
-// where
-//     H: Send + Sync + 'static + Clone + StateReader<Key, StoredValue>,
-//     H::Error: Into<execution::Error>,
-// {
-//     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-//         match self {
-//             Self::Noop => f.debug_tuple("Noop").finish(),
-//             Self::Interpreted { module, memory, .. } => f
-//                 .debug_tuple("Interpreted")
-//                 .field(module)
-//                 .field(memory)
-//                 .finish(),
-//             Self::Compiled { .. } => f.debug_tuple("Compiled").finish(),
-//             Self::Singlepass { .. } => f.debug_tuple("Singlepass").finish(),
-//         }
-//     }
-// }
-
 // #[derive(Debug, Clone)]
 // pub struct InstanceRef<R>(Rc<Instance>);
 
@@ -488,71 +476,49 @@ pub trait FunctionContext {
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError>;
 }
 
+// trait WasmiConvert<A, B: From<B>>(a: A) -> B {}
+
 impl<H> Instance<H>
 where
     H: WasmHostInterface + Send + Sync + 'static, /* H: Send + Sync + 'static + Clone +
                                                    * StateReader<Key, StoredValue>, */
     H::Error: std::error::Error,
 {
-    pub fn interpreted_memory(&self) -> MemoryRef {
-        match self {
-            Instance::Interpreted { memory, .. } => memory.clone(),
-            Instance::Compiled { .. } => unreachable!("available only from wasmi externals"),
-            Instance::Singlepass { .. } => unreachable!("available only from wasmi externals"),
-        }
-    }
     /// Invokes exported function
-    pub fn invoke_export<Ret>(
+    pub fn invoke_export<Ret, T>(
         self,
         correlation_id: Option<CorrelationId>,
         wasm_engine: &WasmEngine,
         func_name: &str,
-        params: &[RuntimeValue],
+        args: (),
     ) -> Result<Ret, RuntimeError>
     where
-        Ret: wasmer::WasmTypeList + wasmtime::WasmResults,
-        Option<wasmi::RuntimeValue>: FromWasmiResult<Ret>,
+        // Temp: wasmi::WasmResults,
+        // T: wasmi::WasmResults,
+        // wasmi::WasmResults: Into<Ret>,
+        // for<'a> T: wasmi::WasmResults,
+        T: wasmi::WasmResults,
+        Ret: From<T> + wasmer::WasmTypeList + wasmtime::WasmResults,
+        // <Ret as Into<Ret>
+
+        // wasmi::WasmResults: Into<Ret>
     {
         match self {
             Instance::Interpreted {
                 original_bytes,
-                module,
-                memory,
-                mut runtime,
+                instance,
+                // memory,
+                // runtime,
                 timestamp,
+                engine,
+                // interpreted_engine,
+                mut store,
             } => {
-                // let wa
-                let wasmi_args: Vec<wasmi::RuntimeValue> =
-                    params.into_iter().map(|value| (*value).into()).collect();
-                // let wasmi_args = params.to_wasmi_params();
-
-                let mut wasmi_externals = WasmiExternals {
-                    host: &mut runtime,
-                    memory: memory.clone(),
-                };
-
-                let preprocess_dur = timestamp.elapsed();
-                // let exec_start = Instant::now();
-
-                let wasmi_result =
-                    module.invoke_export(func_name, wasmi_args.as_slice(), &mut wasmi_externals);
-
-                let invoke_dur = timestamp.elapsed();
-
-                let wasmi_result = wasmi_result?;
-
-                // wasmi's runtime value into our runtime value
-                // let result = wasmi_result.map(RuntimeValue::from);
-
-                if let Some(correlation_id) = correlation_id.as_ref() {
-                    correlation_id.record_property(Property::WasmVM {
-                        original_bytes: original_bytes.clone(),
-                        preprocess_duration: preprocess_dur,
-                        invoke_duration: invoke_dur,
-                    });
-                }
-
-                Ok(wasmi_result.from_wasmi_result().expect("should convert"))
+                let call_func = instance.get_typed_func::<(), T>(&store, func_name)?;
+                let ret = call_func
+                    .call(&mut store, ())
+                    .map_err(|trap| RuntimeError::WasmiTrap(Arc::new(trap)))?;
+                Ok(ret.into())
             }
             Instance::Compiled {
                 original_bytes,
@@ -574,9 +540,9 @@ where
                 // let stop = start.elapsed();
 
                 let result = ret?;
-
-                // Ok(Some(RuntimeValue::F32(result)))
                 Ok(result)
+
+                // Ok(Some(RuntimeValue::I64(0)))
             }
             Instance::Singlepass {
                 original_bytes,
@@ -609,8 +575,8 @@ where
                         invoke_duration: invoke_dur,
                     });
                 }
+
                 Ok(res)
-                // Ok(Some(RuntimeValue::F32(res)))
             }
         }
     }
@@ -1039,6 +1005,7 @@ fn cache_set(correlation_id: Option<&CorrelationId>, cache_key: CacheKey, artifa
 }
 
 pub enum Engine {
+    // Currently there seems to be issue where wasmi::Engine can't be reused when a wasm is trying to invoke new wasm module,
     Wasmi,
     Wasmer(wasmer::Engine),
     Wasmtime(WasmtimeEngine),
@@ -1172,32 +1139,47 @@ impl WasmEngine {
                 original_bytes,
                 timestamp,
                 module,
+                engine,
             } => {
-                // .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-                // let resolver = create_module_resolver(protocol_version, self.wasm_config())?;
-                // let parity_module = wasmi::Module::from_parity_wasm_module(module)?;
-                // let serialized = serialize_interpreted(module)
-                //     .map_err(|error| RuntimeError::Other(error.to_string()))?;
-                // let parity_module = wasmi::Module::from_buffer(serialized)?;
-                // let instrumented_bytes = serialize
+                let mut wasmi_env = WasmiEnv {
+                    host: runtime,
+                    memory: None,
+                };
 
-                let mut imports = ImportsBuilder::new();
-                let wasmi_resolver = WasmiResolver::new(self.wasm_config().max_memory);
-                imports.push_resolver("env", &wasmi_resolver);
-                let not_started_module = ModuleInstance::new(&module, &imports)?;
-                // .map_err(|e| execution::Error::Interpreter(e.to_string()))?;
-                if not_started_module.has_start() {
-                    return Err(RuntimeError::UnsupportedWasmStart);
-                }
-                let instance = not_started_module.not_started_instance().clone();
-                let memory = wasmi_resolver.memory().unwrap();
+                let mut store = wasmi::Store::new(&engine, wasmi_env);
+
+                let memory_import = module.imports().find_map(|import| {
+                    if (import.module(), import.name()) == ("env", "memory") {
+                        Some(import.ty().clone())
+                    } else {
+                        None
+                    }
+                });
+                let memory_type = match memory_import {
+                    Some(wasmi::ExternType::Memory(memory)) => memory.clone(),
+                    Some(unknown_extern) => panic!("unexpected extern {:?}", unknown_extern),
+                    None => wasmi::MemoryType::new(1, Some(self.wasm_config().max_memory)).unwrap(),
+                };
+                let memory = wasmi::Memory::new(&mut store, memory_type).unwrap();
+                store.data_mut().memory = Some(memory);
+
+                let mut linker = make_wasmi_linker("env", &mut store)
+                    .map_err(|error| RuntimeError::Other(error.to_string()))?;
+                linker
+                    .define("env", "memory", wasmi::Extern::from(memory))
+                    .unwrap();
+                let instance = linker
+                    .instantiate(&mut store, &module)?
+                    .ensure_no_start(&mut store)
+                    .expect("should ensure no start");
 
                 Ok(Instance::Interpreted {
                     original_bytes: original_bytes.clone(),
-                    module: instance,
-                    memory: memory.clone(),
-                    runtime,
+                    instance,
+
                     timestamp,
+                    engine,
+                    store,
                 })
             }
             Module::Compiled {
@@ -1473,10 +1455,11 @@ impl WasmEngine {
 
         let module = match self.execution_mode {
             ExecutionMode::Interpreted => {
-                let module = deserialize_interpreted(&wasm_bytes)?;
+                let engine = WasmiEngine::new();
+                // let module = deserialize_interpreted(&wasm_bytes)?;
 
                 // let module = instrument_module(module, &self.wasm_config)?;
-                let module = wasmi::Module::from_parity_wasm_module(module).map_err(|error| {
+                let module = wasmi::Module::new(&engine, &wasm_bytes[..]).map_err(|error| {
                     PreprocessingError::Deserialize(format!(
                         "from_parity_wasm_module: {}",
                         error.to_string()
@@ -1487,6 +1470,7 @@ impl WasmEngine {
                     original_bytes: wasm_bytes,
                     timestamp: start,
                     module,
+                    engine,
                 }
             }
             ExecutionMode::Compiled { cache_artifacts } => {
@@ -1629,7 +1613,11 @@ impl WasmEngine {
     /// Creates a new instance of the preprocessor.
     pub fn new(wasm_config: WasmConfig) -> Self {
         let engine = match wasm_config.execution_mode {
-            ExecutionMode::Interpreted => Engine::Wasmi,
+            ExecutionMode::Interpreted => {
+                // let config = wasmi::Config::default();
+                // Can't reuse engine due to locking issue inside wasmi
+                Engine::Wasmi
+            }
             ExecutionMode::Compiled { .. } => Engine::Wasmtime(new_compiled_engine(&wasm_config)),
             ExecutionMode::JustInTime => todo!("jit temporarily unavailable"),
             ExecutionMode::Wasmer {
@@ -1750,25 +1738,29 @@ impl WasmEngine {
         }
         match self.execution_mode {
             ExecutionMode::Interpreted => {
+                let engine = WasmiEngine::new();
                 let deserialized_module = deserialize_interpreted(&module_bytes)?;
 
                 let instrument_start = Instant::now();
                 let module = instrument_module(deserialized_module, &self.wasm_config)?;
+                let serialized_module = serialize_interpreted(module)?;
                 println!("instrument {:?}", instrument_start.elapsed());
                 // let serialized = serialize_interpreted(module)
                 //                     .map_err(|error| RuntimeError::Other(error.to_string()))?;
                 let parse_start = Instant::now();
-                let module = wasmi::Module::from_parity_wasm_module(module).map_err(|error| {
-                    PreprocessingError::Deserialize(format!(
-                        "from_parity_wasm_module: {}",
-                        error.to_string()
-                    ))
-                })?;
+                let module =
+                    wasmi::Module::new(&engine, &serialized_module[..]).map_err(|error| {
+                        PreprocessingError::Deserialize(format!(
+                            "from_parity_wasm_module: {}",
+                            error.to_string()
+                        ))
+                    })?;
                 println!("wasmi from_parity_wasm_module {:?}", parse_start.elapsed());
                 Ok(Module::Interpreted {
                     original_bytes: module_bytes.clone(),
                     timestamp: start,
                     module,
+                    engine,
                 })
             }
             ExecutionMode::Compiled { cache_artifacts } => {
