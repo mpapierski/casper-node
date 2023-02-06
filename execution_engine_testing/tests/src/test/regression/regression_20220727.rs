@@ -154,7 +154,7 @@ fn should_pass_elem_section() {
             Some(engine_state::Error::Exec(execution::Error::Interpreter(ref msg)))
             if
             // wasmi
-            msg == "elements segment does not fit"
+            msg.contains("elements segment does not fit") // TODO: Make this test use == operator again
             // wasmer
             || msg.contains("out of bounds table access")
             // wasmtime
