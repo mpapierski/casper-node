@@ -41,7 +41,6 @@ fn try_get_amount(runtime_args: &RuntimeArgs) -> Result<U512, ExecError> {
 }
 
 /// Executor object deals with execution of WASM modules.
-#[derive(Debug)]
 pub struct Executor {
     config: EngineConfig,
     wasm_engine: WasmEngine,
@@ -141,15 +140,16 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                let module = match runtime
-                    .wasm_engine()
-                    .preprocess(Some(correlation_id.clone()), &module_bytes)
-                {
+                let module = match runtime.wasm_engine().preprocess(
+                    Some(correlation_id.clone()),
+                    &bytes::Bytes::from(module_bytes.into_inner()),
+                ) {
                     Ok(module) => module,
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                runtime.module = Some(module.get_wasmi_module());
+                // runtime.module = Some(module.get_wasmi_module());
+                runtime.module = Some(module.get_original_bytes().clone());
 
                 let instance = match self
                     .wasm_engine

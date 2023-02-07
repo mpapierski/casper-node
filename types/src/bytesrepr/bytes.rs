@@ -37,6 +37,11 @@ impl Bytes {
         &self.0
     }
 
+    #[inline]
+    pub fn into_inner(self) -> Vec<u8> {
+        self.0
+    }
+
     /// Extracts a slice containing the entire vector.
     pub fn as_slice(&self) -> &[u8] {
         self

@@ -101,6 +101,7 @@ fn should_execute_wasm_without_imports() {
         .commit();
     builder.expect_success().commit();
 }
+
 #[ignore]
 #[test]
 fn should_run_endless_loop() {

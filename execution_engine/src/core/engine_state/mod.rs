@@ -112,7 +112,6 @@ pub const WASMLESS_TRANSFER_FIXED_GAS_PRICE: u64 = 1;
 /// Takes an engine's configuration and a provider of a state (aka the global state) to operate on.
 /// Methods implemented on this structure are the external API intended to be used by the users such
 /// as the node, test framework, and others.
-#[derive(Debug)]
 pub struct EngineState<S> {
     config: EngineConfig,
     state: S,
@@ -145,7 +144,7 @@ impl EngineState<LmdbGlobalState> {
         EngineState {
             config: self.config,
             state: self.state.create_scratch(),
-            executor: Arc::clone(&self.executor),
+            executor: self.executor.clone(),
         }
     }
 

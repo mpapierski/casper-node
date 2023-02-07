@@ -97,7 +97,7 @@ where
 #[derive(Clone)]
 pub struct Runtime<R: Clone> {
     pub(crate) config: EngineConfig,
-    pub(crate) module: Option<WasmiModule>,
+    pub(crate) module: Option<bytes::Bytes>,
     pub(crate) host_buffer: Arc<Mutex<Option<CLValue>>>,
     pub(crate) context: RuntimeContext<R>,
     pub(crate) stack: Option<RuntimeStack>,
@@ -137,7 +137,7 @@ where
         Self::check_preconditions(&stack);
         Runtime {
             config: self.config,
-            module: Some(module.get_wasmi_module()),
+            module: Some(module.get_original_bytes().clone()),
             host_buffer: Arc::new(Mutex::new(None)),
             context,
             stack: Some(stack),
@@ -217,18 +217,20 @@ where
         &mut self,
         entry_points: &EntryPoints,
     ) -> Result<Vec<u8>, Error> {
-        let mut parity_wasm = self.module.clone().unwrap();
+        // let mut parity_wasm = self.module.clone().unwrap();
+        let original_bytes = self.module.as_ref().unwrap();
+        let module = wasm_engine::deserialize_interpreted(&original_bytes)?;
 
         // let memory = parity_wasm
         //     .memory_section()
         //     .ok_or_else(|| Error::FunctionNotFound(String::from("Missing Import Section")))?;
 
-        let export_section = parity_wasm
+        let export_section = module
             .export_section()
             .ok_or_else(|| Error::FunctionNotFound(String::from("Missing Export Section")))?;
 
         let entry_point_names: Vec<&str> = entry_points.keys().map(|s| s.as_str()).collect();
-        let imports = parity_wasm.import_section();
+        // let imports = module.import_section();
 
         let maybe_missing_name: Option<String> = entry_point_names
             .iter()
@@ -243,25 +245,27 @@ where
         if let Some(missing_name) = maybe_missing_name {
             Err(Error::FunctionNotFound(missing_name))
         } else {
-            let mut module = self.module.clone().unwrap();
+            // let mut module = self.module.clone().unwrap();
+            let mut module = wasm_engine::instrument_module(module, &self.config.wasm_config())?;
+
             pwasm_utils::optimize(&mut module, entry_point_names)?;
 
-            match module.import_section() {
-                Some(imports) => {
-                    let memories = imports
-                        .entries()
-                        .iter()
-                        .filter_map(|entry| match entry.external() {
-                            parity_wasm::elements::External::Function(_) => None,
-                            parity_wasm::elements::External::Table(_) => None,
-                            parity_wasm::elements::External::Memory(mem) => Some(mem),
-                            parity_wasm::elements::External::Global(_) => None,
-                        })
-                        .collect::<Vec<_>>();
-                    assert!(!memories.is_empty());
-                }
-                None => todo!(),
-            }
+            // match module.import_section() {
+            //     Some(imports) => {
+            //         let memories = imports
+            //             .entries()
+            //             .iter()
+            //             .filter_map(|entry| match entry.external() {
+            //                 parity_wasm::elements::External::Function(_) => None,
+            //                 parity_wasm::elements::External::Table(_) => None,
+            //                 parity_wasm::elements::External::Memory(mem) => Some(mem),
+            //                 parity_wasm::elements::External::Global(_) => None,
+            //             })
+            //             .collect::<Vec<_>>();
+            //         assert!(!memories.is_empty());
+            //     }
+            //     None => todo!(),
+            // }
             // debug_assert!(module.import_section().unwrap_or_default().map(|import| import.)
             parity_wasm::serialize(module).map_err(Error::ParityWasm)
         }
@@ -1146,7 +1150,7 @@ where
 
         let result = instance.invoke_export(
             Some(self.context.correlation_id().clone()),
-            &self.wasm_engine,
+            &mut self.wasm_engine,
             entry_point.name(),
             Vec::new(),
         );

@@ -51,7 +51,7 @@ impl<'a> FunctionContext for WasmtimeAdapter<'a> {
     }
 }
 
-pub(crate) struct WasmtimeEnv<H>
+pub struct WasmtimeEnv<H>
 where
     H: WasmHostInterface,
 {
