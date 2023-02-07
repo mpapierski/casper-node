@@ -141,28 +141,26 @@ impl Executor {
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
-                let module = match runtime.wasm_engine().preprocess(
-                    correlation_id.clone(),
-                    self.wasm_engine().wasm_config().clone(),
-                    &module_bytes,
-                ) {
+                let module = match runtime
+                    .wasm_engine()
+                    .preprocess(Some(correlation_id.clone()), &module_bytes)
+                {
                     Ok(module) => module,
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
                 runtime.module = Some(module.get_wasmi_module());
 
-                let instance = match self.wasm_engine.instance_and_memory(
-                    module,
-                    protocol_version,
-                    runtime.clone(),
-                ) {
+                let instance = match self
+                    .wasm_engine
+                    .instance_and_memory(module, runtime.clone())
+                {
                     Ok(instance) => instance,
                     Err(error) => return runtime.into_failure(error.into()),
                 };
 
                 let result = instance.invoke_export(
-                    correlation_id,
+                    Some(correlation_id),
                     &self.wasm_engine,
                     DEFAULT_ENTRY_POINT_NAME,
                     Vec::new(),
@@ -172,7 +170,7 @@ impl Executor {
                     Ok(_) => {
                         return runtime.into_success();
                     }
-                    Err(error) => match error.into_execution_error() {
+                    Err(error) => match error.into_host_error() {
                         Ok(host_error) => return runtime.into_failure(host_error),
                         Err(error) => {
                             return runtime.into_failure(Error::Interpreter(error.to_string()))

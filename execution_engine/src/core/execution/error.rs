@@ -196,7 +196,7 @@ impl Error {
 
 impl From<RuntimeError> for Error {
     fn from(runtime_error: RuntimeError) -> Self {
-        match runtime_error.into_execution_error() {
+        match runtime_error.into_host_error() {
             Ok(exec_error) => exec_error,
             Err(runtime_error) => {
                 // TODO: We should translate all the possible reasons a Wasm can fail at runtime

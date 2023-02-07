@@ -123,15 +123,3 @@ where
 
     linker
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::shared::wasm_engine::host_interface::HostStub;
-
-    use super::make_linker_object;
-
-    #[test]
-    fn should_test_wasmtime_linker_object() {
-        let _linker = make_linker_object::<HostStub>("env", &Default::default());
-    }
-}

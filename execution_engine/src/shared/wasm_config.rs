@@ -31,11 +31,11 @@ pub struct WasmConfig {
     pub execution_mode: ExecutionMode,
 
     /// Wasm opcode costs table.
-    opcode_costs: OpcodeCosts,
+    pub opcode_costs: OpcodeCosts,
     /// Storage costs.
-    storage_costs: StorageCosts,
+    pub storage_costs: StorageCosts,
     /// Host function costs table.
-    host_function_costs: HostFunctionCosts,
+    pub host_function_costs: HostFunctionCosts,
 }
 
 impl WasmConfig {

@@ -219,7 +219,7 @@ fn commit_execution_effects<S>(
     execution_results: ExecutionResults,
 ) -> Result<(Digest, ExecutionResult), BlockExecutionError>
 where
-    S: StateProvider + CommitProvider,
+    S: StateProvider + CommitProvider + Send + Sync + 'static,
     S::Error: Into<execution::Error>,
 {
     let ee_execution_result = execution_results
@@ -265,7 +265,7 @@ fn commit_transforms<S>(
     effects: AdditiveMap<Key, Transform>,
 ) -> Result<Digest, engine_state::Error>
 where
-    S: StateProvider + CommitProvider,
+    S: StateProvider + CommitProvider + Send + Sync + 'static,
     S::Error: Into<execution::Error>,
 {
     trace!(?state_root_hash, ?effects, "commit");
@@ -289,7 +289,7 @@ pub fn execute_only<S>(
     deploy: DeployItem,
 ) -> Result<Option<ExecutionResult>, engine_state::Error>
 where
-    S: StateProvider + CommitProvider,
+    S: StateProvider + CommitProvider + Send + Sync + 'static,
     S::Error: Into<execution::Error>,
 {
     let SpeculativeExecutionState {
@@ -330,7 +330,7 @@ fn execute<S>(
     execute_request: ExecuteRequest,
 ) -> Result<ExecutionResults, engine_state::Error>
 where
-    S: StateProvider + CommitProvider,
+    S: StateProvider + CommitProvider + Send + Sync + 'static,
     S::Error: Into<execution::Error>,
 {
     trace!(?execute_request, "execute");
@@ -354,7 +354,7 @@ fn commit_step<S>(
     next_era_id: EraId,
 ) -> Result<StepSuccess, StepError>
 where
-    S: StateProvider + CommitProvider,
+    S: StateProvider + CommitProvider + Send + Sync + 'static,
     S::Error: Into<execution::Error>,
 {
     // Extract the rewards and the inactive validators if this is a switch block

@@ -1123,8 +1123,10 @@ where
                     original_bytes: wasm_bytes.clone(),
                 });
 
-            self.wasm_engine
-                .module_from_bytes(self.context.correlation_id().clone(), wasm_bytes.clone())?
+            self.wasm_engine.module_from_bytes(
+                Some(self.context.correlation_id().clone()),
+                wasm_bytes.clone(),
+            )?
         };
 
         let context = self.context.new_from_self(
@@ -1138,12 +1140,12 @@ where
 
         let mut runtime = Runtime::new_invocation_runtime(self, context, &module, stack);
 
-        let instance =
-            self.wasm_engine
-                .instance_and_memory(module, protocol_version, runtime.clone())?;
+        let instance = self
+            .wasm_engine
+            .instance_and_memory(module, runtime.clone())?;
 
         let result = instance.invoke_export(
-            self.context.correlation_id().clone(),
+            Some(self.context.correlation_id().clone()),
             &self.wasm_engine,
             entry_point.name(),
             Vec::new(),
@@ -1180,7 +1182,7 @@ where
             }
         };
 
-        match error.into_execution_error() {
+        match error.into_host_error() {
             Ok(host_error) => {
                 // If the "error" was in fact a trap caused by calling `ret` then this is normal
                 // operation and we should return the value captured in the Runtime result field.

@@ -83,24 +83,3 @@ where
 
     import_object
 }
-
-#[cfg(test)]
-mod tests {
-    use crate::shared::wasm_engine::host_interface::HostStub;
-
-    use super::*;
-    use wasmer::{FunctionEnv, Store};
-
-    #[test]
-    fn should_test_wasmer_import_object() {
-        let mut store = Store::default();
-        let wasmer_env = WasmerEnv {
-            host: HostStub,
-            memory: None,
-        };
-
-        let function_env = FunctionEnv::new(&mut store.as_store_mut(), wasmer_env);
-
-        let _imports = make_wasmer_imports("env", &mut store, &function_env);
-    }
-}

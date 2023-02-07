@@ -403,7 +403,10 @@ pub struct EstimatorWeights {
 // We use a variety of weird names in these tests.
 #[allow(non_camel_case_types)]
 mod tests {
-    use std::{net::SocketAddr, pin::Pin};
+    use std::{
+        net::{IpAddr, Ipv4Addr, SocketAddr},
+        pin::Pin,
+    };
 
     use bytes::BytesMut;
     use casper_types::ProtocolVersion;
@@ -528,7 +531,7 @@ mod tests {
     fn v1_0_0_handshake_is_as_expected() {
         let handshake = V1_0_0_Message::Handshake {
             network_name: "serialization-test".to_owned(),
-            public_address: ([12, 34, 56, 78], 12346).into(),
+            public_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346),
         };
 
         let serialized = serialize_message::<V1_0_0_Message>(&handshake);
@@ -544,7 +547,10 @@ mod tests {
                 public_address,
             } => {
                 assert_eq!(network_name, "serialization-test");
-                assert_eq!(public_address, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_address,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
             }
             other => {
                 panic!("did not expect {:?} as the deserialized product", other);
@@ -557,7 +563,7 @@ mod tests {
         let mut rng = crate::new_rng();
         let modern_handshake = Message::<protocol::Message>::Handshake {
             network_name: "example-handshake".to_string(),
-            public_addr: ([12, 34, 56, 78], 12346).into(),
+            public_addr: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346),
             protocol_version: ProtocolVersion::from_parts(5, 6, 7),
             consensus_certificate: Some(ConsensusCertificate::random(&mut rng)),
             is_syncing: false,
@@ -572,7 +578,10 @@ mod tests {
                 public_address,
             } => {
                 assert_eq!(network_name, "example-handshake");
-                assert_eq!(public_address, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_address,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
             }
             V1_0_0_Message::Payload(_) => {
                 panic!("did not expect legacy handshake to deserialize to payload")
@@ -584,7 +593,7 @@ mod tests {
     fn current_handshake_decodes_from_v1_0_0() {
         let legacy_handshake = V1_0_0_Message::Handshake {
             network_name: "example-handshake".to_string(),
-            public_address: ([12, 34, 56, 78], 12346).into(),
+            public_address: SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346),
         };
 
         let modern_handshake: Message<protocol::Message> = roundtrip_message(&legacy_handshake);
@@ -599,7 +608,10 @@ mod tests {
                 chainspec_hash,
             } => {
                 assert_eq!(network_name, "example-handshake");
-                assert_eq!(public_addr, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_addr,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
                 assert_eq!(protocol_version, ProtocolVersion::V1_0_0);
                 assert!(consensus_certificate.is_none());
                 assert!(!is_syncing);
@@ -626,7 +638,10 @@ mod tests {
             } => {
                 assert!(!is_syncing);
                 assert_eq!(network_name, "serialization-test");
-                assert_eq!(public_addr, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_addr,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
                 assert_eq!(protocol_version, ProtocolVersion::V1_0_0);
                 assert!(consensus_certificate.is_none());
                 assert!(!is_syncing);
@@ -652,7 +667,10 @@ mod tests {
                 chainspec_hash,
             } => {
                 assert_eq!(network_name, "example-handshake");
-                assert_eq!(public_addr, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_addr,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
                 assert_eq!(protocol_version, ProtocolVersion::from_parts(1, 4, 2));
                 assert!(!is_syncing);
                 let ConsensusCertificate {
@@ -699,7 +717,10 @@ mod tests {
             } => {
                 assert!(!is_syncing);
                 assert_eq!(network_name, "example-handshake");
-                assert_eq!(public_addr, ([12, 34, 56, 78], 12346).into());
+                assert_eq!(
+                    public_addr,
+                    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(12, 34, 56, 78)), 12346)
+                );
                 assert_eq!(protocol_version, ProtocolVersion::from_parts(1, 4, 3));
                 let ConsensusCertificate {
                     public_key,
