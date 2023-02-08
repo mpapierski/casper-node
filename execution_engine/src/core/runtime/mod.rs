@@ -271,49 +271,6 @@ where
         }
     }
 
-    /// Load the uref known by the given name into the Wasm memory
-    pub(crate) fn load_key(
-        &mut self,
-        context: &mut impl FunctionContext,
-        name_ptr: u32,
-        name_size: u32,
-        output_ptr: u32,
-        output_size: usize,
-        bytes_written_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let name: String = t_from_memory(context, name_ptr, name_size)?;
-
-        // Get a key and serialize it
-        let key = match self.context.named_keys_get(&name) {
-            Some(key) => key,
-            None => return Ok(Err(ApiError::MissingKey)),
-        };
-
-        let key_bytes = match key.to_bytes() {
-            Ok(bytes) => bytes,
-            Err(error) => return Ok(Err(error.into())),
-        };
-
-        // `output_size` has to be greater or equal to the actual length of serialized Key bytes
-        if output_size < key_bytes.len() {
-            return Ok(Err(ApiError::BufferTooSmall));
-        }
-
-        // Set serialized Key bytes into the output buffer
-        context
-            .memory_write(output_ptr, &key_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        // For all practical purposes following cast is assumed to be safe
-        let bytes_size: u32 = key_bytes.len() as u32;
-        let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
-        context
-            .memory_write(bytes_written_ptr, &size_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
-    }
-
     /// Gets the immediate caller of the current execution
     fn get_immediate_caller(&self) -> Option<&CallStackElement> {
         self.stack.as_ref().and_then(|stack| stack.previous_frame())
@@ -1223,46 +1180,6 @@ where
         }
     }
 
-    fn call_contract_host_buffer(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_hash: ContractHash,
-        entry_point_name: &str,
-        args_bytes: Vec<u8>,
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        // Exit early if the host buffer is already occupied
-        if let Err(err) = self.check_host_buffer() {
-            return Ok(Err(err));
-        }
-        let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
-        let result = self.call_contract(contract_hash, entry_point_name, args)?;
-        self.manage_call_contract_host_buffer(context, result_size_ptr, result)
-    }
-
-    pub(crate) fn call_versioned_contract_host_buffer(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_package_hash: ContractPackageHash,
-        contract_version: Option<ContractVersion>,
-        entry_point_name: String,
-        args_bytes: Vec<u8>,
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        // Exit early if the host buffer is already occupied
-        if let Err(err) = self.check_host_buffer() {
-            return Ok(Err(err));
-        }
-        let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
-        let result = self.call_versioned_contract(
-            contract_package_hash,
-            contract_version,
-            entry_point_name,
-            args,
-        )?;
-        self.manage_call_contract_host_buffer(context, result_size_ptr, result)
-    }
-
     fn check_host_buffer(&mut self) -> Result<(), ApiError> {
         if !self.can_write_to_host_buffer() {
             Err(ApiError::HostBufferFull)
@@ -1271,7 +1188,7 @@ where
         }
     }
 
-    fn manage_call_contract_host_buffer(
+    fn wasm_manage_call_contract_host_buffer(
         &mut self,
         mut context: impl FunctionContext,
         result_size_ptr: u32,
@@ -1292,52 +1209,6 @@ where
         let result_size_bytes = result_size.to_le_bytes(); // Wasm is little-endian
         context
             .memory_write(result_size_ptr, &result_size_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        Ok(Ok(()))
-    }
-
-    pub(crate) fn load_named_keys(
-        &mut self,
-        mut context: impl FunctionContext,
-        total_keys_ptr: u32,
-        result_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-
-        let total_keys: u32 = match self.context.named_keys().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::OutOfMemory)),
-        };
-
-        let total_keys_bytes = total_keys.to_le_bytes();
-        context
-            .memory_write(total_keys_ptr, &total_keys_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        if total_keys == 0 {
-            // No need to do anything else, we leave host buffer empty.
-            return Ok(Ok(()));
-        }
-
-        let named_keys =
-            CLValue::from_t(self.context.named_keys().clone()).map_err(Error::CLValue)?;
-
-        let length: u32 = match named_keys.inner_bytes().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::BufferTooSmall)),
-        };
-
-        if let Err(error) = self.write_host_buffer(named_keys) {
-            return Ok(Err(error));
-        }
-
-        let length_bytes = length.to_le_bytes();
-        context
-            .memory_write(result_size_ptr, &length_bytes)
             .map_err(|e| Error::Interpreter(e.into()))?;
 
         Ok(Ok(()))
@@ -1370,178 +1241,6 @@ where
         Ok((addr, access_key.addr()))
     }
 
-    fn create_contract_user_group(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_package_hash: ContractPackageHash,
-        label: String,
-        num_new_urefs: u32,
-        mut existing_urefs: BTreeSet<URef>,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let mut contract_package: ContractPackage = self
-            .context
-            .get_validated_contract_package(contract_package_hash)?;
-
-        let groups = contract_package.groups_mut();
-        let new_group = Group::new(label);
-
-        // Ensure group does not already exist
-        if groups.get(&new_group).is_some() {
-            return Ok(Err(contracts::Error::GroupAlreadyExists.into()));
-        }
-
-        // Ensure there are not too many groups
-        if groups.len() >= (contracts::MAX_GROUPS as usize) {
-            return Ok(Err(contracts::Error::MaxGroupsExceeded.into()));
-        }
-
-        // Ensure there are not too many urefs
-        let total_urefs: usize = groups.values().map(|urefs| urefs.len()).sum::<usize>()
-            + (num_new_urefs as usize)
-            + existing_urefs.len();
-        if total_urefs > contracts::MAX_TOTAL_UREFS {
-            let err = contracts::Error::MaxTotalURefsExceeded;
-            return Ok(Err(ApiError::ContractHeader(err as u8)));
-        }
-
-        // Proceed with creating user group
-        let mut new_urefs = Vec::with_capacity(num_new_urefs as usize);
-        for _ in 0..num_new_urefs {
-            let u = self.context.new_unit_uref()?;
-            new_urefs.push(u);
-        }
-
-        for u in new_urefs.iter().cloned() {
-            existing_urefs.insert(u);
-        }
-        groups.insert(new_group, existing_urefs);
-
-        // check we can write to the host buffer
-        if let Err(err) = self.check_host_buffer() {
-            return Ok(Err(err));
-        }
-        // create CLValue for return value
-        let new_urefs_value = CLValue::from_t(new_urefs)?;
-        let value_size = new_urefs_value.inner_bytes().len();
-        // write return value to buffer
-        if let Err(err) = self.write_host_buffer(new_urefs_value) {
-            return Ok(Err(err));
-        }
-        // Write return value size to output location
-        let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        context
-            .memory_write(output_size_ptr, &output_size_bytes)
-            .map_err(|e| Error::Interpreter(e.into()))?;
-
-        // Write updated package to the global state
-        self.context
-            .metered_write_gs_unsafe(contract_package_hash, contract_package)?;
-
-        Ok(Ok(()))
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn add_contract_version(
-        &mut self,
-        mut context: impl FunctionContext,
-        contract_package_hash: ContractPackageHash,
-        entry_points: EntryPoints,
-        mut named_keys: NamedKeys,
-        output_ptr: u32,
-        output_size: usize,
-        bytes_written_ptr: u32,
-        version_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        self.context
-            .validate_key(&Key::from(contract_package_hash))?;
-
-        let mut contract_package: ContractPackage = self
-            .context
-            .get_validated_contract_package(contract_package_hash)?;
-
-        let version = contract_package.current_contract_version();
-
-        // Return an error if the contract is locked and has some version associated with it.
-        if contract_package.is_locked() && version.is_some() {
-            return Err(Error::LockedContract(contract_package_hash));
-        }
-
-        let contract_wasm_hash = self.context.new_hash_address()?;
-        let contract_wasm = {
-            let module_bytes = self.get_module_from_entry_points(&entry_points)?;
-            ContractWasm::new(module_bytes)
-        };
-
-        let contract_hash = self.context.new_hash_address()?;
-
-        let protocol_version = self.context.protocol_version();
-        let major = protocol_version.value().major;
-
-        // TODO: EE-1032 - Implement different ways of carrying on existing named keys
-        if let Some(previous_contract_hash) = contract_package.current_contract_hash() {
-            let previous_contract: Contract =
-                self.context.read_gs_typed(&previous_contract_hash.into())?;
-
-            let mut previous_named_keys = previous_contract.take_named_keys();
-            named_keys.append(&mut previous_named_keys);
-        }
-
-        let contract = Contract::new(
-            contract_package_hash,
-            contract_wasm_hash.into(),
-            named_keys,
-            entry_points,
-            protocol_version,
-        );
-
-        let insert_contract_result =
-            contract_package.insert_contract_version(major, contract_hash.into());
-
-        self.context
-            .metered_write_gs_unsafe(Key::Hash(contract_wasm_hash), contract_wasm)?;
-        self.context
-            .metered_write_gs_unsafe(Key::Hash(contract_hash), contract)?;
-        self.context
-            .metered_write_gs_unsafe(contract_package_hash, contract_package)?;
-
-        // return contract key to caller
-        {
-            let key_bytes = match contract_hash.to_bytes() {
-                Ok(bytes) => bytes,
-                Err(error) => return Ok(Err(error.into())),
-            };
-
-            // `output_size` must be >= actual length of serialized Key bytes
-            if output_size < key_bytes.len() {
-                return Ok(Err(ApiError::BufferTooSmall));
-            }
-
-            // Set serialized Key bytes into the output buffer
-            if let Err(error) = context.memory_write(output_ptr, &key_bytes) {
-                return Err(Error::Interpreter(error.into()));
-            }
-
-            // SAFETY: For all practical purposes following conversion is assumed to be safe
-            let bytes_size: u32 = key_bytes
-                .len()
-                .try_into()
-                .expect("Serialized value should fit within the limit");
-            let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
-            if let Err(error) = context.memory_write(bytes_written_ptr, &size_bytes) {
-                return Err(Error::Interpreter(error.into()));
-            }
-
-            let version_value: u32 = insert_contract_result.contract_version();
-            let version_bytes = version_value.to_le_bytes();
-            if let Err(error) = context.memory_write(version_ptr, &version_bytes) {
-                return Err(Error::Interpreter(error.into()));
-            }
-        }
-
-        Ok(Ok(()))
-    }
-
     fn disable_contract_version(
         &mut self,
         contract_package_hash: ContractPackageHash,
@@ -1567,19 +1266,6 @@ where
             .metered_write_gs_unsafe(contract_package_key, contract_package)?;
 
         Ok(Ok(()))
-    }
-
-    /// Writes function address (`hash_bytes`) into the Wasm memory (at
-    /// `dest_ptr` pointer).
-    pub(crate) fn function_address(
-        &mut self,
-        mut context: &mut impl FunctionContext,
-        hash_bytes: [u8; 32],
-        dest_ptr: u32,
-    ) -> Result<(), Error> {
-        context
-            .memory_write(dest_ptr, &hash_bytes)
-            .map_err(|e| Error::Interpreter(e.into()).into())
     }
 
     /// Records a transfer.
@@ -1630,50 +1316,6 @@ where
         Ok(())
     }
 
-    /// Reads value from the GS living under key specified by `key_ptr` and
-    /// `key_size`. Wasm and host communicate through memory that Wasm
-    /// module exports. If contract wants to pass data to the host, it has
-    /// to tell it [the host] where this data lives in the exported memory
-    /// (pass its pointer and length).
-    pub(crate) fn read(
-        &mut self,
-        context: &mut impl FunctionContext,
-        key_ptr: u32,
-        key_size: u32,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-
-        let key: Key = {
-            // self.memory.get ->
-            let key_bytes = context.memory_read(key_ptr, key_size as usize)?;
-            bytesrepr::deserialize(key_bytes)?
-        };
-        let cl_value = match self.context.read_gs(&key)? {
-            Some(stored_value) => CLValue::try_from(stored_value).map_err(Error::TypeMismatch)?,
-            None => return Ok(Err(ApiError::ValueNotFound)),
-        };
-
-        let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
-            Ok(value) => value,
-            Err(_) => return Ok(Err(ApiError::BufferTooSmall)),
-        };
-
-        if let Err(error) = self.write_host_buffer(cl_value) {
-            return Ok(Err(error));
-        }
-
-        let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = context.memory_write(output_size_ptr, &value_bytes) {
-            return Err(Error::Interpreter(error.into()).into());
-        }
-
-        Ok(Ok(()))
-    }
-
     pub(crate) fn add_associated_key(
         &mut self,
         context: &mut impl FunctionContext,
@@ -1699,35 +1341,6 @@ where
             // are greater than the first one, so it's safe to assume `0` is success,
             // and any error is greater than 0.
             Err(Error::AddKeyFailure(e)) => Ok(e as i32),
-            // Any other variant just pass as `Trap`
-            Err(e) => Err(e.into()),
-        }
-    }
-
-    pub(crate) fn update_associated_key(
-        &mut self,
-        context: &mut impl FunctionContext,
-        account_hash_ptr: u32,
-        account_hash_size: usize,
-        weight_value: u8,
-    ) -> Result<i32, Error> {
-        let account_hash = {
-            // Account hash as serialized bytes
-            let source_serialized = context.memory_read(account_hash_ptr, account_hash_size)?;
-            // Account hash deserialized
-            let source: AccountHash =
-                bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
-            source
-        };
-        let weight = Weight::new(weight_value);
-
-        match self.context.update_associated_key(account_hash, weight) {
-            Ok(_) => Ok(0),
-            // This relies on the fact that `UpdateKeyFailure` is represented as
-            // i32 and first variant start with number `1`, so all other variants
-            // are greater than the first one, so it's safe to assume `0` is success,
-            // and any error is greater than 0.
-            Err(Error::UpdateKeyFailure(e)) => Ok(e as i32),
             // Any other variant just pass as `Trap`
             Err(e) => Err(e.into()),
         }
@@ -2014,71 +1627,6 @@ where
         }
     }
 
-    pub(crate) fn get_balance_host_buffer(
-        &mut self,
-        context: &mut impl FunctionContext,
-        purse_ptr: u32,
-        purse_size: usize,
-        output_size_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        if !self.can_write_to_host_buffer() {
-            // Exit early if the host buffer is already occupied
-            return Ok(Err(ApiError::HostBufferFull));
-        }
-
-        let purse: URef = {
-            let bytes = context.memory_read(purse_ptr, purse_size)?;
-            match bytesrepr::deserialize(bytes) {
-                Ok(purse) => purse,
-                Err(error) => return Ok(Err(error.into())),
-            }
-        };
-
-        let balance = match self.get_balance(purse)? {
-            Some(balance) => balance,
-            None => return Ok(Err(ApiError::InvalidPurse)),
-        };
-
-        let balance_cl_value = match CLValue::from_t(balance) {
-            Ok(cl_value) => cl_value,
-            Err(error) => return Ok(Err(error.into())),
-        };
-
-        let balance_size = balance_cl_value.inner_bytes().len() as i32;
-        if let Err(error) = self.write_host_buffer(balance_cl_value) {
-            return Ok(Err(error));
-        }
-
-        let balance_size_bytes = balance_size.to_le_bytes(); // Wasm is little-endian
-        if let Err(error) = context.memory_write(output_size_ptr, &balance_size_bytes) {
-            return Err(Error::Interpreter(error.into()));
-        }
-
-        Ok(Ok(()))
-    }
-
-    pub(crate) fn get_system_contract(
-        &mut self,
-        context: &mut impl FunctionContext,
-        system_contract_index: u32,
-        dest_ptr: u32,
-        _dest_size: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let contract_hash: ContractHash = match SystemContractType::try_from(system_contract_index)
-        {
-            Ok(SystemContractType::Mint) => self.get_mint_contract()?,
-            Ok(SystemContractType::HandlePayment) => self.get_handle_payment_contract()?,
-            Ok(SystemContractType::StandardPayment) => self.get_standard_payment_contract()?,
-            Ok(SystemContractType::Auction) => self.get_auction_contract()?,
-            Err(error) => return Ok(Err(error)),
-        };
-
-        match context.memory_write(dest_ptr, contract_hash.as_ref()) {
-            Ok(_) => Ok(Ok(())),
-            Err(error) => Err(Error::Interpreter(error.into()).into()),
-        }
-    }
-
     /// If host_buffer set, clears the host_buffer and returns value, else None
     pub fn take_host_buffer(&mut self) -> Option<CLValue> {
         self.host_buffer.lock().unwrap().take()
@@ -2099,46 +1647,6 @@ where
             None => *host_buffer = Some(data),
         }
         Ok(())
-    }
-
-    pub(crate) fn read_host_buffer(
-        &mut self,
-        context: &mut impl FunctionContext,
-        dest_ptr: u32,
-        dest_size: usize,
-        bytes_written_ptr: u32,
-    ) -> Result<Result<(), ApiError>, Error> {
-        let (_cl_type, serialized_value) = match self.take_host_buffer() {
-            None => return Ok(Err(ApiError::HostBufferEmpty)),
-            Some(cl_value) => cl_value.destructure(),
-        };
-
-        if serialized_value.len() > u32::max_value() as usize {
-            return Ok(Err(ApiError::OutOfMemory));
-        }
-        if serialized_value.len() > dest_size {
-            return Ok(Err(ApiError::BufferTooSmall));
-        }
-
-        // Slice data, so if `dest_size` is larger than host_buffer size, it will take host_buffer
-        // as whole.
-        let sliced_buf = &serialized_value[..cmp::min(dest_size, serialized_value.len())];
-        if let Err(error) = context.memory_write(dest_ptr, sliced_buf) {
-            return Err(Error::Interpreter(error.into()));
-        }
-
-        // Never panics because we check that `serialized_value.len()` fits in `u32`.
-        let bytes_written: u32 = sliced_buf
-            .len()
-            .try_into()
-            .expect("Size of buffer should fit within limit");
-        let bytes_written_data = bytes_written.to_le_bytes();
-
-        if let Err(error) = context.memory_write(bytes_written_ptr, &bytes_written_data) {
-            return Err(Error::Interpreter(error.into()));
-        }
-
-        Ok(Ok(()))
     }
 
     /// Enforce group access restrictions (if any) on attempts to call an `EntryPoint`.
@@ -2278,6 +1786,11 @@ where
         Ok(())
     }
 
+    /// Reads value from the GS living under key specified by `key_ptr` and
+    /// `key_size`. Wasm and host communicate through memory that Wasm
+    /// module exports. If contract wants to pass data to the host, it has
+    /// to tell it [the host] where this data lives in the exported memory
+    /// (pass its pointer and length).
     fn casper_read_value(
         &mut self,
         mut context: impl FunctionContext,
@@ -2290,7 +1803,39 @@ where
             &host_function_costs.read_value,
             [key_ptr, key_size, output_size_ptr],
         )?;
-        let ret = self.read(&mut context, key_ptr, key_size, output_size_ptr)?;
+        let ret = 'a: {
+            // let context: &mut impl FunctionContext = &mut context;
+            if !self.can_write_to_host_buffer() {
+                // Exit early if the host buffer is already occupied
+                break 'a Err(ApiError::HostBufferFull);
+            }
+
+            let key: Key = {
+                // self.memory.get ->
+                let key_bytes = context.memory_read(key_ptr, key_size as usize)?;
+                bytesrepr::deserialize(key_bytes)?
+            };
+            let cl_value = match self.context.read_gs(&key)? {
+                Some(stored_value) => {
+                    CLValue::try_from(stored_value).map_err(Error::TypeMismatch)?
+                }
+                None => break 'a Err(ApiError::ValueNotFound),
+            };
+
+            let value_size: u32 = match cl_value.inner_bytes().len().try_into() {
+                Ok(value) => value,
+                Err(_) => break 'a Err(ApiError::BufferTooSmall),
+            };
+
+            if let Err(error) = self.write_host_buffer(cl_value) {
+                break 'a Err(error);
+            }
+
+            let value_bytes = value_size.to_le_bytes(); // Wasm is little-endian
+            context.memory_write(output_size_ptr, &value_bytes)?;
+
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -2471,12 +2016,29 @@ where
             Ok(weight) => weight,
             Err(_) => return Ok(api_error::i32_from(Err(ApiError::InvalidArgument))),
         };
-        let value = self.update_associated_key(
-            &mut context,
-            account_hash_ptr,
-            account_hash_size as usize,
-            weight_u8,
-        )?;
+        let value = 'a: {
+            let account_hash_size = account_hash_size as usize;
+            let account_hash = {
+                // Account hash as serialized bytes
+                let source_serialized = context.memory_read(account_hash_ptr, account_hash_size)?;
+                // Account hash deserialized
+                let source: AccountHash =
+                    bytesrepr::deserialize(source_serialized).map_err(Error::BytesRepr)?;
+                source
+            };
+            let weight = Weight::new(weight_u8);
+
+            match self.context.update_associated_key(account_hash, weight) {
+                Ok(_) => break 'a 0,
+                // This relies on the fact that `UpdateKeyFailure` is represented as
+                // i32 and first variant start with number `1`, so all other variants
+                // are greater than the first one, so it's safe to assume `0` is success,
+                // and any error is greater than 0.
+                Err(Error::UpdateKeyFailure(e)) => break 'a e as i32,
+                // Any other variant just pass as `Trap`
+                Err(e) => return Err(e.into()),
+            }
+        };
         Ok(value)
     }
 
@@ -2757,6 +2319,7 @@ where
         }
     }
 
+    /// Load the uref known by the given name into the Wasm memory
     fn casper_get_key(
         &mut self,
         mut context: impl FunctionContext,
@@ -2771,14 +2334,42 @@ where
             &host_function_costs.get_key,
             [name_ptr, name_size, output_ptr, output_size, bytes_written],
         )?;
-        let ret = self.load_key(
-            &mut context,
-            name_ptr,
-            name_size,
-            output_ptr,
-            output_size as usize,
-            bytes_written,
-        )?;
+        let ret = 'a: {
+            //
+            // let context: &mut impl FunctionContext = &mut context;
+            let output_size = output_size as usize;
+            let name: String = t_from_memory(&context, name_ptr, name_size)?;
+
+            // Get a key and serialize it
+            let key = match self.context.named_keys_get(&name) {
+                Some(key) => key,
+                None => break 'a Err(ApiError::MissingKey),
+            };
+
+            let key_bytes = match key.to_bytes() {
+                Ok(bytes) => bytes,
+                Err(error) => break 'a Err(error.into()),
+            };
+
+            // `output_size` has to be greater or equal to the actual length of serialized Key bytes
+            if output_size < key_bytes.len() {
+                break 'a Err(ApiError::BufferTooSmall);
+            }
+
+            // Set serialized Key bytes into the output buffer
+            context
+                .memory_write(output_ptr, &key_bytes)
+                .map_err(|e| Error::Interpreter(e.into()))?;
+
+            // For all practical purposes following cast is assumed to be safe
+            let bytes_size: u32 = key_bytes.len() as u32;
+            let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
+            context
+                .memory_write(bytes_written, &size_bytes)
+                .map_err(|e| Error::Interpreter(e.into()))?;
+
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -2965,8 +2556,43 @@ where
             &host_function_costs.get_balance,
             [ptr, ptr_size, output_size_ptr],
         )?;
-        let ret =
-            self.get_balance_host_buffer(&mut context, ptr, ptr_size as usize, output_size_ptr)?;
+        let ret = 'a: {
+            let purse_size = ptr_size as usize;
+            if !self.can_write_to_host_buffer() {
+                // Exit early if the host buffer is already occupied
+                break 'a Err(ApiError::HostBufferFull);
+            }
+
+            let purse: URef = {
+                let bytes = context.memory_read(ptr, purse_size)?;
+                match bytesrepr::deserialize(bytes) {
+                    Ok(purse) => purse,
+                    Err(error) => break 'a Err(error.into()),
+                }
+            };
+
+            let balance = match self.get_balance(purse)? {
+                Some(balance) => balance,
+                None => break 'a Err(ApiError::InvalidPurse),
+            };
+
+            let balance_cl_value = match CLValue::from_t(balance) {
+                Ok(cl_value) => cl_value,
+                Err(error) => break 'a Err(error.into()),
+            };
+
+            let balance_size = balance_cl_value.inner_bytes().len() as i32;
+            if let Err(error) = self.write_host_buffer(balance_cl_value) {
+                break 'a Err(error);
+            }
+
+            let balance_size_bytes = balance_size.to_le_bytes(); // Wasm is little-endian
+            if let Err(error) = context.memory_write(output_size_ptr, &balance_size_bytes) {
+                return Err(Error::Interpreter(error.into()));
+            }
+
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -2983,12 +2609,36 @@ where
             &host_function_costs.read_host_buffer,
             [dest_ptr, dest_size, bytes_written_ptr],
         )?;
-        let ret = self.read_host_buffer(
-            &mut context,
-            dest_ptr,
-            dest_size as usize,
-            bytes_written_ptr,
-        )?;
+        let ret = 'a: {
+            let dest_size = dest_size as usize;
+            let (_cl_type, serialized_value) = match self.take_host_buffer() {
+                None => break 'a Err(ApiError::HostBufferEmpty),
+                Some(cl_value) => cl_value.destructure(),
+            };
+
+            if serialized_value.len() > u32::max_value() as usize {
+                break 'a Err(ApiError::OutOfMemory);
+            }
+            if serialized_value.len() > dest_size {
+                break 'a Err(ApiError::BufferTooSmall);
+            }
+
+            // Slice data, so if `dest_size` is larger than host_buffer size, it will take
+            // host_buffer as whole.
+            let sliced_buf = &serialized_value[..cmp::min(dest_size, serialized_value.len())];
+            context.memory_write(dest_ptr, sliced_buf)?;
+
+            // Never panics because we check that `serialized_value.len()` fits in `u32`.
+            let bytes_written: u32 = sliced_buf
+                .len()
+                .try_into()
+                .expect("Size of buffer should fit within limit");
+            let bytes_written_data = bytes_written.to_le_bytes();
+
+            context.memory_write(bytes_written_ptr, &bytes_written_data)?;
+
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -3004,8 +2654,22 @@ where
             &host_function_costs.get_system_contract,
             [system_contract_index, dest_ptr, dest_size],
         )?;
-        let ret =
-            self.get_system_contract(&mut context, system_contract_index, dest_ptr, dest_size)?;
+        let ret = 'a: {
+            let _dest_size = dest_size;
+            let contract_hash: ContractHash =
+                match SystemContractType::try_from(system_contract_index) {
+                    Ok(SystemContractType::Mint) => self.get_mint_contract()?,
+                    Ok(SystemContractType::HandlePayment) => self.get_handle_payment_contract()?,
+                    Ok(SystemContractType::StandardPayment) => {
+                        self.get_standard_payment_contract()?
+                    }
+                    Ok(SystemContractType::Auction) => self.get_auction_contract()?,
+                    Err(error) => break 'a Err(error),
+                };
+
+            context.memory_write(dest_ptr, contract_hash.as_ref())?;
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -3020,7 +2684,47 @@ where
             &host_function_costs.load_named_keys,
             [total_keys_ptr, result_size_ptr],
         )?;
-        let ret = self.load_named_keys(context, total_keys_ptr, result_size_ptr)?;
+        let ret = 'a: {
+            let mut context = context;
+            if !self.can_write_to_host_buffer() {
+                // Exit early if the host buffer is already occupied
+                break 'a Err(ApiError::HostBufferFull);
+            }
+
+            let total_keys: u32 = match self.context.named_keys().len().try_into() {
+                Ok(value) => value,
+                Err(_) => break 'a Err(ApiError::OutOfMemory),
+            };
+
+            let total_keys_bytes = total_keys.to_le_bytes();
+            context
+                .memory_write(total_keys_ptr, &total_keys_bytes)
+                .map_err(|e| Error::Interpreter(e.into()))?;
+
+            if total_keys == 0 {
+                // No need to do anything else, we leave host buffer empty.
+                break 'a Ok(());
+            }
+
+            let named_keys =
+                CLValue::from_t(self.context.named_keys().clone()).map_err(Error::CLValue)?;
+
+            let length: u32 = match named_keys.inner_bytes().len().try_into() {
+                Ok(value) => value,
+                Err(_) => break 'a Err(ApiError::BufferTooSmall),
+            };
+
+            if let Err(error) = self.write_host_buffer(named_keys) {
+                break 'a Err(error);
+            }
+
+            let length_bytes = length.to_le_bytes();
+            context
+                .memory_write(result_size_ptr, &length_bytes)
+                .map_err(|e| Error::Interpreter(e.into()))?;
+
+            Ok(())
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -3040,8 +2744,16 @@ where
         let package_status = ContractPackageStatus::new(is_locked == 1);
         let (hash_addr, access_addr) = self.create_contract_package_at_hash(package_status)?;
 
-        self.function_address(&mut context, hash_addr, hash_dest_ptr)?;
-        self.function_address(&mut context, access_addr, access_dest_ptr)?;
+        {
+            context
+                .memory_write(hash_dest_ptr, &hash_addr)
+                .map_err(|e| Error::Interpreter(e.into()))?
+        };
+        {
+            context
+                .memory_write(access_dest_ptr, &access_addr)
+                .map_err(|e| Error::Interpreter(e.into()))?
+        };
         Ok(())
     }
 
@@ -3088,14 +2800,70 @@ where
             bytesrepr::deserialize(existing_urefs_bytes)?
         };
 
-        let ret = self.create_contract_user_group(
-            context,
-            contract_package_hash,
-            label,
-            num_new_urefs,
-            existing_urefs,
-            output_size_ptr,
-        )?;
+        let ret = 'a: {
+            let mut context = context;
+            let mut existing_urefs = existing_urefs;
+            let mut contract_package: ContractPackage = self
+                .context
+                .get_validated_contract_package(contract_package_hash)?;
+
+            let groups = contract_package.groups_mut();
+            let new_group = Group::new(label);
+
+            // Ensure group does not already exist
+            if groups.get(&new_group).is_some() {
+                break 'a Err(contracts::Error::GroupAlreadyExists.into());
+            }
+
+            // Ensure there are not too many groups
+            if groups.len() >= (contracts::MAX_GROUPS as usize) {
+                break 'a Err(contracts::Error::MaxGroupsExceeded.into());
+            }
+
+            // Ensure there are not too many urefs
+            let total_urefs: usize = groups.values().map(|urefs| urefs.len()).sum::<usize>()
+                + (num_new_urefs as usize)
+                + existing_urefs.len();
+            if total_urefs > contracts::MAX_TOTAL_UREFS {
+                let err = contracts::Error::MaxTotalURefsExceeded;
+                break 'a Err(ApiError::ContractHeader(err as u8));
+            }
+
+            // Proceed with creating user group
+            let mut new_urefs = Vec::with_capacity(num_new_urefs as usize);
+            for _ in 0..num_new_urefs {
+                let u = self.context.new_unit_uref()?;
+                new_urefs.push(u);
+            }
+
+            for u in new_urefs.iter().cloned() {
+                existing_urefs.insert(u);
+            }
+            groups.insert(new_group, existing_urefs);
+
+            // check we can write to the host buffer
+            if let Err(err) = self.check_host_buffer() {
+                break 'a Err(err);
+            }
+            // create CLValue for return value
+            let new_urefs_value = CLValue::from_t(new_urefs)?;
+            let value_size = new_urefs_value.inner_bytes().len();
+            // write return value to buffer
+            if let Err(err) = self.write_host_buffer(new_urefs_value) {
+                break 'a Err(err);
+            }
+            // Write return value size to output location
+            let output_size_bytes = value_size.to_le_bytes(); // Wasm is little-endian
+            context
+                .memory_write(output_size_ptr, &output_size_bytes)
+                .map_err(|e| Error::Interpreter(e.into()))?;
+
+            // Write updated package to the global state
+            self.context
+                .metered_write_gs_unsafe(contract_package_hash, contract_package)?;
+
+            Ok(())
+        };
 
         Ok(api_error::i32_from(ret))
     }
@@ -3300,14 +3068,21 @@ where
             t_from_memory(&mut context, entry_point_name_ptr, entry_point_name_size)?;
         let args_bytes: Vec<u8> = { bytes_from_memory(&mut context, args_ptr, args_size)? };
 
-        let ret = self.call_versioned_contract_host_buffer(
-            context,
-            contract_package_hash,
-            contract_version,
-            entry_point_name,
-            args_bytes,
-            result_size_ptr,
-        )?;
+        let ret = 'a: {
+            let mut context = context;
+            // Exit early if the host buffer is already occupied
+            if let Err(err) = self.check_host_buffer() {
+                break 'a Ok(Err(err));
+            }
+            let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
+            let result = self.call_versioned_contract(
+                contract_package_hash,
+                contract_version,
+                entry_point_name,
+                args,
+            )?;
+            self.wasm_manage_call_contract_host_buffer(context, result_size_ptr, result)
+        }?;
         Ok(api_error::i32_from(ret))
     }
 
@@ -3359,16 +3134,98 @@ where
             bytesrepr::deserialize(named_keys_bytes)?
         };
 
-        let ret = self.add_contract_version(
-            context,
-            contract_package_hash,
-            entry_points,
-            named_keys,
-            output_ptr,
-            output_size as usize,
-            bytes_written_ptr,
-            version_ptr,
-        )?;
+        let ret = 'a: {
+            let mut context = context;
+            let mut named_keys = named_keys;
+            let output_size = output_size as usize;
+            self.context
+                .validate_key(&Key::from(contract_package_hash))?;
+
+            let mut contract_package: ContractPackage = self
+                .context
+                .get_validated_contract_package(contract_package_hash)?;
+
+            let version = contract_package.current_contract_version();
+
+            // Return an error if the contract is locked and has some version associated with it.
+            if contract_package.is_locked() && version.is_some() {
+                break 'a Err(Error::LockedContract(contract_package_hash));
+            }
+
+            let contract_wasm_hash = self.context.new_hash_address()?;
+            let contract_wasm = {
+                let module_bytes = self.get_module_from_entry_points(&entry_points)?;
+                ContractWasm::new(module_bytes)
+            };
+
+            let contract_hash = self.context.new_hash_address()?;
+
+            let protocol_version = self.context.protocol_version();
+            let major = protocol_version.value().major;
+
+            // TODO: EE-1032 - Implement different ways of carrying on existing named keys
+            if let Some(previous_contract_hash) = contract_package.current_contract_hash() {
+                let previous_contract: Contract =
+                    self.context.read_gs_typed(&previous_contract_hash.into())?;
+
+                let mut previous_named_keys = previous_contract.take_named_keys();
+                named_keys.append(&mut previous_named_keys);
+            }
+
+            let contract = Contract::new(
+                contract_package_hash,
+                contract_wasm_hash.into(),
+                named_keys,
+                entry_points,
+                protocol_version,
+            );
+
+            let insert_contract_result =
+                contract_package.insert_contract_version(major, contract_hash.into());
+
+            self.context
+                .metered_write_gs_unsafe(Key::Hash(contract_wasm_hash), contract_wasm)?;
+            self.context
+                .metered_write_gs_unsafe(Key::Hash(contract_hash), contract)?;
+            self.context
+                .metered_write_gs_unsafe(contract_package_hash, contract_package)?;
+
+            // return contract key to caller
+            {
+                let key_bytes = match contract_hash.to_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(error) => break 'a Ok(Err(error.into())),
+                };
+
+                // `output_size` must be >= actual length of serialized Key bytes
+                if output_size < key_bytes.len() {
+                    break 'a Ok(Err(ApiError::BufferTooSmall));
+                }
+
+                // Set serialized Key bytes into the output buffer
+                if let Err(error) = context.memory_write(output_ptr, &key_bytes) {
+                    break 'a Err(Error::Interpreter(error.into()));
+                }
+
+                // SAFETY: For all practical purposes following conversion is assumed to be safe
+                let bytes_size: u32 = key_bytes
+                    .len()
+                    .try_into()
+                    .expect("Serialized value should fit within the limit");
+                let size_bytes = bytes_size.to_le_bytes(); // Wasm is little-endian
+                if let Err(error) = context.memory_write(bytes_written_ptr, &size_bytes) {
+                    break 'a Err(Error::Interpreter(error.into()));
+                }
+
+                let version_value: u32 = insert_contract_result.contract_version();
+                let version_bytes = version_value.to_le_bytes();
+                if let Err(error) = context.memory_write(version_ptr, &version_bytes) {
+                    break 'a Err(Error::Interpreter(error.into()));
+                }
+            }
+
+            Ok(Ok(()))
+        }?;
         Ok(api_error::i32_from(ret))
     }
 
@@ -3412,13 +3269,17 @@ where
             bytes_from_memory(&mut context, args_ptr, args_size)?
         };
 
-        let ret = self.call_contract_host_buffer(
-            context,
-            contract_hash,
-            &entry_point_name,
-            args_bytes,
-            result_size_ptr,
-        )?;
+        let ret = 'a: {
+            let mut context = context;
+            let entry_point_name: &str = &entry_point_name;
+            // Exit early if the host buffer is already occupied
+            if let Err(err) = self.check_host_buffer() {
+                break 'a Ok(Err(err));
+            }
+            let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
+            let result = self.call_contract(contract_hash, entry_point_name, args)?;
+            self.wasm_manage_call_contract_host_buffer(context, result_size_ptr, result)
+        }?;
         Ok(api_error::i32_from(ret))
     }
 
