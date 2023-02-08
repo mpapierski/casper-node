@@ -41,42 +41,88 @@ pub(crate) trait ToWasmiValueTypes {
     const VALUE_TYPES: &'static [ValueType];
 }
 
-#[impl_for_tuples(1, 10)]
+#[impl_for_tuples(0, 10)]
 #[tuple_types_custom_trait_bound(ToWasmiValueType)]
 impl ToWasmiValueTypes for Tuple {
     for_tuples!( const VALUE_TYPES: &'static [ValueType] = &[ #( Tuple::VALUE_TYPE ),* ]; );
 }
 
 pub(crate) trait ToRuntimeValue {
-    fn to_runtime_value(&self) -> Option<RuntimeValue>;
-}
-
-impl ToRuntimeValue for () {
-    fn to_runtime_value(&self) -> Option<RuntimeValue> {
-        None
-    }
+    fn to_runtime_value(&self) -> RuntimeValue;
 }
 
 impl ToRuntimeValue for u32 {
-    fn to_runtime_value(&self) -> Option<RuntimeValue> {
-        Some(RuntimeValue::I32(*self as i32))
+    fn to_runtime_value(&self) -> RuntimeValue {
+        RuntimeValue::I32(*self as i32)
     }
 }
 
 impl ToRuntimeValue for i32 {
-    fn to_runtime_value(&self) -> Option<RuntimeValue> {
-        Some(RuntimeValue::I32(*self))
+    fn to_runtime_value(&self) -> RuntimeValue {
+        RuntimeValue::I32(*self)
     }
 }
 
 impl ToRuntimeValue for u64 {
-    fn to_runtime_value(&self) -> Option<RuntimeValue> {
-        Some(RuntimeValue::I64(*self as i64))
+    fn to_runtime_value(&self) -> RuntimeValue {
+        RuntimeValue::I64(*self as i64)
     }
 }
 
 impl ToRuntimeValue for i64 {
-    fn to_runtime_value(&self) -> Option<RuntimeValue> {
-        Some(RuntimeValue::I64(*self))
+    fn to_runtime_value(&self) -> RuntimeValue {
+        RuntimeValue::I64(*self)
+    }
+}
+
+pub(crate) trait ToWasmiResult {
+    fn to_wasmi_result(&self) -> Option<RuntimeValue>;
+}
+
+impl ToWasmiResult for () {
+    fn to_wasmi_result(&self) -> Option<RuntimeValue> {
+        None
+    }
+}
+
+impl<T: ToRuntimeValue> ToWasmiResult for T {
+    fn to_wasmi_result(&self) -> Option<RuntimeValue> {
+        Some(self.to_runtime_value())
+    }
+}
+
+pub(crate) trait ToWasmiParams {
+    fn to_wasmi_params(&self) -> Vec<RuntimeValue>;
+}
+
+pub trait FromWasmiResult<T> {
+    fn from_wasmi_result(self) -> Option<T>;
+}
+
+impl FromWasmiResult<()> for Option<RuntimeValue> {
+    fn from_wasmi_result(self) -> Option<()> {
+        match self {
+            Some(_) => None,
+            None => Some(()),
+        }
+        // if self.is_some() {
+        //     return None;
+        // } else {
+        //     return Some(());
+        // }
+    }
+}
+
+impl FromWasmiResult<f32> for Option<RuntimeValue> {
+    fn from_wasmi_result(self) -> Option<f32> {
+        match self {
+            Some(RuntimeValue::F32(f32_val)) => Some(f32::from(f32_val)),
+            _ => None,
+        }
+        // if self.is_some() {
+        //     return None;
+        // } else {
+        //     return Some(());
+        // }
     }
 }

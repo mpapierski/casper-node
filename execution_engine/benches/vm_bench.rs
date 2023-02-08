@@ -89,6 +89,9 @@ fn fixed_cost_br_table(total_labels: usize, br_table_element_size: u32) -> Bytes
                 true
             } else {
                 counter -= 1;
+
+                // step.i32_const(counter as i32).drop();
+
                 // Go deeper
                 false
             }
@@ -103,7 +106,7 @@ fn fixed_cost_br_table(total_labels: usize, br_table_element_size: u32) -> Bytes
         // Call `br_table_func` with 0 as the jump label,
         // Specific value does not change the cost, so as long as it will generate valid wasm it's
         // ok.
-        .i32_const(0)
+        .i32_const(total_labels as i32 - 1)
         .call(br_table_func);
 
     let call_func = call_func.finish(Vec::new(), &mut module.funcs);
@@ -196,8 +199,7 @@ fn cold_start(c: &mut criterion::Criterion) {
             |b, (do_nothing_bytes, engine)| {
                 b.iter(|| {
                     let _wasm_module = engine.preprocess(None, do_nothing_bytes).unwrap();
-
-                    // let instance = engine
+                    // let _instance = engine
                     //     .instance_and_memory(wasm_module, MockHost::new())
                     //     .unwrap();
                     // let _result = instance
@@ -216,7 +218,7 @@ fn cold_start(c: &mut criterion::Criterion) {
             ..Default::default()
         };
 
-        for step in (2..10).map(|exp| 2u32.pow(exp)) {
+        for step in (2..13).map(|exp| 2u32.pow(exp)) {
             let module_bytes = fixed_cost_br_table(step as usize, step);
             let engine = WasmEngine::new(wasm_config);
 
@@ -227,10 +229,10 @@ fn cold_start(c: &mut criterion::Criterion) {
                 &baton,
                 |b, (do_nothing_bytes, engine)| {
                     b.iter(|| {
-                        let wasm_module = engine.preprocess(None, do_nothing_bytes).unwrap();
-                        let _instance = engine
-                            .instance_and_memory(wasm_module, MockHost::new())
-                            .unwrap();
+                        let _wasm_module = engine.preprocess(None, do_nothing_bytes).unwrap();
+                        // let _instance = engine
+                        //     .instance_and_memory(wasm_module, MockHost::new())
+                        //     .unwrap();
                         // let _result = instance
                         //     .invoke_export(None, engine, DEFAULT_ENTRY_POINT_NAME, Vec::new())
                         //     .unwrap();

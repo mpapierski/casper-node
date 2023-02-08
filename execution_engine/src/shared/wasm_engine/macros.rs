@@ -172,6 +172,8 @@ macro_rules! for_each_host_function {
             fn casper_update_associated_key(account_hash_ptr: u32, account_hash_size: u32, weight: i32) -> i32;
             fn casper_write(key_ptr: u32, key_size: u32, value_ptr: u32, value_size: u32);
             fn gas(param: u32);
+            #[cfg(feature = "benches")]
+            fn clock_ms() -> u64;
         }
     };
 }

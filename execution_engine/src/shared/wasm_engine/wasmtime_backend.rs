@@ -102,7 +102,7 @@ where
 
                                 let ret: visit_host_function!(@optional_ret $($ret)?) = match host.$name(
                                     function_context,
-                                    $($($arg ),*)?,
+                                    $($($arg ),*)?
                                 ) {
                                     Ok(result) => result,
                                     Err(error) => {

@@ -134,8 +134,10 @@ fn should_run_ee_966_cant_have_too_much_initial_memory() {
     // TODO: memory should have consistent representation regardless of backend
     assert_matches!(
         error,
-        // Wasmi
+        // Wasmi (original, pre backends)
         Error::Exec(ExecError::Interpreter(_))
+            // Interpreted (new; aka vm backends)
+            | Error::WasmPreprocessing(PreprocessingError::Deserialize(_))
             // Wasmtime
             | Error::WasmPreprocessing(PreprocessingError::Precompile(_))
             // Wasmer
@@ -252,9 +254,10 @@ fn should_run_ee_966_cant_have_larger_initial_than_max_memory() {
     // TODO: memory should have consistent representation regardless of backend
     assert_matches!(
         error,
-        // Wasmi
+        // Wasmi (old; pre vm backends)
         Error::Exec(ExecError::Interpreter(_))
-
+            // Interpreted (new; aka vm backends)
+            | Error::WasmPreprocessing(PreprocessingError::Deserialize(_))
             // Wasmtime
             | Error::WasmPreprocessing(PreprocessingError::Precompile(_))
             // Wasmer

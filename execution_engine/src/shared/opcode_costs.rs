@@ -134,9 +134,8 @@ impl OpcodeCosts {
 
             tmp
         };
-        Set::new(self.regular, meterings)
-            .with_grow_cost(self.grow_memory)
-            .with_forbidden_floats()
+        Set::new(self.regular, meterings).with_grow_cost(self.grow_memory)
+        // .with_forbidden_floats()
     }
 }
 

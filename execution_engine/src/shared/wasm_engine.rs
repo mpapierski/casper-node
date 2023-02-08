@@ -15,6 +15,7 @@ use std::{
     borrow::Borrow,
     cell::{Cell, RefCell},
     collections::HashMap,
+    convert::TryInto,
     error::Error,
     fmt::{self, Formatter},
     fs,
@@ -39,7 +40,7 @@ const INTERNAL_GAS_FUNCTION_NAME: &str = "gas";
 /// We only allow maximum of 4k function pointers in a table section.
 pub const DEFAULT_MAX_TABLE_SIZE: u32 = 4096;
 /// Maximum number of elements that can appear as immediate value to the br_table instruction.
-pub const DEFAULT_BR_TABLE_MAX_SIZE: u32 = 256_000;
+pub const DEFAULT_BR_TABLE_MAX_SIZE: u32 = 256;
 /// Maximum number of global a module is allowed to declare.
 pub const DEFAULT_MAX_GLOBALS: u32 = 256;
 /// Maximum number of parameters a function can have.
@@ -57,7 +58,10 @@ use crate::core::execution;
 use self::{
     host_interface::WasmHostInterface,
     wasmer_backend::{WasmerAdapter, WasmerEnv},
-    wasmi_backend::{WasmiExternals, WasmiResolver},
+    wasmi_backend::{
+        interop::{FromWasmiResult, ToWasmiParams, ToWasmiResult},
+        WasmiExternals, WasmiResolver,
+    },
     wasmtime_backend::WasmtimeEnv,
 };
 
@@ -98,6 +102,7 @@ pub enum ExecutionMode {
     Wasmer {
         backend: WasmerBackend,
         cache_artifacts: bool,
+        instrument: bool,
     },
 }
 
@@ -383,8 +388,8 @@ impl From<wasmi::RuntimeValue> for RuntimeValue {
             wasmi::RuntimeValue::I64(value) => RuntimeValue::I64(value),
             // NOTE: Why wasmi implements F32/F64 newtypes? Is F64->f64 conversion safe even though
             // they claim they're compatible with rust's IEEE 754-2008?
-            wasmi::RuntimeValue::F32(value) => RuntimeValue::F32(value.to_float()),
-            wasmi::RuntimeValue::F64(value) => RuntimeValue::F64(value.to_float()),
+            wasmi::RuntimeValue::F32(value) => RuntimeValue::F32(f32::from(value)),
+            wasmi::RuntimeValue::F64(value) => RuntimeValue::F64(f64::from(value)),
         }
     }
 }
@@ -497,13 +502,17 @@ where
         }
     }
     /// Invokes exported function
-    pub fn invoke_export(
+    pub fn invoke_export<Ret>(
         self,
         correlation_id: Option<CorrelationId>,
         wasm_engine: &WasmEngine,
         func_name: &str,
-        args: Vec<RuntimeValue>,
-    ) -> Result<Option<RuntimeValue>, RuntimeError> {
+        params: &[RuntimeValue],
+    ) -> Result<Ret, RuntimeError>
+    where
+        Ret: wasmer::WasmTypeList + wasmtime::WasmResults,
+        Option<wasmi::RuntimeValue>: FromWasmiResult<Ret>,
+    {
         match self {
             Instance::Interpreted {
                 original_bytes,
@@ -512,8 +521,10 @@ where
                 mut runtime,
                 timestamp,
             } => {
+                // let wa
                 let wasmi_args: Vec<wasmi::RuntimeValue> =
-                    args.into_iter().map(|value| value.into()).collect();
+                    params.into_iter().map(|value| (*value).into()).collect();
+                // let wasmi_args = params.to_wasmi_params();
 
                 let mut wasmi_externals = WasmiExternals {
                     host: &mut runtime,
@@ -531,7 +542,7 @@ where
                 let wasmi_result = wasmi_result?;
 
                 // wasmi's runtime value into our runtime value
-                let result = wasmi_result.map(RuntimeValue::from);
+                // let result = wasmi_result.map(RuntimeValue::from);
 
                 if let Some(correlation_id) = correlation_id.as_ref() {
                     correlation_id.record_property(Property::WasmVM {
@@ -541,7 +552,7 @@ where
                     });
                 }
 
-                Ok(result)
+                Ok(wasmi_result.from_wasmi_result().expect("should convert"))
             }
             Instance::Compiled {
                 original_bytes,
@@ -553,7 +564,7 @@ where
                 // runtime,
             } => {
                 let exported_func = instance
-                    .get_typed_func::<(), (), _>(&mut store, func_name)
+                    .get_typed_func::<(), Ret, _>(&mut store, func_name)
                     .expect("should get typed func");
 
                 let ret = exported_func
@@ -562,9 +573,10 @@ where
 
                 // let stop = start.elapsed();
 
-                ret?;
+                let result = ret?;
 
-                Ok(Some(RuntimeValue::I64(0)))
+                // Ok(Some(RuntimeValue::F32(result)))
+                Ok(result)
             }
             Instance::Singlepass {
                 original_bytes,
@@ -581,12 +593,12 @@ where
                 // let store = wasmer::Store::new(engine.into());
 
                 // let wasmer_store = wasm_engine.engine.as_wasmer_mut().expect("valid config");
-                let call_func: TypedFunction<(), ()> = instance
+                let call_func: TypedFunction<(), Ret> = instance
                     .exports
                     .get_typed_function(&store, func_name)
                     .expect("should get wasmer call func");
 
-                call_func.call(&mut store)?;
+                let res = call_func.call(&mut store)?;
 
                 let invoke_dur = timestamp.elapsed();
 
@@ -597,8 +609,8 @@ where
                         invoke_duration: invoke_dur,
                     });
                 }
-
-                Ok(Some(RuntimeValue::I64(0)))
+                Ok(res)
+                // Ok(Some(RuntimeValue::F32(res)))
             }
         }
     }
@@ -1551,8 +1563,9 @@ impl WasmEngine {
             ExecutionMode::Wasmer {
                 backend,
                 cache_artifacts,
+                instrument,
             } => {
-                let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
+                // let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
                     if let Some(precompiled_bytes) =
                         self.cache_get(correlation_id.as_ref(), wasm_bytes.clone())
@@ -1622,6 +1635,7 @@ impl WasmEngine {
             ExecutionMode::Wasmer {
                 backend,
                 cache_artifacts,
+                instrument,
             } => {
                 let engine: wasmer::Engine = match backend {
                     WasmerBackend::Singlepass => Singlepass::new().into(),
@@ -1737,15 +1751,20 @@ impl WasmEngine {
         match self.execution_mode {
             ExecutionMode::Interpreted => {
                 let deserialized_module = deserialize_interpreted(&module_bytes)?;
+
+                let instrument_start = Instant::now();
                 let module = instrument_module(deserialized_module, &self.wasm_config)?;
+                println!("instrument {:?}", instrument_start.elapsed());
                 // let serialized = serialize_interpreted(module)
                 //                     .map_err(|error| RuntimeError::Other(error.to_string()))?;
+                let parse_start = Instant::now();
                 let module = wasmi::Module::from_parity_wasm_module(module).map_err(|error| {
                     PreprocessingError::Deserialize(format!(
                         "from_parity_wasm_module: {}",
                         error.to_string()
                     ))
                 })?;
+                println!("wasmi from_parity_wasm_module {:?}", parse_start.elapsed());
                 Ok(Module::Interpreted {
                     original_bytes: module_bytes.clone(),
                     timestamp: start,
@@ -1839,19 +1858,37 @@ impl WasmEngine {
             ExecutionMode::Wasmer {
                 backend,
                 cache_artifacts,
+                instrument,
             } => {
                 // let preprocessed_wasm_bytes =
                 //     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
                 let start = Instant::now();
 
-                // let mut store = wasmer::Store::new(self.engine.as_wasmer().expect("valid config"));
+                // let mut store = wasmer::Store::new(self.engine.as_wasmer().expect("valid
+                // config"));
                 let engine = self.engine.as_wasmer().expect("valid config");
                 let store = wasmer::Store::new(engine);
                 // .read()
                 // .unwrap();
+                let original_bytes = module_bytes.clone();
+                let module_bytes = if instrument {
+                    // let instrument_Start = Instant::now();
+                    let instrument_start = Instant::now();
+                    let module = deserialize_interpreted(&module_bytes)?;
+                    let instrumented = instrument_module(module, &self.wasm_config)?;
+                    let instrumented_bytes = serialize_interpreted(instrumented)?;
 
+                    // let module = instrument_module(deserialized_module, &self.wasm_config)?;
+                    println!("wasmer instrument {:?}", instrument_start.elapsed());
+                    Bytes::from(instrumented_bytes)
+                } else {
+                    module_bytes.clone()
+                    // println!("")
+                };
+                let parse_start = Instant::now();
                 let wasmer_module = wasmer::Module::from_binary(&store, &module_bytes)?;
+                println!("wasmer from binary {:?}", parse_start.elapsed());
 
                 if cache_artifacts {
                     if let Some(correlation_id) = correlation_id.as_ref() {
@@ -1870,7 +1907,7 @@ impl WasmEngine {
                 let stop = start.elapsed();
 
                 Ok(Module::Singlepass {
-                    original_bytes: module_bytes.clone(),
+                    original_bytes: original_bytes,
                     store,
                     wasmer_module: wasmer_module,
                     timestamp: start,

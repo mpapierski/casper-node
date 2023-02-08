@@ -1148,11 +1148,11 @@ where
             .wasm_engine
             .instance_and_memory(module, runtime.clone())?;
 
-        let result = instance.invoke_export(
+        let result = instance.invoke_export::<()>(
             Some(self.context.correlation_id().clone()),
             &mut self.wasm_engine,
             entry_point.name(),
-            Vec::new(),
+            &[],
         );
 
         // todo!("execute_contract invoke result {:?}", result);

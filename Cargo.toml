@@ -38,6 +38,9 @@ exclude = ["utils/nctl/remotes/casper-client-rs"]
 [profile.release.package.casper-engine-tests]
 debug = true
 
+[profile.release.package.casper-execution-engine]
+debug = true
+
 [profile.release]
 codegen-units = 1
 lto = true

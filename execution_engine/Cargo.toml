@@ -79,6 +79,11 @@ default = ["gens"]
 # DEPRECATED
 gens = ["casper-types/testing", "proptest"]
 test-support = []
+benches = []
+
+[[bin]]
+name = "run_coremark"
+path = "bin/coremark.rs"
 
 # [[bench]]
 # name = "trie_bench"

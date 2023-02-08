@@ -12,7 +12,7 @@ use crate::for_each_host_function;
 use super::{host_interface::WasmHostInterface, FunctionContext, RuntimeError};
 
 pub(crate) mod interop;
-use interop::{ToRuntimeValue, ToWasmiOptionalValueType, ToWasmiValueTypes};
+use interop::{ToWasmiOptionalValueType, ToWasmiResult, ToWasmiValueTypes};
 
 #[derive(Error, Debug)]
 #[error("{}", source)]
@@ -85,7 +85,7 @@ macro_rules! visit_host_function {
         &[ $(
             $(#[$cfg])?
             {
-                let params = <($($($argty),*)?,)>::VALUE_TYPES;
+                let params = <( $( $($argty,)*) ?)>::VALUE_TYPES;
                 let return_type = <visit_host_function!(@optional_ret $($ret)?)>::OPTIONAL_VALUE_TYPE;
 
                 WasmiHostFunction { name: stringify!($name), params, return_type, index: HostFunctionIndex::$name }
@@ -231,7 +231,7 @@ where
                             $arg
                         } ),*)?
                         ).map_err(make_wasmi_host_error)?;
-                        res.to_runtime_value()
+                        res.to_wasmi_result()
                     }
                     )+
                 }

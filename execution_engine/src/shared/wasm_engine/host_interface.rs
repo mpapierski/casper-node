@@ -13,7 +13,9 @@ macro_rules! define_trait_methods {
         $(
             #[doc = stringify!($name)] // TODO: add support for doc strings in the macro. This is currently done just to satisfy the compiler.
             $(#[$cfg])?
-            fn $name(&mut self, _context: impl FunctionContext $($(,$arg: $argty)*)?) -> Result<define_trait_methods!(@optional_ret $($ret)?), Self::Error>;
+            fn $name(&mut self, _context: impl FunctionContext $($(,$arg: $argty)*)?) -> Result<define_trait_methods!(@optional_ret $($ret)?), Self::Error> {
+                todo!("{}", stringify!($name))
+            }
         )*
     };
 }
