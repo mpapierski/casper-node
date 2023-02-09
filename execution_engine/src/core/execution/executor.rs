@@ -151,7 +151,7 @@ impl Executor {
                 // runtime.module = Some(module.get_wasmi_module());
                 runtime.module = Some(module.get_original_bytes().clone());
 
-                let instance = match self
+                let mut instance = match self
                     .wasm_engine
                     .instance_and_memory(module, runtime.clone())
                 {

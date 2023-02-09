@@ -109,8 +109,8 @@ max_memory = 64
 max_stack_height = 188
 
 
-execution_mode = { type = "interpreted" }
-#execution_mode = { type = "wasmer", backend = {type = "singlepass" }, "cache_artifacts" = false }
+#execution_mode = { type = "interpreted" }
+execution_mode = { type = "wasmer", backend = {type = "singlepass" }, "cache_artifacts" = false, instrument = { type = "metering_middleware" } }
 #execution_mode = { type = "compiled", "cache_artifacts" = false }
 
 

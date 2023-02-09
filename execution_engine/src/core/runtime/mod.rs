@@ -1101,7 +1101,7 @@ where
 
         let mut runtime = Runtime::new_invocation_runtime(self, context, &module, stack);
 
-        let instance = self
+        let mut instance = self
             .wasm_engine
             .instance_and_memory(module, runtime.clone())?;
 

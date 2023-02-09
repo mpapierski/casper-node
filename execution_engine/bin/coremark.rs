@@ -9,7 +9,7 @@ use casper_execution_engine::shared::{
     wasm_config::WasmConfig,
     wasm_engine::{
         host_interface::WasmHostInterface, CraneliftOptLevel, ExecutionMode, FunctionContext,
-        WasmEngine, WasmerBackend,
+        InstrumentMode, InvokeOutcome, WasmEngine, WasmerBackend,
     },
 };
 use thiserror::Error;
@@ -78,7 +78,7 @@ fn main() {
                 /// Wasmer has caching turned off, as we don't need to do this extra work since
                 /// wasmi (aka interpreted) doesn't do that either.
                 cache_artifacts: false,
-                instrument: false,
+                instrument: InstrumentMode::None,
             },
         ),
         (
@@ -88,7 +88,17 @@ fn main() {
                 /// Wasmer has caching turned off, as we don't need to do this extra work since
                 /// wasmi (aka interpreted) doesn't do that either.
                 cache_artifacts: false,
-                instrument: true,
+                instrument: InstrumentMode::ParityWasm,
+            },
+        ),
+        (
+            "singlepass middleware",
+            ExecutionMode::Wasmer {
+                backend: WasmerBackend::Singlepass,
+                /// Wasmer has caching turned off, as we don't need to do this extra work since
+                /// wasmi (aka interpreted) doesn't do that either.
+                cache_artifacts: false,
+                instrument: InstrumentMode::MeteringMiddleware,
             },
         ),
         (
@@ -100,7 +110,7 @@ fn main() {
                 /// Wasmer has caching turned off, as we don't need to do this extra work since
                 /// wasmi (aka interpreted) doesn't do that either.
                 cache_artifacts: false,
-                instrument: true,
+                instrument: InstrumentMode::MeteringMiddleware,
             },
         ),
         (
@@ -137,7 +147,10 @@ fn main() {
             .instance_and_memory(wasm_module, host.clone())
             .unwrap();
         let instantiation_step = start.elapsed();
-        let invoke_result = wasm_instance
+        let InvokeOutcome {
+            return_value,
+            metering_points,
+        } = wasm_instance
             .invoke_export::<f32, F32>(None, &wasm_engine, "run", ())
             .unwrap();
         let invoke_step = start.elapsed();
@@ -147,11 +160,12 @@ fn main() {
         let c = invoke_step - instantiation_step;
         assert_eq!(a + b + c, invoke_step);
 
-        println!("{} coremark score: {:?}", backend_name, invoke_result);
+        println!("{} coremark score: {:?}", backend_name, return_value);
         println!("{} preprocess: {:?}", backend_name, a);
         println!("{} instantiation: {:?}", backend_name, b);
         println!("{} invoke: {:?}", backend_name, c);
         println!("{} total: {:?}", backend_name, invoke_step);
+        println!("{} metering: {:?}", backend_name, metering_points);
 
         // let gas = host.gas.read().unwrap();
         // println!("{} gas calls: {}", backend_name, gas.gas_calls);

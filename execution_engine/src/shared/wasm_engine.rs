@@ -26,8 +26,9 @@ use std::{
     time::{Duration, Instant},
 };
 use thiserror::Error;
-use wasmer::{AsStoreMut, AsStoreRef, Cranelift, FunctionEnv, TypedFunction};
+use wasmer::{AsStoreMut, AsStoreRef, CompilerConfig, Cranelift, FunctionEnv, TypedFunction};
 use wasmer_compiler_singlepass::Singlepass;
+use wasmer_middlewares::metering::{self, MeteringPoints};
 use wasmi::WasmType;
 
 pub mod host_interface;
@@ -60,7 +61,7 @@ use crate::core::execution;
 
 use self::{
     host_interface::WasmHostInterface,
-    wasmer_backend::{WasmerAdapter, WasmerEnv},
+    wasmer_backend::{make_wasmer_backend, WasmerAdapter, WasmerEnv},
     wasmi_backend::{make_wasmi_linker, WasmiEngine, WasmiEnv},
     wasmtime_backend::WasmtimeEnv,
 };
@@ -86,6 +87,28 @@ pub enum WasmerBackend {
     Cranelift { optimize: CraneliftOptLevel },
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum InstrumentMode {
+    None,
+    ParityWasm,
+    MeteringMiddleware,
+}
+
+impl Default for InstrumentMode {
+    fn default() -> Self {
+        Self::None
+    }
+}
+/// Mode of execution for smart contracts.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub struct Wasmer {
+    backend: WasmerBackend,
+    cache_artifacts: bool,
+    instrument: InstrumentMode,
+}
+
 /// Mode of execution for smart contracts.
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -99,11 +122,7 @@ pub enum ExecutionMode {
     /// Runs Wasm modules in a compiled mode via fast ahead of time compiler.
     ///
     /// NOTE: Currently cache is implemented as inmem hash table for testing purposes
-    Wasmer {
-        backend: WasmerBackend,
-        cache_artifacts: bool,
-        instrument: bool,
-    },
+    Wasmer(Wasmer),
 }
 
 impl ExecutionMode {
@@ -120,9 +139,17 @@ impl ExecutionMode {
             ExecutionMode::Interpreted => false,
             ExecutionMode::Compiled { cache_artifacts } => *cache_artifacts,
             ExecutionMode::JustInTime => false,
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 cache_artifacts, ..
-            } => *cache_artifacts,
+            }) => *cache_artifacts,
+        }
+    }
+
+    pub fn as_wasmer(&self) -> Option<&Wasmer> {
+        if let Self::Wasmer(v) = self {
+            Some(v)
+        } else {
+            None
         }
     }
 }
@@ -133,9 +160,9 @@ impl ToBytes for ExecutionMode {
             ExecutionMode::Interpreted => 1u32.to_bytes(),
             ExecutionMode::Compiled { cache_artifacts } => (2u32, *cache_artifacts).to_bytes(),
             ExecutionMode::JustInTime => 3u32.to_bytes(),
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 cache_artifacts, ..
-            } => (4u32, *cache_artifacts).to_bytes(),
+            }) => (4u32, *cache_artifacts).to_bytes(),
         }
     }
 
@@ -146,11 +173,11 @@ impl ToBytes for ExecutionMode {
                 (2u32, *cache_artifacts).serialized_length()
             }
             ExecutionMode::JustInTime => 3u32.serialized_length(),
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 backend,
                 cache_artifacts,
                 ..
-            } => (4u32, *cache_artifacts).serialized_length(),
+            }) => (4u32, *cache_artifacts).serialized_length(),
         }
     }
 }
@@ -476,7 +503,32 @@ pub trait FunctionContext {
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError>;
 }
 
-// trait WasmiConvert<A, B: From<B>>(a: A) -> B {}
+// #[derive(Debug)]
+// pub struct InvokeOutcome<Ret>
+// where
+//     Ret: fmt::Debug,
+// {
+//     pub return_value: Ret,
+//     pub metering_points: Option<MeteringPoints>,
+// }
+
+// impl<Ret> InvokeOutcome<Ret>
+// where
+//     Ret: fmt::Debug,
+// {
+//     fn new(return_value: Ret, metering_points: MeteringPoints) -> Self {
+//         Self {
+//             return_value,
+//             metering_points: Some(metering_points),
+//         }
+//     }
+//     fn with_return_value(return_value: Ret) -> Self {
+//         Self {
+//             return_value,
+//             metering_points: None,
+//         }
+//     }
+// }
 
 impl<H> Instance<H>
 where
@@ -486,7 +538,7 @@ where
 {
     /// Invokes exported function
     pub fn invoke_export<Ret, T>(
-        self,
+        &mut self,
         correlation_id: Option<CorrelationId>,
         wasm_engine: &WasmEngine,
         func_name: &str,
@@ -498,7 +550,7 @@ where
         // wasmi::WasmResults: Into<Ret>,
         // for<'a> T: wasmi::WasmResults,
         T: wasmi::WasmResults,
-        Ret: From<T> + wasmer::WasmTypeList + wasmtime::WasmResults,
+        Ret: fmt::Debug + From<T> + wasmer::WasmTypeList + wasmtime::WasmResults,
         // <Ret as Into<Ret>
 
         // wasmi::WasmResults: Into<Ret>
@@ -512,34 +564,37 @@ where
                 timestamp,
                 engine,
                 // interpreted_engine,
-                mut store,
+                store,
             } => {
                 let call_func = instance.get_typed_func::<(), T>(&store, func_name)?;
                 let ret = call_func
-                    .call(&mut store, ())
+                    .call(store, ())
                     .map_err(|trap| RuntimeError::WasmiTrap(Arc::new(trap)))?;
-                Ok(ret.into())
+                let return_value: Ret = ret.into();
+
+                Ok(return_value)
             }
             Instance::Compiled {
                 original_bytes,
                 // module,
                 // mut compiled_module,
-                mut instance,
-                mut store,
+                instance,
+                store,
                 precompile_time,
                 // runtime,
             } => {
                 let exported_func = instance
-                    .get_typed_func::<(), Ret, _>(&mut store, func_name)
+                    .get_typed_func::<(), Ret, _>(store.as_context_mut(), func_name)
                     .expect("should get typed func");
 
                 let ret = exported_func
-                    .call(&mut store, ())
+                    .call(store.as_context_mut(), ())
                     .map_err(RuntimeError::from);
 
                 // let stop = start.elapsed();
 
                 let result = ret?;
+
                 Ok(result)
 
                 // Ok(Some(RuntimeValue::I64(0)))
@@ -550,7 +605,7 @@ where
                 // wasmer_module,
                 instance,
                 // runtime,
-                mut store,
+                store,
                 timestamp,
                 preprocess_dur,
             } => {
@@ -564,20 +619,58 @@ where
                     .get_typed_function(&store, func_name)
                     .expect("should get wasmer call func");
 
-                let res = call_func.call(&mut store)?;
+                let maybe_res = call_func.call(store);
+                dbg!(&maybe_res);
+                let res = maybe_res?;
 
                 let invoke_dur = timestamp.elapsed();
 
                 if let Some(correlation_id) = correlation_id.as_ref() {
                     correlation_id.record_property(Property::WasmVM {
                         original_bytes: original_bytes.clone(),
-                        preprocess_duration: preprocess_dur,
+                        preprocess_duration: preprocess_dur.clone(),
                         invoke_duration: invoke_dur,
                     });
                 }
 
+                // let outcome = if let ExecutionMode::Wasmer(Wasmer {
+                //     instrument: InstrumentMode::MeteringMiddleware,
+                //     ..
+                // }) = wasm_engine.execution_mode()
+                // {
+                //     let metering = metering::get_remaining_points(&mut store, &instance);
+                //     let outcome = InvokeOutcome::new(res, metering);
+                //     eprintln!("outcome {:?}", outcome);
+                //     outcome
+                // } else {
+                //     InvokeOutcome::with_return_value(res)
+                // };
+
                 Ok(res)
             }
+        }
+    }
+
+    pub fn get_remaining_points(&mut self, wasm_engine: &WasmEngine) -> Option<MeteringPoints> {
+        match self {
+            Instance::Singlepass {
+                instance, store, ..
+            } => {
+                if let ExecutionMode::Wasmer(Wasmer {
+                    instrument: InstrumentMode::MeteringMiddleware,
+                    ..
+                }) = wasm_engine.execution_mode()
+                {
+                    let remaining_points =
+                        metering::get_remaining_points(&mut store.as_store_mut(), &instance);
+                    Some(remaining_points)
+                } else {
+                    None
+                }
+
+                // let outcome =
+            }
+            _ => None,
         }
     }
 }
@@ -1005,23 +1098,16 @@ fn cache_set(correlation_id: Option<&CorrelationId>, cache_key: CacheKey, artifa
 }
 
 pub enum Engine {
-    // Currently there seems to be issue where wasmi::Engine can't be reused when a wasm is trying to invoke new wasm module,
+    // Currently there seems to be issue where wasmi::Engine can't be reused when a wasm is trying
+    // to invoke new wasm module,
     Wasmi,
-    Wasmer(wasmer::Engine),
+    Wasmer,
     Wasmtime(WasmtimeEngine),
 }
 
 impl Engine {
     pub fn as_wasmtime(&self) -> Option<&WasmtimeEngine> {
         if let Self::Wasmtime(v) = self {
-            Some(v)
-        } else {
-            None
-        }
-    }
-
-    pub fn as_wasmer(&self) -> Option<&wasmer::Engine> {
-        if let Self::Wasmer(v) = self {
             Some(v)
         } else {
             None
@@ -1544,11 +1630,11 @@ impl WasmEngine {
                     module,
                 }
             }
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 backend,
                 cache_artifacts,
                 instrument,
-            } => {
+            }) => {
                 // let hash_digest = base16::encode_lower(&blake2b(&wasm_bytes));
                 if cache_artifacts {
                     if let Some(precompiled_bytes) =
@@ -1574,9 +1660,9 @@ impl WasmEngine {
                     }
                 }
 
-                // let wasmer_store = self.make_wasmer_store(backend);
-                let wasmer_store =
-                    wasmer::Store::new(self.engine.as_wasmer().expect("valid config"));
+                // let wasmer = self.execution_mode.as_wasmer().expect("valid config");
+                let engine = make_wasmer_backend(backend, instrument, self.wasm_config);
+                let wasmer_store = wasmer::Store::new(engine);
 
                 let wasmer_module = wasmer::Module::from_binary(&wasmer_store, &wasm_bytes)
                     .expect("should create wasmer module");
@@ -1620,33 +1706,11 @@ impl WasmEngine {
             }
             ExecutionMode::Compiled { .. } => Engine::Wasmtime(new_compiled_engine(&wasm_config)),
             ExecutionMode::JustInTime => todo!("jit temporarily unavailable"),
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 backend,
                 cache_artifacts,
                 instrument,
-            } => {
-                let engine: wasmer::Engine = match backend {
-                    WasmerBackend::Singlepass => Singlepass::new().into(),
-                    WasmerBackend::Cranelift { optimize } => {
-                        let mut cranelift = Cranelift::new();
-                        match optimize {
-                            CraneliftOptLevel::None => {
-                                cranelift.opt_level(wasmer::CraneliftOptLevel::None);
-                            }
-                            CraneliftOptLevel::Speed => {
-                                cranelift.opt_level(wasmer::CraneliftOptLevel::Speed);
-                            }
-                            CraneliftOptLevel::SpeedAndSize => {
-                                cranelift.opt_level(wasmer::CraneliftOptLevel::SpeedAndSize);
-                            }
-                        }
-                        cranelift.into()
-                    }
-                };
-
-                // let store = wasmer::Store::new(engine);
-                Engine::Wasmer(engine)
-            }
+            }) => Engine::Wasmer,
         };
         Self {
             wasm_config,
@@ -1847,11 +1911,11 @@ impl WasmEngine {
                     module: compiled_module,
                 })
             }
-            ExecutionMode::Wasmer {
+            ExecutionMode::Wasmer(Wasmer {
                 backend,
                 cache_artifacts,
                 instrument,
-            } => {
+            }) => {
                 // let preprocessed_wasm_bytes =
                 //     parity_wasm::serialize(module.clone()).expect("preprocessed wasm to bytes");
 
@@ -1859,24 +1923,32 @@ impl WasmEngine {
 
                 // let mut store = wasmer::Store::new(self.engine.as_wasmer().expect("valid
                 // config"));
-                let engine = self.engine.as_wasmer().expect("valid config");
+                // let engine = self.engine.as_wasmer().expect("valid config");
+                let engine = make_wasmer_backend(backend, instrument, self.wasm_config);
                 let store = wasmer::Store::new(engine);
                 // .read()
                 // .unwrap();
                 let original_bytes = module_bytes.clone();
-                let module_bytes = if instrument {
-                    // let instrument_Start = Instant::now();
-                    let instrument_start = Instant::now();
-                    let module = deserialize_interpreted(&module_bytes)?;
-                    let instrumented = instrument_module(module, &self.wasm_config)?;
-                    let instrumented_bytes = serialize_interpreted(instrumented)?;
+                let module_bytes = match instrument {
+                    InstrumentMode::None => module_bytes.clone(),
+                    InstrumentMode::ParityWasm => {
+                        // let instrument_Start = Instant::now();
+                        let instrument_start = Instant::now();
+                        let module = deserialize_interpreted(&module_bytes)?;
+                        let instrumented = instrument_module(module, &self.wasm_config)?;
+                        let instrumented_bytes = serialize_interpreted(instrumented)?;
 
-                    // let module = instrument_module(deserialized_module, &self.wasm_config)?;
-                    println!("wasmer instrument {:?}", instrument_start.elapsed());
-                    Bytes::from(instrumented_bytes)
-                } else {
-                    module_bytes.clone()
-                    // println!("")
+                        // let module = instrument_module(deserialized_module, &self.wasm_config)?;
+                        println!("wasmer instrument {:?}", instrument_start.elapsed());
+                        Bytes::from(instrumented_bytes)
+                    }
+                    InstrumentMode::MeteringMiddleware => {
+                        // Middleware should be already created
+                        module_bytes.clone()
+
+                        // module_bytes.clone()
+                        // println!("")
+                    }
                 };
                 let parse_start = Instant::now();
                 let wasmer_module = wasmer::Module::from_binary(&store, &module_bytes)?;

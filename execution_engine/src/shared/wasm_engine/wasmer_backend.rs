@@ -1,10 +1,91 @@
+pub mod metering;
+
 use wasmer::{
-    AsStoreMut, Function, FunctionEnv, FunctionEnvMut, Imports, Memory, MemoryView, RuntimeError,
+    AsStoreMut, CompilerConfig, Cranelift, Engine, Function, FunctionEnv, FunctionEnvMut, Imports,
+    Memory, MemoryView, RuntimeError, StoreMut,
+};
+use wasmer_compiler_singlepass::Singlepass;
+
+use crate::{
+    for_each_host_function,
+    shared::{
+        wasm_config::WasmConfig,
+        wasm_engine::{CraneliftOptLevel, InstrumentMode},
+    },
 };
 
-use crate::for_each_host_function;
+use super::{host_interface::WasmHostInterface, FunctionContext, WasmerBackend};
 
-use super::{host_interface::WasmHostInterface, FunctionContext};
+struct WasmerAdapter<'a> {
+    pub(crate) memory: StoreMut<'a>,
+}
+
+impl<'a, H> WasmerAdapter<'a, H>
+where
+    H: WasmHostInterface + Send + Sync + 'static,
+    H::Error: std::error::Error,
+{
+    fn new(store: StoreMut<'a>) -> Self {
+        Self { caller: store }
+    }
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
+        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        let view = wasmer_memory.view(&self.caller);
+        let mut vec = vec![0; size];
+        view.read(offset as u64, &mut vec)?;
+        Ok(vec)
+    }
+
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
+        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        let view = wasmer_memory.view(&self.caller);
+        // let mut vec = vec![0; size];
+        view.write(offset as u64, data)?;
+        Ok(())
+    }
+}
+
+pub(crate) fn make_wasmer_backend(
+    backend: WasmerBackend,
+    instrument: InstrumentMode,
+    wasm_config: WasmConfig,
+) -> Engine {
+    match backend {
+        WasmerBackend::Singlepass => {
+            let mut compiler = Singlepass::new();
+            if matches!(instrument, InstrumentMode::MeteringMiddleware) {
+                compiler.push_middleware(metering::wasmer_metering(
+                    u64::MAX,
+                    wasm_config.opcode_costs,
+                ));
+            }
+            compiler.into()
+        }
+        WasmerBackend::Cranelift { optimize } => {
+            let mut compiler = Cranelift::new();
+            match optimize {
+                CraneliftOptLevel::None => {
+                    compiler.opt_level(wasmer::CraneliftOptLevel::None);
+                }
+                CraneliftOptLevel::Speed => {
+                    compiler.opt_level(wasmer::CraneliftOptLevel::Speed);
+                }
+                CraneliftOptLevel::SpeedAndSize => {
+                    compiler.opt_level(wasmer::CraneliftOptLevel::SpeedAndSize);
+                }
+            }
+            if matches!(instrument, InstrumentMode::MeteringMiddleware) {
+                compiler.push_middleware(metering::wasmer_metering(
+                    u64::MAX,
+                    wasm_config.opcode_costs,
+                ));
+            }
+            compiler.into()
+        }
+    }
+}
 
 pub(crate) struct WasmerEnv<H>
 where
@@ -15,25 +96,12 @@ where
     pub(crate) memory: Option<Memory>,
 }
 
-pub(crate) struct WasmerAdapter<'a>(MemoryView<'a>);
-impl<'a> WasmerAdapter<'a> {
-    pub(crate) fn new(memory_view: MemoryView<'a>) -> Self {
-        Self(memory_view)
-    }
-}
-
-impl<'a> FunctionContext for WasmerAdapter<'a> {
-    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, super::RuntimeError> {
-        let mut vec = vec![0; size];
-        self.0.read(offset as u64, &mut vec)?;
-        Ok(vec)
-    }
-
-    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), super::RuntimeError> {
-        self.0.write(offset as u64, data)?;
-        Ok(())
-    }
-}
+// pub(crate) struct WasmerAdapter<'a>(MemoryView<'a>);
+// impl<'a> WasmerAdapter<'a> {
+//     pub(crate) fn new(memory_view: MemoryView<'a>) -> Self {
+//         Self(memory_view)
+//     }
+// }
 
 pub(crate) fn make_wasmer_imports<H>(
     env_name: &str,
@@ -61,9 +129,12 @@ where
                         mut caller: FunctionEnvMut<WasmerEnv<H>>,
                         $($($arg: $argty),*)?
                     | -> Result<visit_host_function!(@optional_ret $($ret)?), RuntimeError> {
-                        let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
-                        let view = wasmer_memory.view(&caller);
-                        let function_context = WasmerAdapter::new(view);
+                        // let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
+                        // let view = wasmer_memory.view(&caller);
+                        // let function_context = WasmerAdapter::new(view);
+                        let mut function_context = WasmerAdapter::new(caller);
+                        // let mut runtime_clone =
+                                                        // function_context.caller.data_mut().runtime.clone();
 
                         let res: visit_host_function!(@optional_ret $($ret)?) = match caller.data_mut().host.$name(function_context, $($($arg ),*)?) {
                             Ok(result) => result,
