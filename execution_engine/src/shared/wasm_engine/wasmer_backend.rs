@@ -1,8 +1,13 @@
 pub mod metering;
 
+use std::{
+    marker::PhantomData,
+    sync::{Arc, RwLock},
+};
+
 use wasmer::{
-    AsStoreMut, CompilerConfig, Cranelift, Engine, Function, FunctionEnv, FunctionEnvMut, Imports,
-    Memory, MemoryView, RuntimeError, StoreMut,
+    AsStoreMut, AsStoreRef, CompilerConfig, Cranelift, Engine, Function, FunctionEnv,
+    FunctionEnvMut, Imports, Memory, MemoryView, RuntimeError, StoreMut,
 };
 use wasmer_compiler_singlepass::Singlepass;
 
@@ -15,37 +20,6 @@ use crate::{
 };
 
 use super::{host_interface::WasmHostInterface, FunctionContext, WasmerBackend};
-
-struct WasmerAdapter<'a> {
-    pub(crate) memory: StoreMut<'a>,
-}
-
-impl<'a, H> WasmerAdapter<'a, H>
-where
-    H: WasmHostInterface + Send + Sync + 'static,
-    H::Error: std::error::Error,
-{
-    fn new(store: StoreMut<'a>) -> Self {
-        Self { caller: store }
-    }
-    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, RuntimeError> {
-        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
-
-        let view = wasmer_memory.view(&self.caller);
-        let mut vec = vec![0; size];
-        view.read(offset as u64, &mut vec)?;
-        Ok(vec)
-    }
-
-    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), RuntimeError> {
-        let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
-
-        let view = wasmer_memory.view(&self.caller);
-        // let mut vec = vec![0; size];
-        view.write(offset as u64, data)?;
-        Ok(())
-    }
-}
 
 pub(crate) fn make_wasmer_backend(
     backend: WasmerBackend,
@@ -92,16 +66,46 @@ where
     H: WasmHostInterface + Send + Sync + 'static,
     H::Error: std::error::Error,
 {
-    pub(crate) host: H,
+    pub(crate) host: Arc<RwLock<H>>,
     pub(crate) memory: Option<Memory>,
 }
 
-// pub(crate) struct WasmerAdapter<'a>(MemoryView<'a>);
-// impl<'a> WasmerAdapter<'a> {
-//     pub(crate) fn new(memory_view: MemoryView<'a>) -> Self {
-//         Self(memory_view)
-//     }
-// }
+pub struct WasmerAdapter<'a> {
+    pub(crate) view: MemoryView<'a>,
+}
+
+impl<'a> WasmerAdapter<'a> {
+    fn new(view: MemoryView<'a>) -> Self {
+        Self {
+            view,
+            // _marker: PhantomData,
+        }
+    }
+}
+
+impl<'a> FunctionContext for WasmerAdapter<'a> {
+    fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, super::RuntimeError> {
+        // self.
+
+        // let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        // let view = wasmer_memory.view(&self.caller);
+        let mut vec = vec![0; size];
+        self.view.read(offset as u64, &mut vec)?;
+        Ok(vec)
+        // todo!()
+    }
+
+    fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), super::RuntimeError> {
+        // let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+
+        // let view = wasmer_memory.view(&self.caller);
+        // let mut vec = vec![0; size];
+        self.view.write(offset as u64, data)?;
+        Ok(())
+        // todo!()
+    }
+}
 
 pub(crate) fn make_wasmer_imports<H>(
     env_name: &str,
@@ -129,14 +133,13 @@ where
                         mut caller: FunctionEnvMut<WasmerEnv<H>>,
                         $($($arg: $argty),*)?
                     | -> Result<visit_host_function!(@optional_ret $($ret)?), RuntimeError> {
-                        // let wasmer_memory = caller.data().memory.as_ref().cloned().unwrap();
-                        // let view = wasmer_memory.view(&caller);
-                        // let function_context = WasmerAdapter::new(view);
-                        let mut function_context = WasmerAdapter::new(caller);
-                        // let mut runtime_clone =
-                                                        // function_context.caller.data_mut().runtime.clone();
+                        // caller.
+                        let view = caller.data().memory.as_ref().unwrap().view(&caller.as_store_ref());
+                        let function_context = WasmerAdapter::new(view);
 
-                        let res: visit_host_function!(@optional_ret $($ret)?) = match caller.data_mut().host.$name(function_context, $($($arg ),*)?) {
+                        let mut host = caller.data().host.write().unwrap();
+
+                        let res: visit_host_function!(@optional_ret $($ret)?) = match host.$name(function_context, $($($arg ),*)?) {
                             Ok(result) => result,
                             Err(error) => return Err(RuntimeError::user(error.into())),
                         };
@@ -153,4 +156,10 @@ where
     for_each_host_function!(visit_host_function);
 
     import_object
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn smoke_test() {}
 }

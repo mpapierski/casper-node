@@ -620,7 +620,7 @@ where
                     .expect("should get wasmer call func");
 
                 let maybe_res = call_func.call(store);
-                dbg!(&maybe_res);
+                // dbg!(&maybe_res);
                 let res = maybe_res?;
 
                 let invoke_dur = timestamp.elapsed();
@@ -1212,7 +1212,7 @@ impl WasmEngine {
     pub fn instance_and_memory<H>(
         &self,
         wasm_module: Module,
-        runtime: H,
+        mut runtime: H,
     ) -> Result<Instance<H>, RuntimeError>
     where
         H: WasmHostInterface + Send + Sync + 'static,
@@ -1456,7 +1456,7 @@ impl WasmEngine {
                 // // import_object.mem
 
                 let wasmer_env = WasmerEnv {
-                    host: runtime,
+                    host: Arc::new(RwLock::new(runtime)),
                     memory: imported_memory.clone(),
                 };
 
