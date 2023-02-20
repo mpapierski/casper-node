@@ -53,8 +53,8 @@ use crate::{
         host_function_costs::{Cost, HostFunction},
         newtypes::{CorrelationId, Property},
         wasm_engine::{
-            self, host_interface::WasmHostInterface, FunctionContext, Module, PreprocessingError,
-            WasmEngine, WasmiModule,
+            self, host_interface::WasmHostInterface, FunctionContext, MeteringPoints, Module,
+            NativeCode, PreprocessingError, WasmEngine, WasmiModule,
         },
     },
     storage::global_state::StateReader,
@@ -179,19 +179,23 @@ where
         &self.context
     }
 
-    pub(crate) fn gas(&mut self, amount: Gas) -> Result<(), Error> {
-        self.context.charge_gas(amount)
-    }
+    // pub(crate) fn charge_gas(
+    //     &mut self,
+    //     context: &mut impl FunctionContext,
+    //     amount: u64,
+    // ) -> Result<(), Error> {
+    //     // self.context.charge_gas(amount)
+    // }
 
-    /// Returns current gas counter.
-    fn gas_counter(&self) -> Gas {
-        self.context.gas_counter()
-    }
+    // /// Returns current gas counter.
+    // fn gas_counter(&self) -> u64 {
+    //     self.context.gas_counter()
+    // }
 
-    /// Sets new gas counter value.
-    fn set_gas_counter(&mut self, new_gas_counter: Gas) {
-        self.context.set_gas_counter(new_gas_counter);
-    }
+    // /// Sets new gas counter value.
+    // fn set_gas_counter(&mut self, new_gas_counter: Gas) {
+    //     self.context.set_gas_counter(new_gas_counter);
+    // }
 
     /// Charge for a system contract call.
     ///
@@ -199,7 +203,11 @@ where
     /// contract or if we're currently within the scope of a host function call. This avoids
     /// misleading gas charges if one system contract calls other system contract (e.g. auction
     /// contract calls into mint to create new purses).
-    pub(crate) fn charge_system_contract_call<T>(&mut self, amount: T) -> Result<(), Error>
+    pub(crate) fn charge_system_contract_call<T>(
+        &mut self,
+        context: &mut impl FunctionContext,
+        amount: T,
+    ) -> Result<(), Error>
     where
         T: Into<Gas>,
     {
@@ -373,12 +381,13 @@ where
     /// Calls host mint contract.
     fn call_host_mint(
         &mut self,
+        context: &mut impl FunctionContext,
         entry_point_name: &str,
         runtime_args: &RuntimeArgs,
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
 
         let mint_hash = self.context.get_system_contract(MINT)?;
         let base_key = Key::from(mint_hash);
@@ -406,7 +415,7 @@ where
         let result = match entry_point_name {
             // Type: `fn mint(amount: U512) -> Result<URef, Error>`
             mint::METHOD_MINT => (|| {
-                mint_runtime.charge_system_contract_call(mint_costs.mint)?;
+                // mint_runtime.charge_system_contract_call(mint_costs.mint)?;
 
                 let amount: U512 = Self::get_named_argument(runtime_args, mint::ARG_AMOUNT)?;
                 let result: Result<URef, mint::Error> = mint_runtime.mint(amount);
@@ -479,10 +488,10 @@ where
         // Charge just for the amount that particular entry point cost - using gas cost from the
         // isolated runtime might have a recursive costs whenever system contract calls other system
         // contract.
-        self.gas(match mint_runtime.gas_counter().checked_sub(gas_counter) {
-            None => gas_counter,
-            Some(new_gas) => new_gas,
-        })?;
+        // self.gas(match mint_runtime.gas_counter().checked_sub(gas_counter) {
+        //     None => gas_counter,
+        //     Some(new_gas) => new_gas,
+        // })?;
 
         // Result still contains a result, but the entrypoints logic does not exit early on errors.
         let ret = result?;
@@ -503,12 +512,13 @@ where
     /// Calls host `handle_payment` contract.
     fn call_host_handle_payment(
         &mut self,
+        context: &mut impl FunctionContext,
         entry_point_name: &str,
         runtime_args: &RuntimeArgs,
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
 
         let handle_payment_hash = self.context.get_system_contract(HANDLE_PAYMENT)?;
         let base_key = Key::from(handle_payment_hash);
@@ -529,6 +539,13 @@ where
         );
 
         let mut runtime = self.new_with_stack(runtime_context, stack);
+
+        let mut native_code = NativeCode::new(
+            context
+                .get_remaining_points()
+                .into_remaining()
+                .ok_or(Error::GasLimit)?,
+        );
 
         let system_config = self.config.system_config();
         let handle_payment_costs = system_config.handle_payment_costs();
@@ -565,17 +582,17 @@ where
                 let target: URef =
                     Self::get_named_argument(runtime_args, handle_payment::ARG_TARGET)?;
                 runtime
-                    .finalize_payment(amount_spent, account, target)
+                    .finalize_payment(context, amount_spent, account, target)
                     .map_err(Self::reverter)?;
                 CLValue::from_t(()).map_err(Self::reverter)
             })(),
             _ => CLValue::from_t(()).map_err(Self::reverter),
         };
 
-        self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
-            None => gas_counter,
-            Some(new_gas) => new_gas,
-        })?;
+        // self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
+        //     None => gas_counter,
+        //     Some(new_gas) => new_gas,
+        // })?;
 
         let ret = result?;
         let urefs = utils::extract_urefs(&ret)?;
@@ -588,27 +605,32 @@ where
     }
 
     /// Calls host standard payment contract.
-    pub(crate) fn call_host_standard_payment(&mut self, stack: RuntimeStack) -> Result<(), Error> {
+    pub(crate) fn call_host_standard_payment(
+        &mut self,
+        context: &mut impl FunctionContext,
+        stack: RuntimeStack,
+    ) -> Result<(), Error> {
         // NOTE: This method (unlike other call_host_* methods) already runs on its own runtime
         // context.
         self.stack = Some(stack);
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
         let amount: U512 =
             Self::get_named_argument(self.context.args(), standard_payment::ARG_AMOUNT)?;
         let result = self.pay(amount).map_err(Self::reverter);
-        self.set_gas_counter(gas_counter);
+        // self.set_gas_counter(gas_counter);
         result
     }
 
     /// Calls host auction contract.
     fn call_host_auction(
         &mut self,
+        context: &mut impl FunctionContext,
         entry_point_name: &str,
         runtime_args: &RuntimeArgs,
         access_rights: ContextAccessRights,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
 
         let auction_hash = self.context.get_system_contract(AUCTION)?;
         let base_key = Key::from(auction_hash);
@@ -651,7 +673,7 @@ where
                 let amount = Self::get_named_argument(runtime_args, auction::ARG_AMOUNT)?;
 
                 let result = runtime
-                    .add_bid(account_hash, delegation_rate, amount)
+                    .add_bid(context, account_hash, delegation_rate, amount)
                     .map_err(Self::reverter)?;
 
                 CLValue::from_t(result).map_err(Self::reverter)
@@ -679,7 +701,13 @@ where
                 let minimum_delegation_amount = self.config.minimum_delegation_amount();
 
                 let result = runtime
-                    .delegate(delegator, validator, amount, minimum_delegation_amount)
+                    .delegate(
+                        context,
+                        delegator,
+                        validator,
+                        amount,
+                        minimum_delegation_amount,
+                    )
                     .map_err(Self::reverter)?;
 
                 CLValue::from_t(result).map_err(Self::reverter)
@@ -693,7 +721,7 @@ where
                 let amount = Self::get_named_argument(runtime_args, auction::ARG_AMOUNT)?;
 
                 let result = runtime
-                    .undelegate(delegator, validator, amount)
+                    .undelegate(context, delegator, validator, amount)
                     .map_err(Self::reverter)?;
 
                 CLValue::from_t(result).map_err(Self::reverter)
@@ -732,7 +760,7 @@ where
                     Self::get_named_argument(runtime_args, auction::ARG_EVICTED_VALIDATORS)?;
 
                 runtime
-                    .run_auction(era_end_timestamp_millis, evicted_validators)
+                    .run_auction(context, era_end_timestamp_millis, evicted_validators)
                     .map_err(Self::reverter)?;
 
                 CLValue::from_t(()).map_err(Self::reverter)
@@ -745,7 +773,7 @@ where
                 let validator_public_keys =
                     Self::get_named_argument(runtime_args, auction::ARG_VALIDATOR_PUBLIC_KEYS)?;
                 runtime
-                    .slash(validator_public_keys)
+                    .slash(context, validator_public_keys)
                     .map_err(Self::reverter)?;
                 CLValue::from_t(()).map_err(Self::reverter)
             })(),
@@ -756,7 +784,9 @@ where
 
                 let reward_factors: BTreeMap<PublicKey, u64> =
                     Self::get_named_argument(runtime_args, auction::ARG_REWARD_FACTORS)?;
-                runtime.distribute(reward_factors).map_err(Self::reverter)?;
+                runtime
+                    .distribute(context, reward_factors)
+                    .map_err(Self::reverter)?;
                 CLValue::from_t(()).map_err(Self::reverter)
             })(),
 
@@ -784,11 +814,11 @@ where
             _ => CLValue::from_t(()).map_err(Self::reverter),
         };
 
-        // Charge for the gas spent during execution in an isolated runtime.
-        self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
-            None => gas_counter,
-            Some(new_gas) => new_gas,
-        })?;
+        // // Charge for the gas spent during execution in an isolated runtime.
+        // self.gas(match runtime.gas_counter().checked_sub(gas_counter) {
+        //     None => gas_counter,
+        //     Some(new_gas) => new_gas,
+        // })?;
 
         // Result still contains a result, but the entrypoints logic does not exit early on errors.
         let ret = result?;
@@ -806,25 +836,27 @@ where
     /// Call a contract by pushing a stack element onto the frame.
     pub(crate) fn call_contract_with_stack(
         &mut self,
+        context: &mut impl FunctionContext,
         contract_hash: ContractHash,
         entry_point_name: &str,
         args: RuntimeArgs,
         stack: RuntimeStack,
     ) -> Result<CLValue, Error> {
         self.stack = Some(stack);
-        self.call_contract(contract_hash, entry_point_name, args)
+        self.call_contract(context, contract_hash, entry_point_name, args)
     }
 
     /// Calls contract living under a `key`, with supplied `args`.
     pub fn call_contract(
         &mut self,
+        context: &mut impl FunctionContext,
         contract_hash: ContractHash,
         entry_point_name: &str,
         args: RuntimeArgs,
     ) -> Result<CLValue, Error> {
         let identifier = CallContractIdentifier::Contract { contract_hash };
 
-        self.execute_contract(identifier, entry_point_name, args)
+        self.execute_contract(context, identifier, entry_point_name, args)
     }
 
     /// Calls `version` of the contract living at `key`, invoking `method` with
@@ -832,6 +864,7 @@ where
     /// types given in the contract header.
     pub fn call_versioned_contract(
         &mut self,
+        context: &mut impl FunctionContext,
         contract_package_hash: ContractPackageHash,
         contract_version: Option<ContractVersion>,
         entry_point_name: String,
@@ -842,7 +875,7 @@ where
             version: contract_version,
         };
 
-        self.execute_contract(identifier, &entry_point_name, args)
+        self.execute_contract(context, identifier, &entry_point_name, args)
     }
 
     fn get_context_key_for_contract_call(
@@ -872,6 +905,7 @@ where
 
     fn execute_contract(
         &mut self,
+        context: &mut impl FunctionContext,
         identifier: CallContractIdentifier,
         entry_point_name: &str,
         args: RuntimeArgs,
@@ -1053,7 +1087,14 @@ where
         access_rights.extend(&extended_access_rights);
 
         if self.is_mint(context_key) {
-            return self.call_host_mint(entry_point.name(), &context_args, access_rights, stack);
+            // let native_code =
+            return self.call_host_mint(
+                context,
+                entry_point.name(),
+                &context_args,
+                access_rights,
+                stack,
+            );
         } else if self.is_handle_payment(context_key) {
             return self.call_host_handle_payment(
                 entry_point.name(),
@@ -1062,8 +1103,19 @@ where
                 stack,
             );
         } else if self.is_auction(context_key) {
-            return self.call_host_auction(entry_point.name(), &context_args, access_rights, stack);
+            return self.call_host_auction(
+                context,
+                entry_point.name(),
+                &context_args,
+                access_rights,
+                stack,
+            );
         }
+
+        let current_remaining_points = context
+            .get_remaining_points()
+            .into_remaining()
+            .ok_or(Error::GasLimit)?;
 
         let module: Module = {
             let wasm_key = contract.contract_wasm_key();
@@ -1090,7 +1142,7 @@ where
             )?
         };
 
-        let context = self.context.new_from_self(
+        let runtime_context = self.context.new_from_self(
             context_key,
             entry_point.entry_point_type(),
             named_keys,
@@ -1099,7 +1151,7 @@ where
         );
         let protocol_version = self.context.protocol_version();
 
-        let mut runtime = Runtime::new_invocation_runtime(self, context, &module, stack);
+        let mut runtime = Runtime::new_invocation_runtime(self, runtime_context, &module, stack);
 
         let mut instance = self
             .wasm_engine
@@ -1112,12 +1164,33 @@ where
             (),
         );
 
+        match instance.get_remaining_points() {
+            Some(MeteringPoints::Remaining(remaining_points)) => {
+                // let current_points = context.get_remaining_points();
+                match current_remaining_points.checked_sub(remaining_points) {
+                    Some(new_remaining_points) => {
+                        context.set_remaining_points(new_remaining_points)
+                    }
+                    None => {
+                        context.set_remaining_points(0);
+                        return Err(Error::GasLimit);
+                    }
+                }
+            }
+            Some(MeteringPoints::Exhausted) => {
+                return Err(Error::GasLimit);
+            }
+            None => {}
+        }
+
+        // }
+
         // todo!("execute_contract invoke result {:?}", result);
 
         // The `runtime`'s context was initialized with our counter from before the call and any gas
         // charged by the sub-call was added to its counter - so let's copy the correct value of the
         // counter from there to our counter.
-        self.context.set_gas_counter(runtime.context.gas_counter());
+        // self.context.set_gas_counter(runtime.context.gas_counter());
 
         {
             // let transfers = self.context.transfers_mut();
@@ -1378,15 +1451,17 @@ where
     /// contract key
     fn mint_read_base_round_reward(
         &mut self,
+        context: &mut impl FunctionContext,
         mint_contract_hash: ContractHash,
     ) -> Result<U512, Error> {
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
         let call_result = self.call_contract(
+            context,
             mint_contract_hash,
             mint::METHOD_READ_BASE_ROUND_REWARD,
             RuntimeArgs::default(),
         );
-        self.set_gas_counter(gas_counter);
+        // self.set_gas_counter(gas_counter);
 
         let reward = call_result?.into_t()?;
         Ok(reward)
@@ -1394,15 +1469,21 @@ where
 
     /// Calls the `mint` method on the mint contract at the given mint
     /// contract key
-    fn mint_mint(&mut self, mint_contract_hash: ContractHash, amount: U512) -> Result<URef, Error> {
-        let gas_counter = self.gas_counter();
+    fn mint_mint(
+        &mut self,
+        context: &mut impl FunctionContext,
+        mint_contract_hash: ContractHash,
+        amount: U512,
+    ) -> Result<URef, Error> {
+        // let gas_counter = self.gas_counter();
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
             runtime_args
         };
-        let call_result = self.call_contract(mint_contract_hash, mint::METHOD_MINT, runtime_args);
-        self.set_gas_counter(gas_counter);
+        let call_result =
+            self.call_contract(context, mint_contract_hash, mint::METHOD_MINT, runtime_args);
+        // self.set_gas_counter(gas_counter);
 
         let result: Result<URef, mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -1412,21 +1493,23 @@ where
     /// contract key
     fn mint_reduce_total_supply(
         &mut self,
+        context: &mut impl FunctionContext,
         mint_contract_hash: ContractHash,
         amount: U512,
     ) -> Result<(), Error> {
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
         let runtime_args = {
             let mut runtime_args = RuntimeArgs::new();
             runtime_args.insert(mint::ARG_AMOUNT, amount)?;
             runtime_args
         };
         let call_result = self.call_contract(
+            context,
             mint_contract_hash,
             mint::METHOD_REDUCE_TOTAL_SUPPLY,
             runtime_args,
         );
-        self.set_gas_counter(gas_counter);
+        // self.set_gas_counter(gas_counter);
 
         let result: Result<(), mint::Error> = call_result?.into_t()?;
         Ok(result.map_err(system::Error::from)?)
@@ -1434,22 +1517,31 @@ where
 
     /// Calls the "create" method on the mint contract at the given mint
     /// contract key
-    fn mint_create(&mut self, mint_contract_hash: ContractHash) -> Result<URef, Error> {
-        let result =
-            self.call_contract(mint_contract_hash, mint::METHOD_CREATE, RuntimeArgs::new());
+    fn mint_create(
+        &mut self,
+        context: &mut impl FunctionContext,
+        mint_contract_hash: ContractHash,
+    ) -> Result<URef, Error> {
+        let result = self.call_contract(
+            context,
+            mint_contract_hash,
+            mint::METHOD_CREATE,
+            RuntimeArgs::new(),
+        );
         let purse = result?.into_t()?;
         Ok(purse)
     }
 
-    fn create_purse(&mut self) -> Result<URef, Error> {
+    fn create_purse(&mut self, context: &mut impl FunctionContext) -> Result<URef, Error> {
         let _scoped_host_function_flag = self.host_function_flag.enter_host_function_scope();
-        self.mint_create(self.get_mint_contract()?)
+        self.mint_create(context, self.get_mint_contract()?)
     }
 
     /// Calls the "transfer" method on the mint contract at the given mint
     /// contract key
     fn mint_transfer(
         &mut self,
+        context: &mut impl FunctionContext,
         mint_contract_hash: ContractHash,
         to: Option<AccountHash>,
         source: URef,
@@ -1469,10 +1561,14 @@ where
             runtime_args
         };
 
-        let gas_counter = self.gas_counter();
-        let call_result =
-            self.call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values);
-        self.set_gas_counter(gas_counter);
+        // let gas_counter = self.gas_counter();
+        let call_result = self.call_contract(
+            context,
+            mint_contract_hash,
+            mint::METHOD_TRANSFER,
+            args_values,
+        );
+        // self.set_gas_counter(gas_counter);
 
         Ok(call_result?.into_t()?)
     }
@@ -1481,6 +1577,7 @@ where
     /// of motes from the given source purse to the new account's purse.
     fn transfer_to_new_account(
         &mut self,
+        context: &mut impl FunctionContext,
         source: URef,
         target: AccountHash,
         amount: U512,
@@ -1496,13 +1593,14 @@ where
             return Ok(Err(mint::Error::InsufficientFunds.into()));
         }
 
-        let target_purse = self.mint_create(mint_contract_hash)?;
+        let target_purse = self.mint_create(context, mint_contract_hash)?;
 
         if source == target_purse {
             return Ok(Err(mint::Error::EqualSourceAndTarget.into()));
         }
 
         let result = self.mint_transfer(
+            context,
             mint_contract_hash,
             Some(target),
             source,
@@ -1532,6 +1630,7 @@ where
     /// been created by the mint contract (or are the genesis account's).
     fn transfer_to_existing_account(
         &mut self,
+        context: &mut impl FunctionContext,
         to: Option<AccountHash>,
         source: URef,
         target: URef,
@@ -1540,7 +1639,7 @@ where
     ) -> Result<TransferResult, Error> {
         let mint_contract_key = self.get_mint_contract()?;
 
-        match self.mint_transfer(mint_contract_key, to, source, target, amount, id)? {
+        match self.mint_transfer(context, mint_contract_key, to, source, target, amount, id)? {
             Ok(()) => Ok(Ok(TransferredTo::ExistingAccount)),
             Err(error) => Ok(Err(error.into())),
         }
@@ -1549,18 +1648,20 @@ where
     /// `target` account. If that account does not exist, creates one.
     fn transfer_to_account(
         &mut self,
+        context: &mut impl FunctionContext,
         target: AccountHash,
         amount: U512,
         id: Option<u64>,
     ) -> Result<TransferResult, Error> {
         let source = self.context.get_main_purse()?;
-        self.transfer_from_purse_to_account(source, target, amount, id)
+        self.transfer_from_purse_to_account(context, source, target, amount, id)
     }
 
     /// Transfers `amount` of motes from `source` purse to `target` account.
     /// If that account does not exist, creates one.
     fn transfer_from_purse_to_account(
         &mut self,
+        context: &mut impl FunctionContext,
         source: URef,
         target: AccountHash,
         amount: U512,
@@ -1574,7 +1675,7 @@ where
             None => {
                 // If no account exists, create a new account and transfer the amount to its
                 // purse.
-                self.transfer_to_new_account(source, target, amount, id)
+                self.transfer_to_new_account(context, source, target, amount, id)
             }
             Some(StoredValue::Account(account)) => {
                 // Attenuate the target main purse
@@ -1590,6 +1691,7 @@ where
 
                 // If an account exists, transfer the amount to its purse
                 let transfer_result = self.transfer_to_existing_account(
+                    context,
                     Some(target),
                     source,
                     target_uref,
@@ -1710,6 +1812,7 @@ where
     /// Calculate gas cost for a host function
     pub(crate) fn charge_host_function_call<T>(
         &mut self,
+        context: &mut impl FunctionContext,
         host_function: &HostFunction<T>,
         weights: T,
     ) -> Result<(), Error>
@@ -1717,7 +1820,7 @@ where
         T: AsRef<[Cost]> + Copy,
     {
         let cost = host_function.calculate_gas_cost(weights);
-        self.gas(cost)?;
+        // self.gas(cost)?;
         Ok(())
     }
 
@@ -1760,7 +1863,7 @@ where
         ExecutionResult::Success {
             execution_journal: self.context().execution_journal(),
             transfers: self.context().transfers().to_owned(),
-            cost: self.context().gas_counter(),
+            cost: todo!(), //self.context().gas_counter(),
         }
     }
 
@@ -1769,7 +1872,7 @@ where
             error: error.into(),
             execution_journal: self.context().execution_journal(),
             transfers: self.context().transfers().to_owned(),
-            cost: self.context().gas_counter(),
+            cost: todo!(), //self.context().gas_counter(),
         }
     }
 }
@@ -1780,6 +1883,7 @@ where
     R::Error: Into<Error>,
 {
     type Error = Error;
+
     fn gas(&mut self, _context: impl FunctionContext, param: u32) -> Result<(), Self::Error> {
         let amount = Gas::from(param);
         self.context.charge_gas(amount)?;
@@ -1800,6 +1904,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.read_value,
             [key_ptr, key_size, output_size_ptr],
         )?;
@@ -1850,6 +1955,7 @@ where
     ) -> Result<(), Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.add,
             [key_ptr, key_size, value_ptr, value_size],
         )?;
@@ -1867,10 +1973,14 @@ where
     }
 
     /// Reverts contract execution with a status specified.
-    fn casper_revert(&mut self, _context: impl FunctionContext, status: u32) -> Result<(), Error> {
+    fn casper_revert(
+        &mut self,
+        mut context: impl FunctionContext,
+        status: u32,
+    ) -> Result<(), Error> {
         // Err(Error::Revert(api_error:))
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(&host_function_costs.revert, [status])?;
+        self.charge_host_function_call(&mut context, &host_function_costs.revert, [status])?;
         Err(Error::Revert(status.into()))
     }
 
@@ -1878,15 +1988,17 @@ where
     /// type is `Trap`, indicating that this function will always kill the current Wasm instance.
     fn casper_ret(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         value_ptr: u32,
         value_size: u32,
     ) -> Result<(), Self::Error> {
         let host_function_costs = self.config().wasm_config().take_host_function_costs();
 
-        if let Err(error) =
-            self.charge_host_function_call(&host_function_costs.ret, [value_ptr, value_size])
-        {
+        if let Err(error) = self.charge_host_function_call(
+            &mut context,
+            &host_function_costs.ret,
+            [value_ptr, value_size],
+        ) {
             return Err(error);
         }
 
@@ -1962,6 +2074,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.add_associated_key,
             [account_hash_ptr, account_hash_size, weight as Cost],
         )?;
@@ -2009,6 +2122,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.update_associated_key,
             [account_hash_ptr, account_hash_size, weight as Cost],
         )?;
@@ -2117,6 +2231,7 @@ where
     ) -> Result<(), Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.new_uref,
             [uref_ptr, value_ptr, value_size],
         )?;
@@ -2141,12 +2256,16 @@ where
         // args(0) = pointer to array for return value
         // args(1) = length of array for return value
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(&host_function_costs.create_purse, [dest_ptr, dest_size])?;
+        self.charge_host_function_call(
+            &mut context,
+            &host_function_costs.create_purse,
+            [dest_ptr, dest_size],
+        )?;
 
         let result = if (dest_size as usize) < UREF_SERIALIZED_LENGTH {
             Err(ApiError::PurseNotCreated)
         } else {
-            let purse = self.create_purse()?;
+            let purse = self.create_purse(&mut context)?;
             let purse_bytes = purse.into_bytes().map_err(Error::BytesRepr)?;
             context.memory_write(dest_ptr, &purse_bytes)?;
             Ok(())
@@ -2166,6 +2285,7 @@ where
     ) -> Result<(), Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.write,
             [key_ptr, key_size, value_ptr, value_size],
         )?;
@@ -2184,7 +2304,11 @@ where
         dest_ptr: u32,
     ) -> Result<(), Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(&host_function_costs.get_main_purse, [dest_ptr])?;
+        self.charge_host_function_call(
+            &mut context,
+            &host_function_costs.get_main_purse,
+            [dest_ptr],
+        )?;
         let purse = self.context.get_main_purse()?;
         let bytes = purse.into_bytes().map_err(Error::from)?;
         context.memory_write(dest_ptr, &bytes)?;
@@ -2203,6 +2327,7 @@ where
         // args(2) = pointer to a argument size (output)
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.get_named_arg_size,
             [name_ptr, name_size, size_ptr],
         )?;
@@ -2268,6 +2393,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.transfer_to_account,
             [
                 key_ptr,
@@ -2293,7 +2419,7 @@ where
             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
         };
 
-        let ret = match self.transfer_to_account(account_hash, amount, id)? {
+        let ret = match self.transfer_to_account(&mut context, account_hash, amount, id)? {
             Ok(transferred_to) => {
                 let result_value: u32 = transferred_to as u32;
                 let result_value_bytes = result_value.to_le_bytes();
@@ -2331,6 +2457,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.get_key,
             [name_ptr, name_size, output_ptr, output_size, bytes_written],
         )?;
@@ -2375,7 +2502,7 @@ where
 
     fn casper_put_key(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         name_ptr: u32,
         name_size: u32,
         key_ptr: u32,
@@ -2383,6 +2510,7 @@ where
     ) -> Result<(), Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.put_key,
             [name_ptr, name_size, key_ptr, key_size],
         )?;
@@ -2420,7 +2548,11 @@ where
         text_size: u32,
     ) -> Result<(), Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
-        self.charge_host_function_call(&host_function_costs.print, [text_ptr, text_size])?;
+        self.charge_host_function_call(
+            &mut context,
+            &host_function_costs.print,
+            [text_ptr, text_size],
+        )?;
         let text: String = t_from_memory(&mut context, text_ptr, text_size)?;
         eprintln!("{}", text);
         Ok(())
@@ -2441,6 +2573,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.transfer_from_purse_to_purse,
             [
                 source_ptr,
@@ -2478,7 +2611,15 @@ where
 
         let mint_contract_key = self.get_mint_contract()?;
 
-        match self.mint_transfer(mint_contract_key, None, source, target, amount, id)? {
+        match self.mint_transfer(
+            &mut context,
+            mint_contract_key,
+            None,
+            source,
+            target,
+            amount,
+            id,
+        )? {
             Ok(()) => Ok(api_error::SUCCESS),
             Err(mint_error) => {
                 let error: ApiError = mint_error.into();
@@ -2502,6 +2643,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.transfer_from_purse_to_account,
             [
                 source_ptr,
@@ -2531,16 +2673,21 @@ where
             let bytes = context.memory_read(id_ptr, id_size as usize)?;
             bytesrepr::deserialize(bytes).map_err(Error::BytesRepr)?
         };
-        let ret =
-            match self.transfer_from_purse_to_account(source_purse, account_hash, amount, id)? {
-                Ok(transferred_to) => {
-                    let result_value: u32 = transferred_to as u32;
-                    let result_value_bytes = result_value.to_le_bytes();
-                    context.memory_write(result_ptr, &result_value_bytes)?;
-                    Ok(())
-                }
-                Err(api_error) => Err(api_error),
-            };
+        let ret = match self.transfer_from_purse_to_account(
+            &mut context,
+            source_purse,
+            account_hash,
+            amount,
+            id,
+        )? {
+            Ok(transferred_to) => {
+                let result_value: u32 = transferred_to as u32;
+                let result_value_bytes = result_value.to_le_bytes();
+                context.memory_write(result_ptr, &result_value_bytes)?;
+                Ok(())
+            }
+            Err(api_error) => Err(api_error),
+        };
         Ok(api_error::i32_from(ret))
     }
 
@@ -2553,6 +2700,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.get_balance,
             [ptr, ptr_size, output_size_ptr],
         )?;
@@ -2606,6 +2754,7 @@ where
         // args(0) = pointer to Wasm memory where to write size.
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.read_host_buffer,
             [dest_ptr, dest_size, bytes_written_ptr],
         )?;
@@ -2651,6 +2800,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.get_system_contract,
             [system_contract_index, dest_ptr, dest_size],
         )?;
@@ -2675,17 +2825,18 @@ where
 
     fn casper_load_named_keys(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         total_keys_ptr: u32,
         result_size_ptr: u32,
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.load_named_keys,
             [total_keys_ptr, result_size_ptr],
         )?;
         let ret = 'a: {
-            let mut context = context;
+            // let mut context = context;
             if !self.can_write_to_host_buffer() {
                 // Exit early if the host buffer is already occupied
                 break 'a Err(ApiError::HostBufferFull);
@@ -2738,6 +2889,7 @@ where
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
 
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.create_contract_package_at_hash,
             [hash_dest_ptr, access_dest_ptr],
         )?;
@@ -2771,6 +2923,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.create_contract_user_group,
             [
                 package_key_ptr,
@@ -2946,7 +3099,7 @@ where
 
     fn casper_remove_contract_user_group(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         package_key_ptr: u32,
         package_key_size: u32,
         label_ptr: u32,
@@ -2954,6 +3107,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config().wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.remove_contract_user_group,
             [package_key_ptr, package_key_size, label_ptr, label_size],
         )?;
@@ -3043,6 +3197,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config().wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.call_versioned_contract,
             [
                 contract_package_hash_ptr,
@@ -3076,6 +3231,7 @@ where
             }
             let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
             let result = self.call_versioned_contract(
+                &mut context,
                 contract_package_hash,
                 contract_version,
                 entry_point_name,
@@ -3088,7 +3244,7 @@ where
 
     fn casper_add_contract_version(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         contract_package_hash_ptr: u32,
         contract_package_hash_size: u32,
         version_ptr: u32,
@@ -3102,6 +3258,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config().wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.add_contract_version,
             [
                 contract_package_hash_ptr,
@@ -3242,6 +3399,7 @@ where
     ) -> Result<i32, Error> {
         let host_function_costs = self.config().wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.call_contract,
             [
                 contract_hash_ptr,
@@ -3277,7 +3435,7 @@ where
                 break 'a Ok(Err(err));
             }
             let args: RuntimeArgs = bytesrepr::deserialize(args_bytes)?;
-            let result = self.call_contract(contract_hash, entry_point_name, args)?;
+            let result = self.call_contract(&mut context, contract_hash, entry_point_name, args)?;
             self.wasm_manage_call_contract_host_buffer(context, result_size_ptr, result)
         }?;
         Ok(api_error::i32_from(ret))
@@ -3453,6 +3611,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.blake2b,
             [in_ptr, in_size, out_ptr, out_size],
         )?;
@@ -3483,7 +3642,11 @@ where
         len_ptr: u32,
         result_size_ptr: u32,
     ) -> Result<i32, Self::Error> {
-        self.charge_host_function_call(&HostFunction::fixed(10_000), [len_ptr, result_size_ptr])?;
+        self.charge_host_function_call(
+            &mut context,
+            &HostFunction::fixed(10_000),
+            [len_ptr, result_size_ptr],
+        )?;
 
         if !self.can_write_to_host_buffer() {
             // Exit early if the host buffer is already occupied
@@ -3528,7 +3691,7 @@ where
 
     fn casper_disable_contract_version(
         &mut self,
-        context: impl FunctionContext,
+        mut context: impl FunctionContext,
         package_key_ptr: u32,
         package_key_size: u32,
         contract_hash_ptr: u32,
@@ -3536,6 +3699,7 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.disable_contract_version,
             [
                 package_key_ptr,
@@ -3572,6 +3736,7 @@ where
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
 
         self.charge_host_function_call(
+            &mut context,
             &host_function_costs.read_value,
             [key_ptr, key_size, output_size_ptr],
         )?;
@@ -3612,7 +3777,11 @@ where
     ) -> Result<i32, Self::Error> {
         let host_function_costs = self.config.wasm_config().take_host_function_costs();
 
-        self.charge_host_function_call(&host_function_costs.random_bytes, [out_ptr, out_size])?;
+        self.charge_host_function_call(
+            &mut context,
+            &host_function_costs.random_bytes,
+            [out_ptr, out_size],
+        )?;
 
         let random_bytes = self.context.random_bytes()?;
 

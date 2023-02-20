@@ -5,6 +5,7 @@ use casper_types::{
 
 use crate::{
     core::{execution, runtime::Runtime},
+    shared::wasm_engine::FunctionContext,
     storage::global_state::StateReader,
     system::standard_payment::{
         account_provider::AccountProvider, handle_payment_provider::HandlePaymentProvider,
@@ -46,6 +47,7 @@ where
 {
     fn transfer_purse_to_purse(
         &mut self,
+        context: &mut impl FunctionContext,
         source: URef,
         target: URef,
         amount: U512,
@@ -53,7 +55,15 @@ where
         let mint_contract_hash = self
             .get_mint_contract()
             .map_err(|_| ApiError::MissingSystemContractHash)?;
-        match self.mint_transfer(mint_contract_hash, None, source, target, amount, None) {
+        match self.mint_transfer(
+            context,
+            mint_contract_hash,
+            None,
+            source,
+            target,
+            amount,
+            None,
+        ) {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(mint_error)) => Err(mint_error.into()),
             Err(exec_error) => {
@@ -69,13 +79,14 @@ where
     R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
-    fn get_payment_purse(&mut self) -> Result<URef, ApiError> {
+    fn get_payment_purse(&mut self, context: &mut impl FunctionContext) -> Result<URef, ApiError> {
         let handle_payment_contract_hash = self
             .get_handle_payment_contract()
             .map_err(|_| ApiError::MissingSystemContractHash)?;
 
         let cl_value = self
             .call_contract(
+                context,
                 handle_payment_contract_hash,
                 METHOD_GET_PAYMENT_PURSE,
                 RuntimeArgs::new(),

@@ -15,6 +15,7 @@ use casper_types::{
 use super::Runtime;
 use crate::{
     core::execution,
+    shared::wasm_engine::FunctionContext,
     storage::global_state::StateReader,
     system::auction::{
         providers::{AccountProvider, MintProvider, RuntimeProvider, StorageProvider},
@@ -147,7 +148,11 @@ where
     R: Send + Sync + 'static + StateReader<Key, StoredValue>,
     R::Error: Into<execution::Error>,
 {
-    fn unbond(&mut self, unbonding_purse: &UnbondingPurse) -> Result<(), Error> {
+    fn unbond(
+        &mut self,
+        context: &mut impl FunctionContext,
+        unbonding_purse: &UnbondingPurse,
+    ) -> Result<(), Error> {
         let account_hash =
             AccountHash::from_public_key(unbonding_purse.unbonder_public_key(), crypto::blake2b);
         let maybe_value = self
@@ -157,6 +162,7 @@ where
         match maybe_value {
             Some(StoredValue::Account(account)) => {
                 self.mint_transfer_direct(
+                    context,
                     Some(account_hash),
                     *unbonding_purse.bonding_purse(),
                     account.main_purse(),
@@ -178,6 +184,7 @@ where
     /// NOTE: Never expose this through FFI.
     fn mint_transfer_direct(
         &mut self,
+        context: &mut impl FunctionContext,
         to: Option<AccountHash>,
         source: URef,
         target: URef,
@@ -200,7 +207,10 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.gas_counter();
+        let current_gas_counter = context
+            .get_remaining_points()
+            .into_remaining()
+            .ok_or(Error::GasLimit)?;
 
         self.context
             .access_rights_extend(&[source, target.into_add()]);
@@ -210,15 +220,21 @@ where
         })?;
 
         let cl_value = self
-            .call_contract(mint_contract_hash, mint::METHOD_TRANSFER, args_values)
+            .call_contract(
+                context,
+                mint_contract_hash,
+                mint::METHOD_TRANSFER,
+                args_values,
+            )
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::Transfer))?;
 
-        self.set_gas_counter(gas_counter);
+        // self.set_gas_counter(gas_counter);
         cl_value.into_t().map_err(|_| Error::CLValue)
     }
 
     fn mint_into_existing_purse(
         &mut self,
+        context: &mut impl FunctionContext,
         amount: U512,
         existing_purse: URef,
     ) -> Result<(), Error> {
@@ -233,7 +249,7 @@ where
         })
         .map_err(|_| Error::CLValue)?;
 
-        let gas_counter = self.gas_counter();
+        // let gas_counter = self.gas_counter();
 
         let mint_contract_hash = self.get_mint_contract().map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
@@ -241,20 +257,21 @@ where
 
         let cl_value = self
             .call_contract(
+                context,
                 mint_contract_hash,
                 mint::METHOD_MINT_INTO_EXISTING_PURSE,
                 args_values,
             )
             .map_err(|error| <Option<Error>>::from(error).unwrap_or(Error::MintError))?;
-        self.set_gas_counter(gas_counter);
+        // self.set_gas_counter(gas_counter);
         cl_value
             .into_t::<Result<(), mint::Error>>()
             .map_err(|_| Error::CLValue)?
             .map_err(|_| Error::MintError)
     }
 
-    fn create_purse(&mut self) -> Result<URef, Error> {
-        Runtime::create_purse(self).map_err(|exec_error| {
+    fn create_purse(&mut self, context: &mut impl FunctionContext) -> Result<URef, Error> {
+        Runtime::create_purse(self, context).map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::CreatePurseFailed)
         })
     }
@@ -264,27 +281,34 @@ where
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::GetBalance))
     }
 
-    fn read_base_round_reward(&mut self) -> Result<U512, Error> {
+    fn read_base_round_reward(
+        &mut self,
+        context: &mut impl FunctionContext,
+    ) -> Result<U512, Error> {
         let mint_contract = self.get_mint_contract().map_err(|exec_error| {
             <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue)
         })?;
-        self.mint_read_base_round_reward(mint_contract)
+        self.mint_read_base_round_reward(context, mint_contract)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::MissingValue))
     }
 
-    fn mint(&mut self, amount: U512) -> Result<URef, Error> {
+    fn mint(&mut self, context: &mut impl FunctionContext, amount: U512) -> Result<URef, Error> {
         let mint_contract = self
             .get_mint_contract()
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::MintReward))?;
-        self.mint_mint(mint_contract, amount)
+        self.mint_mint(context, mint_contract, amount)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::MintReward))
     }
 
-    fn reduce_total_supply(&mut self, amount: U512) -> Result<(), Error> {
+    fn reduce_total_supply(
+        &mut self,
+        context: &mut impl FunctionContext,
+        amount: U512,
+    ) -> Result<(), Error> {
         let mint_contract = self
             .get_mint_contract()
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::MintReward))?;
-        self.mint_reduce_total_supply(mint_contract, amount)
+        self.mint_reduce_total_supply(context, mint_contract, amount)
             .map_err(|exec_error| <Option<Error>>::from(exec_error).unwrap_or(Error::MintReward))
     }
 }

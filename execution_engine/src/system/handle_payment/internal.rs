@@ -4,6 +4,8 @@ use casper_types::{
     Key, Phase, PublicKey, URef, U512,
 };
 
+use crate::shared::wasm_engine::FunctionContext;
+
 use super::{mint_provider::MintProvider, runtime_provider::RuntimeProvider};
 
 // A simplified representation of a refund percentage which is currently hardcoded to 0%.
@@ -43,6 +45,7 @@ pub fn get_refund_purse<R: RuntimeProvider>(runtime_provider: &R) -> Result<Opti
 /// the invariant that the balance of the payment purse is zero at the beginning and end of each
 /// deploy and that the refund purse is unset at the beginning and end of each deploy.
 pub fn finalize_payment<P: MintProvider + RuntimeProvider>(
+    context: &mut impl FunctionContext,
     provider: &mut P,
     amount_spent: U512,
     account: AccountHash,
@@ -98,7 +101,7 @@ pub fn finalize_payment<P: MintProvider + RuntimeProvider>(
 
     // pay target validator
     provider
-        .transfer_purse_to_purse(payment_purse, target, validator_reward)
+        .transfer_purse_to_purse(context, payment_purse, target, validator_reward)
         .map_err(|_| Error::FailedTransferToRewardsPurse)?;
 
     if refund_amount.is_zero() {
@@ -113,7 +116,7 @@ pub fn finalize_payment<P: MintProvider + RuntimeProvider>(
 
     // in case of failure to transfer to refund purse we fall back on the account's main purse
     if provider
-        .transfer_purse_to_purse(payment_purse, refund_purse, refund_amount)
+        .transfer_purse_to_purse(context, payment_purse, refund_purse, refund_amount)
         .is_err()
     {
         return refund_to_account::<P>(provider, payment_purse, account, refund_amount);

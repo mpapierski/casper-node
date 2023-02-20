@@ -13,6 +13,8 @@ use casper_types::{
     ApiError, CLTyped, EraId, Key, KeyTag, PublicKey, URef, U512,
 };
 
+use crate::shared::wasm_engine::FunctionContext;
+
 use super::{
     Auction, Bid, EraValidators, MintProvider, RuntimeProvider, StorageProvider, ValidatorWeights,
 };
@@ -190,6 +192,7 @@ where
 ///
 /// This function can be called by the system only.
 pub(crate) fn process_unbond_requests<P: Auction + ?Sized>(
+    context: &mut impl FunctionContext,
     provider: &mut P,
 ) -> Result<(), ApiError> {
     if provider.get_caller() != PublicKey::System.to_account_hash() {
@@ -220,6 +223,7 @@ pub(crate) fn process_unbond_requests<P: Auction + ?Sized>(
                                         new_validator.clone().to_account_hash(),
                                     )?;
                                     handle_delegation(
+                                        context,
                                         provider,
                                         bid,
                                         unbonding_purse.unbonder_public_key().clone(),
@@ -230,21 +234,21 @@ pub(crate) fn process_unbond_requests<P: Auction + ?Sized>(
                                     .map(|_| ())?
                                 } else {
                                     // Move funds from bid purse to unbonding purse
-                                    provider.unbond(unbonding_purse).map_err(|_| {
+                                    provider.unbond(context, unbonding_purse).map_err(|_| {
                                         ApiError::from(Error::TransferToUnbondingPurse)
                                     })?
                                 }
                             }
                             // Move funds from bid purse to unbonding purse
                             Ok(None) | Err(_) => provider
-                                .unbond(unbonding_purse)
+                                .unbond(context, unbonding_purse)
                                 .map_err(|_| ApiError::from(Error::TransferToUnbondingPurse))?,
                         }
                     }
                     None => {
                         // Move funds from bid purse to unbonding purse
                         provider
-                            .unbond(unbonding_purse)
+                            .unbond(context, unbonding_purse)
                             .map_err(|_| ApiError::from(Error::TransferToUnbondingPurse))?
                     }
                 };
@@ -374,6 +378,7 @@ where
 }
 
 pub(crate) fn handle_delegation<P>(
+    context: &mut impl FunctionContext,
     provider: &mut P,
     mut bid: Bid,
     delegator_public_key: PublicKey,
@@ -392,6 +397,7 @@ where
         Some(delegator) => {
             provider
                 .mint_transfer_direct(
+                    context,
                     Some(PublicKey::System.to_account_hash()),
                     source,
                     *delegator.bonding_purse(),
@@ -409,9 +415,10 @@ where
             *delegator.staked_amount()
         }
         None => {
-            let bonding_purse = provider.create_purse()?;
+            let bonding_purse = provider.create_purse(context)?;
             provider
                 .mint_transfer_direct(
+                    context,
                     Some(PublicKey::System.to_account_hash()),
                     source,
                     bonding_purse,

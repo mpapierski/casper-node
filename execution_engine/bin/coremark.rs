@@ -9,7 +9,7 @@ use casper_execution_engine::shared::{
     wasm_config::WasmConfig,
     wasm_engine::{
         host_interface::WasmHostInterface, CraneliftOptLevel, ExecutionMode, FunctionContext,
-        InstrumentMode, InvokeOutcome, WasmEngine, WasmerBackend,
+        InstrumentMode, WasmEngine, WasmerBackend,
     },
 };
 use thiserror::Error;
@@ -143,16 +143,14 @@ fn main() {
         let start = Instant::now();
         let wasm_module = wasm_engine.preprocess(None, &wasm_bytes).unwrap();
         let preprocess_step = start.elapsed();
-        let wasm_instance = wasm_engine
+        let mut wasm_instance = wasm_engine
             .instance_and_memory(wasm_module, host.clone())
             .unwrap();
         let instantiation_step = start.elapsed();
-        let InvokeOutcome {
-            return_value,
-            metering_points,
-        } = wasm_instance
+        let return_value = wasm_instance
             .invoke_export::<f32, F32>(None, &wasm_engine, "run", ())
             .unwrap();
+        let metering_points = wasm_instance.get_remaining_points();
         let invoke_step = start.elapsed();
 
         let a = preprocess_step;

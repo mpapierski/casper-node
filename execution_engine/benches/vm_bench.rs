@@ -5,8 +5,8 @@ use casper_execution_engine::shared::{
     newtypes::CorrelationId,
     wasm_config::WasmConfig,
     wasm_engine::{
-        host_interface::WasmHostInterface, ExecutionMode, FunctionContext, WasmEngine,
-        WasmerBackend,
+        host_interface::WasmHostInterface, ExecutionMode, FunctionContext, InstrumentMode,
+        WasmEngine, Wasmer, WasmerBackend,
     },
 };
 use casper_types::{contracts::DEFAULT_ENTRY_POINT_NAME, ProtocolVersion};
@@ -169,6 +169,7 @@ fn cold_start(c: &mut criterion::Criterion) {
                 /// Wasmer has caching turned off, as we don't need to do this extra work since
                 /// wasmi (aka interpreted) doesn't do that either.
                 cache_artifacts: false,
+                instrument: InstrumentMode::MeteringMiddleware,
             },
         ),
         (

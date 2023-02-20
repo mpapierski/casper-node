@@ -1,4 +1,4 @@
-pub mod metering;
+pub mod gas_metering;
 
 use std::{
     marker::PhantomData,
@@ -7,9 +7,10 @@ use std::{
 
 use wasmer::{
     AsStoreMut, AsStoreRef, CompilerConfig, Cranelift, Engine, Function, FunctionEnv,
-    FunctionEnvMut, Imports, Memory, MemoryView, RuntimeError, StoreMut,
+    FunctionEnvMut, Imports, Instance, Memory, MemoryView, RuntimeError, StoreMut,
 };
 use wasmer_compiler_singlepass::Singlepass;
+use wasmer_middlewares::metering;
 
 use crate::{
     for_each_host_function,
@@ -30,7 +31,7 @@ pub(crate) fn make_wasmer_backend(
         WasmerBackend::Singlepass => {
             let mut compiler = Singlepass::new();
             if matches!(instrument, InstrumentMode::MeteringMiddleware) {
-                compiler.push_middleware(metering::wasmer_metering(
+                compiler.push_middleware(gas_metering::wasmer_metering(
                     u64::MAX,
                     wasm_config.opcode_costs,
                 ));
@@ -51,7 +52,7 @@ pub(crate) fn make_wasmer_backend(
                 }
             }
             if matches!(instrument, InstrumentMode::MeteringMiddleware) {
-                compiler.push_middleware(metering::wasmer_metering(
+                compiler.push_middleware(gas_metering::wasmer_metering(
                     u64::MAX,
                     wasm_config.opcode_costs,
                 ));
@@ -68,42 +69,73 @@ where
 {
     pub(crate) host: Arc<RwLock<H>>,
     pub(crate) memory: Option<Memory>,
+    pub(crate) instance: Option<Arc<Instance>>,
 }
 
-pub struct WasmerAdapter<'a> {
-    pub(crate) view: MemoryView<'a>,
+pub struct WasmerAdapter<'a, H>
+where
+    H: WasmHostInterface + Send + Sync + 'static,
+    H::Error: std::error::Error,
+{
+    // pub(crate) view: MemoryView<'a>,
+    pub(crate) caller: FunctionEnvMut<'a, WasmerEnv<H>>,
+    // pub(crate) instance: Arc<Instance>,
 }
 
-impl<'a> WasmerAdapter<'a> {
-    fn new(view: MemoryView<'a>) -> Self {
+impl<'a, H> WasmerAdapter<'a, H>
+where
+    H: WasmHostInterface + Send + Sync + 'static,
+    H::Error: std::error::Error,
+{
+    fn new(caller: FunctionEnvMut<'a, WasmerEnv<H>>) -> Self {
         Self {
-            view,
+            caller,
+            // instance,
             // _marker: PhantomData,
         }
     }
 }
 
-impl<'a> FunctionContext for WasmerAdapter<'a> {
+impl<'a, H> FunctionContext for WasmerAdapter<'a, H>
+where
+    H: WasmHostInterface + Send + Sync + 'static,
+    H::Error: std::error::Error,
+{
     fn memory_read(&self, offset: u32, size: usize) -> Result<Vec<u8>, super::RuntimeError> {
+        // let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
+        let memory = self.caller.data().memory.as_ref().unwrap();
+        let view = memory.view(&self.caller);
         // self.
 
-        // let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
-
-        // let view = wasmer_memory.view(&self.caller);
         let mut vec = vec![0; size];
-        self.view.read(offset as u64, &mut vec)?;
+        view.read(offset as u64, &mut vec)?;
         Ok(vec)
         // todo!()
     }
 
     fn memory_write(&mut self, offset: u32, data: &[u8]) -> Result<(), super::RuntimeError> {
+        let memory = self.caller.data().memory.as_ref().unwrap();
+        let view = memory.view(&self.caller);
         // let wasmer_memory = self.caller.data().memory.as_ref().unwrap();
 
         // let view = wasmer_memory.view(&self.caller);
         // let mut vec = vec![0; size];
-        self.view.write(offset as u64, data)?;
+        view.write(offset as u64, data)?;
         Ok(())
         // todo!()
+    }
+
+    fn get_remaining_points(&mut self) -> super::MeteringPoints {
+        let instance = Arc::clone(self.caller.data().instance.as_ref().unwrap());
+        let get_metering_points =
+            metering::get_remaining_points(&mut self.caller.as_store_mut(), &instance).into();
+        dbg!(&get_metering_points);
+        get_metering_points
+    }
+
+    fn set_remaining_points(&mut self, points: u64) {
+        let instance = Arc::clone(self.caller.data().instance.as_ref().unwrap());
+        metering::set_remaining_points(&mut self.caller.as_store_mut(), &instance, points);
     }
 }
 
@@ -111,6 +143,7 @@ pub(crate) fn make_wasmer_imports<H>(
     env_name: &str,
     store: &mut impl AsStoreMut,
     env: &FunctionEnv<WasmerEnv<H>>,
+    // instance: Arc<Instance>,
 ) -> Imports
 where
     H: WasmHostInterface + Send + Sync,
@@ -133,11 +166,10 @@ where
                         mut caller: FunctionEnvMut<WasmerEnv<H>>,
                         $($($arg: $argty),*)?
                     | -> Result<visit_host_function!(@optional_ret $($ret)?), RuntimeError> {
-                        // caller.
-                        let view = caller.data().memory.as_ref().unwrap().view(&caller.as_store_ref());
-                        let function_context = WasmerAdapter::new(view);
+                        let host = Arc::clone(&caller.data().host);
+                        let function_context = WasmerAdapter::new(caller);
 
-                        let mut host = caller.data().host.write().unwrap();
+                        let mut host = host.write().unwrap();
 
                         let res: visit_host_function!(@optional_ret $($ret)?) = match host.$name(function_context, $($($arg ),*)?) {
                             Ok(result) => result,

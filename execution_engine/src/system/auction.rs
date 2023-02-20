@@ -15,6 +15,8 @@ use casper_types::{
     ApiError, EraId, PublicKey, U512,
 };
 
+use crate::shared::wasm_engine::FunctionContext;
+
 use self::providers::{AccountProvider, MintProvider, RuntimeProvider, StorageProvider};
 
 /// Bonding auction contract interface
@@ -60,6 +62,7 @@ pub trait Auction:
     /// Returns a [`U512`] value indicating total amount of tokens staked for given `public_key`.
     fn add_bid(
         &mut self,
+        context: &mut impl FunctionContext,
         public_key: PublicKey,
         delegation_rate: DelegationRate,
         amount: U512,
@@ -89,6 +92,7 @@ pub trait Auction:
                     bid.activate();
                 }
                 self.mint_transfer_direct(
+                    context,
                     Some(PublicKey::System.to_account_hash()),
                     source,
                     *bid.bonding_purse(),
@@ -109,8 +113,9 @@ pub trait Auction:
                 updated_amount
             }
             None => {
-                let bonding_purse = self.create_purse()?;
+                let bonding_purse = self.create_purse(context)?;
                 self.mint_transfer_direct(
+                    context,
                     Some(PublicKey::System.to_account_hash()),
                     source,
                     bonding_purse,
@@ -204,6 +209,7 @@ pub trait Auction:
     /// This entry point returns the number of tokens currently delegated to a given validator.
     fn delegate(
         &mut self,
+        context: &mut impl FunctionContext,
         delegator_public_key: PublicKey,
         validator_public_key: PublicKey,
         amount: U512,
@@ -231,6 +237,7 @@ pub trait Auction:
         }
 
         detail::handle_delegation(
+            context,
             self,
             bid,
             delegator_public_key,
@@ -249,6 +256,7 @@ pub trait Auction:
     /// Returns the remaining bid amount after the stake was decreased.
     fn undelegate(
         &mut self,
+        context: &mut impl FunctionContext,
         delegator_public_key: PublicKey,
         validator_public_key: PublicKey,
         amount: U512,
@@ -361,7 +369,11 @@ pub trait Auction:
     /// Slashes each validator.
     ///
     /// This can be only invoked through a system call.
-    fn slash(&mut self, validator_public_keys: Vec<PublicKey>) -> Result<(), Error> {
+    fn slash(
+        &mut self,
+        context: &mut impl FunctionContext,
+        validator_public_keys: Vec<PublicKey>,
+    ) -> Result<(), Error> {
         if self.get_caller() != PublicKey::System.to_account_hash() {
             return Err(Error::InvalidCaller);
         }
@@ -394,7 +406,7 @@ pub trait Auction:
             }
         }
 
-        self.reduce_total_supply(burned_amount)?;
+        self.reduce_total_supply(context, burned_amount)?;
 
         Ok(())
     }
@@ -406,6 +418,7 @@ pub trait Auction:
     /// Accessed by: node
     fn run_auction(
         &mut self,
+        context: &mut impl FunctionContext,
         era_end_timestamp_millis: u64,
         evicted_validators: Vec<PublicKey>,
     ) -> Result<(), ApiError> {
@@ -421,7 +434,7 @@ pub trait Auction:
         let mut bids = detail::get_bids(self)?;
 
         // Process unbond requests
-        detail::process_unbond_requests(self)?;
+        detail::process_unbond_requests(context, self)?;
 
         // Process bids
         let mut bids_modified = false;
@@ -528,13 +541,17 @@ pub trait Auction:
 
     /// Mint and distribute seigniorage rewards to validators and their delegators,
     /// according to `reward_factors` returned by the consensus component.
-    fn distribute(&mut self, reward_factors: BTreeMap<PublicKey, u64>) -> Result<(), Error> {
+    fn distribute(
+        &mut self,
+        context: &mut impl FunctionContext,
+        reward_factors: BTreeMap<PublicKey, u64>,
+    ) -> Result<(), Error> {
         if self.get_caller() != PublicKey::System.to_account_hash() {
             return Err(Error::InvalidCaller);
         }
 
         let seigniorage_recipients = self.read_seigniorage_recipients()?;
-        let base_round_reward = self.read_base_round_reward()?;
+        let base_round_reward = self.read_base_round_reward(context)?;
         let era_id = detail::get_era_id(self)?;
 
         let mut era_info = EraInfo::new();
@@ -608,11 +625,11 @@ pub trait Auction:
                 validator_reward,
             )?;
 
-            self.mint_into_existing_purse(validator_reward, validator_bonding_purse)
+            self.mint_into_existing_purse(context, validator_reward, validator_bonding_purse)
                 .map_err(Error::from)?;
 
             for (_delegator_account_hash, delegator_payout, bonding_purse) in delegator_payouts {
-                self.mint_into_existing_purse(delegator_payout, bonding_purse)
+                self.mint_into_existing_purse(context, delegator_payout, bonding_purse)
                     .map_err(Error::from)?;
             }
         }

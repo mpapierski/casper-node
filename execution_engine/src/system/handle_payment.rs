@@ -4,8 +4,9 @@ pub(crate) mod runtime_provider;
 
 use casper_types::{account::AccountHash, system::handle_payment::Error, AccessRights, URef, U512};
 
-use crate::system::handle_payment::{
-    mint_provider::MintProvider, runtime_provider::RuntimeProvider,
+use crate::{
+    shared::wasm_engine::FunctionContext,
+    system::handle_payment::{mint_provider::MintProvider, runtime_provider::RuntimeProvider},
 };
 
 /// Handle payment functionality implementation.
@@ -34,10 +35,11 @@ pub trait HandlePayment: MintProvider + RuntimeProvider + Sized {
     /// Finalize payment with `amount_spent` and a given `account`.
     fn finalize_payment(
         &mut self,
+        context: &mut impl FunctionContext,
         amount_spent: U512,
         account: AccountHash,
         target: URef,
     ) -> Result<(), Error> {
-        internal::finalize_payment(self, amount_spent, account, target)
+        internal::finalize_payment(context, self, amount_spent, account, target)
     }
 }

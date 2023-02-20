@@ -27,7 +27,7 @@ use crate::{
     },
     shared::{
         newtypes::CorrelationId,
-        wasm_engine::{Instance, Module, WasmEngine},
+        wasm_engine::{FunctionContext, Instance, Module, NativeCode, WasmEngine},
     },
     storage::global_state::StateReader,
 };
@@ -114,7 +114,7 @@ impl Executor {
             authorization_keys,
             blocktime,
             deploy_hash,
-            gas_limit,
+            // gas_limit,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -166,6 +166,9 @@ impl Executor {
                     (),
                 );
 
+                // instance.get_remaining_points(wasm_engine)
+                dbg!(&instance.get_remaining_points());
+
                 match result {
                     Ok(_) => {
                         return runtime.into_success();
@@ -185,7 +188,18 @@ impl Executor {
                 // These args are passed through here as they are required to construct the new
                 // `Runtime` during the contract's execution (i.e. inside
                 // `Runtime::execute_contract`).
-                runtime.call_contract_with_stack(contract_hash, &entry_point_name, args, stack)
+
+                // In the new model where we hand out a generic context instance which could refer to NativeCode (for calling system contract) or coming from Wasm this construction is strange,
+                // we should probably inline most of call_contract_with_stack to avoid creating this NativeCode instance.
+
+                let mut native_code = NativeCode::new(gas_limit.value_u64());
+                runtime.call_contract_with_stack(
+                    &mut native_code,
+                    contract_hash,
+                    &entry_point_name,
+                    args,
+                    stack,
+                )
             }
         };
 
@@ -240,7 +254,7 @@ impl Executor {
             authorization_keys,
             blocktime,
             deploy_hash,
-            payment_gas_limit,
+            // payment_gas_limit,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -255,17 +269,34 @@ impl Executor {
         // captures that.
         let mut runtime = Runtime::new(self.config, runtime_context, self.wasm_engine.clone());
 
-        match runtime.call_host_standard_payment(stack) {
-            Ok(()) => ExecutionResult::Success {
-                execution_journal: runtime.context().execution_journal(),
-                transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
-            },
+        let mut context = NativeCode::new(payment_gas_limit.value_u64());
+
+        let mut result = runtime.call_host_standard_payment(&mut context, stack);
+
+        let maybe_cost = context.get_remaining_points().into_remaining();
+
+        let cost = match maybe_cost {
+            Some(cost) => payment_gas_limit.value_u64() - cost,
+            None => {
+                result = Err(Error::GasLimit);
+                payment_gas_limit.value_u64()
+            }
+        };
+
+        match result {
+            Ok(()) => {
+                ExecutionResult::Success {
+                    execution_journal: runtime.context().execution_journal(),
+                    transfers: runtime.context().transfers().to_owned(),
+                    // cost: runtime.context().gas_counter(),
+                    cost: cost.into(),
+                }
+            }
             Err(error) => ExecutionResult::Failure {
                 execution_journal,
                 error: error.into(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
+                cost: cost.into(),
             },
         }
     }
@@ -361,7 +392,7 @@ impl Executor {
             authorization_keys,
             blocktime,
             deploy_hash,
-            gas_limit,
+            // gas_limit,
             address_generator,
             protocol_version,
             correlation_id.clone(),
@@ -372,27 +403,44 @@ impl Executor {
 
         let mut runtime = Runtime::new(self.config, runtime_context, self.wasm_engine.clone());
 
+        let mut native_code = NativeCode::new(gas_limit.value_u64());
+
         // DO NOT alter this logic to call a system contract directly (such as via mint_internal,
         // etc). Doing so would bypass necessary context based security checks in some use cases. It
         // is intentional to use the runtime machinery for this interaction with the system
         // contracts, to force all such security checks for usage via the executor into a single
         // execution path.
-        let result =
-            runtime.call_contract_with_stack(contract_hash, entry_point_name, runtime_args, stack);
+        let result = runtime.call_contract_with_stack(
+            &mut native_code,
+            contract_hash,
+            entry_point_name,
+            runtime_args,
+            stack,
+        );
+
+        let maybe_cost = native_code.get_remaining_points().into_remaining();
+
+        let cost = match maybe_cost {
+            Some(cost) => gas_limit.value_u64() - cost,
+            None => {
+                result = Err(Error::GasLimit);
+                gas_limit.value_u64()
+            }
+        };
 
         match result {
             Ok(value) => match value.into_t() {
                 Ok(ret) => ExecutionResult::Success {
                     execution_journal: runtime.context().execution_journal(),
                     transfers: runtime.context().transfers().to_owned(),
-                    cost: runtime.context().gas_counter(),
+                    cost: cost.into(),
                 }
                 .take_with_ret(ret),
                 Err(error) => ExecutionResult::Failure {
                     execution_journal,
                     error: Error::CLValue(error).into(),
                     transfers: runtime.context().transfers().to_owned(),
-                    cost: runtime.context().gas_counter(),
+                    cost: cost.into(),
                 }
                 .take_without_ret(),
             },
@@ -400,7 +448,7 @@ impl Executor {
                 execution_journal,
                 error: error.into(),
                 transfers: runtime.context().transfers().to_owned(),
-                cost: runtime.context().gas_counter(),
+                cost: cost.into(),
             }
             .take_without_ret(),
         }
@@ -419,7 +467,7 @@ impl Executor {
         authorization_keys: BTreeSet<AccountHash>,
         blocktime: BlockTime,
         deploy_hash: DeployHash,
-        gas_limit: Gas,
+        // gas_limit: Gas,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -431,7 +479,7 @@ impl Executor {
         R: Send + Sync + 'static + StateReader<Key, StoredValue>,
         R::Error: Into<Error>,
     {
-        let gas_counter = Gas::default();
+        // let gas_counter = Gas::default();
         let transfers = Vec::default();
 
         RuntimeContext::new(
@@ -445,8 +493,8 @@ impl Executor {
             base_key,
             blocktime,
             deploy_hash,
-            gas_limit,
-            gas_counter,
+            // gas_limit,
+            // gas_counter,
             address_generator,
             protocol_version,
             correlation_id.clone(),

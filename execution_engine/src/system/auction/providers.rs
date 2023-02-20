@@ -10,6 +10,8 @@ use casper_types::{
     CLTyped, EraId, Key, KeyTag, URef, BLAKE2B_DIGEST_LENGTH, U512,
 };
 
+use crate::shared::wasm_engine::FunctionContext;
+
 /// Provider of runtime host functionality.
 pub trait RuntimeProvider {
     /// This method should return the caller of the current context.
@@ -62,12 +64,17 @@ pub trait StorageProvider {
 /// Provides an access to mint.
 pub trait MintProvider {
     /// Returns successfully unbonded stake to origin account.
-    fn unbond(&mut self, unbonding_purse: &UnbondingPurse) -> Result<(), Error>;
+    fn unbond(
+        &mut self,
+        context: &mut impl FunctionContext,
+        unbonding_purse: &UnbondingPurse,
+    ) -> Result<(), Error>;
 
     /// Allows optimized auction and mint interaction.
     /// Intended to be used only by system contracts to manage staked purses.
     fn mint_transfer_direct(
         &mut self,
+        context: &mut impl FunctionContext,
         to: Option<AccountHash>,
         source: URef,
         target: URef,
@@ -77,25 +84,34 @@ pub trait MintProvider {
 
     /// Mint `amount` new token into `existing_purse`.
     /// Returns unit on success, otherwise an error.
-    fn mint_into_existing_purse(&mut self, amount: U512, existing_purse: URef)
-        -> Result<(), Error>;
+    fn mint_into_existing_purse(
+        &mut self,
+        context: &mut impl FunctionContext,
+        amount: U512,
+        existing_purse: URef,
+    ) -> Result<(), Error>;
 
     /// Creates new purse.
-    fn create_purse(&mut self) -> Result<URef, Error>;
+    fn create_purse(&mut self, context: &mut impl FunctionContext) -> Result<URef, Error>;
 
     /// Gets purse balance.
     fn get_balance(&mut self, purse: URef) -> Result<Option<U512>, Error>;
 
     /// Reads the base round reward.
-    fn read_base_round_reward(&mut self) -> Result<U512, Error>;
+    fn read_base_round_reward(&mut self, context: &mut impl FunctionContext)
+        -> Result<U512, Error>;
 
     /// Mints new token with given `initial_balance` balance. Returns new purse on success,
     /// otherwise an error.
-    fn mint(&mut self, amount: U512) -> Result<URef, Error>;
+    fn mint(&mut self, context: &mut impl FunctionContext, amount: U512) -> Result<URef, Error>;
 
     /// Reduce total supply by `amount`. Returns unit on success, otherwise
     /// an error.
-    fn reduce_total_supply(&mut self, amount: U512) -> Result<(), Error>;
+    fn reduce_total_supply(
+        &mut self,
+        context: &mut impl FunctionContext,
+        amount: U512,
+    ) -> Result<(), Error>;
 }
 
 /// Provider of an account related functionality.

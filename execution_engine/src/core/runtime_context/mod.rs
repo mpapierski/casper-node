@@ -97,9 +97,9 @@ pub struct RuntimeContext<R: Clone> {
     base_key: Key,
     blocktime: BlockTime,
     deploy_hash: DeployHash,
-    gas_limit: Gas,
-    // NOTE: Should gas counter be wrapped in Arc + RwLock?
-    gas_counter: Arc<RwLock<Gas>>,
+    // gas_limit: Gas,
+    // // NOTE: Should gas counter be wrapped in Arc + RwLock?
+    // gas_counter: Arc<RwLock<Gas>>,
     address_generator: Arc<RwLock<AddressGenerator>>,
     protocol_version: ProtocolVersion,
     correlation_id: CorrelationId,
@@ -130,8 +130,8 @@ where
         base_key: Key,
         blocktime: BlockTime,
         deploy_hash: DeployHash,
-        gas_limit: Gas,
-        gas_counter: Gas,
+        // gas_limit: Gas,
+        // gas_counter: Gas,
         address_generator: Arc<RwLock<AddressGenerator>>,
         protocol_version: ProtocolVersion,
         correlation_id: CorrelationId,
@@ -151,8 +151,8 @@ where
             blocktime,
             deploy_hash,
             base_key,
-            gas_limit,
-            gas_counter: Arc::new(RwLock::new(gas_counter)),
+            // gas_limit,
+            // gas_counter: Arc::new(RwLock::new(gas_counter)),
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -179,8 +179,8 @@ where
         let account = self.account.clone();
         let blocktime = self.blocktime;
         let deploy_hash = self.deploy_hash;
-        let gas_limit = self.gas_limit;
-        let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
+        // let gas_limit = self.gas_limit;
+        // let gas_counter = Arc::new(RwLock::new(*self.gas_counter.read().unwrap()));
         let address_generator = self.address_generator.clone();
         let protocol_version = self.protocol_version;
         let correlation_id = self.correlation_id.clone();
@@ -200,8 +200,8 @@ where
             blocktime,
             deploy_hash,
             base_key,
-            gas_limit,
-            gas_counter,
+            // gas_limit,
+            // gas_counter,
             address_generator,
             protocol_version,
             correlation_id: correlation_id.clone(),
@@ -392,21 +392,21 @@ where
         Arc::clone(&self.tracking_copy)
     }
 
-    /// Returns the gas limit.
-    pub fn gas_limit(&self) -> Gas {
-        self.gas_limit
-    }
+    // /// Returns the gas limit.
+    // pub fn gas_limit(&self) -> Gas {
+    //     self.gas_limit
+    // }
 
-    /// Returns the current gas counter.
-    pub fn gas_counter(&self) -> Gas {
-        *self.gas_counter.read().unwrap()
-    }
+    // /// Returns the current gas counter.
+    // pub fn gas_counter(&self) -> Gas {
+    //     *self.gas_counter.read().unwrap()
+    // }
 
-    /// Sets the gas counter to a new value.
-    pub fn set_gas_counter(&mut self, new_gas_counter: Gas) {
-        // self.gas_counter = Arc::new(new_gas_counter);
-        *self.gas_counter.write().unwrap() = new_gas_counter;
-    }
+    // /// Sets the gas counter to a new value.
+    // pub fn set_gas_counter(&mut self, new_gas_counter: Gas) {
+    //     // self.gas_counter = Arc::new(new_gas_counter);
+    //     *self.gas_counter.write().unwrap() = new_gas_counter;
+    // }
 
     /// Returns the base key.
     ///
@@ -864,25 +864,26 @@ where
     /// Intuition about the return value sense is to answer the question 'are we
     /// allowed to continue?'
     pub(crate) fn charge_gas(&mut self, amount: Gas) -> Result<(), Error> {
-        let prev = self.gas_counter();
-        let gas_limit = self.gas_limit();
-        // gas charge overflow protection
-        match prev.checked_add(amount) {
-            None => {
-                self.set_gas_counter(gas_limit);
-                Err(Error::GasLimit)
-            }
-            Some(val) if val > gas_limit => {
-                self.set_gas_counter(gas_limit);
-                Err(Error::GasLimit)
-            }
-            Some(val) => {
-                // let u128_val: u128 = val.value().as_u128();
-                // eprintln!("prev={} amount={} val={}", prev, amount, u128_val);
-                self.set_gas_counter(val);
-                Ok(())
-            }
-        }
+        todo!()
+        // let prev = self.gas_counter();
+        // let gas_limit = self.gas_limit();
+        // // gas charge overflow protection
+        // match prev.checked_add(amount) {
+        //     None => {
+        //         self.set_gas_counter(gas_limit);
+        //         Err(Error::GasLimit)
+        //     }
+        //     Some(val) if val > gas_limit => {
+        //         self.set_gas_counter(gas_limit);
+        //         Err(Error::GasLimit)
+        //     }
+        //     Some(val) => {
+        //         // let u128_val: u128 = val.value().as_u128();
+        //         // eprintln!("prev={} amount={} val={}", prev, amount, u128_val);
+        //         self.set_gas_counter(val);
+        //         Ok(())
+        //     }
+        // }
     }
 
     /// Checks if we are calling a system contract.
