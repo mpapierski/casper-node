@@ -297,34 +297,48 @@ impl StateProvider for LmdbGlobalState {
         mut state_root_hash: Digest,
         keys: &[Key],
     ) -> Result<DeleteResult, Self::Error> {
-        let mut txn = self.environment.create_read_write_txn()?;
-        for (i, key) in keys.iter().enumerate() {
-            let start = Instant::now();
-            match delete_without_scratch::<
-                Key,
-                StoredValue,
-                lmdb::RwTransaction,
-                LmdbTrieStore,
-                Self::Error,
-            >(
-                correlation_id,
-                &mut txn,
-                &self.trie_store,
-                // &scratch,
-                // &scratch,
-                &state_root_hash,
-                key,
-            )? {
-                DeleteResult::Deleted(root) => {
-                    println!("{}/{} time {:?}", i + 1, keys.len(), start.elapsed());
+        // let mut txn = self.environment.create_read_write_txn()?;
+        for (chunk_index, keys) in keys.chunks(10000).enumerate() {
+            let scratch = self.get_scratch_store();
 
-                    state_root_hash = root;
+            let start = Instant::now();
+            // match delete_without_scratch::<
+            for (i, key) in keys.iter().enumerate() {
+                match delete::<
+                    Key,
+                    StoredValue,
+                    // lmdb::RwTransaction,
+                    // LmdbTrieStore,
+                    _,
+                    _,
+                    Self::Error,
+                >(
+                    correlation_id,
+                    // &mut txn,
+                    // &self.trie_store,
+                    &scratch,
+                    &scratch,
+                    &state_root_hash,
+                    key,
+                )? {
+                    DeleteResult::Deleted(root) => {
+                        println!(
+                            "chunk {}/{} total {} time {:?}",
+                            chunk_index,
+                            i,
+                            keys.len(),
+                            start.elapsed()
+                        );
+
+                        state_root_hash = root;
+                    }
+                    other => return Ok(other),
                 }
-                other => return Ok(other),
             }
+            scratch.write_root_to_db(state_root_hash)?;
         }
 
-        txn.commit()?;
+        // txn.commit()?;
         // for key_chunks in &keys.iter().enumerate().chunks(5) {
         //     // let keys_to_delete: Vec<Key> = key_chunks.into_iter().collect();
 
