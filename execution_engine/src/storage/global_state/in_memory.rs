@@ -289,6 +289,7 @@ impl StateProvider for InMemoryGlobalState {
         correlation_id: CorrelationId,
         mut root: Digest,
         keys_to_delete: &[Key],
+        _batch_size: usize,
     ) -> Result<DeleteResult, Self::Error> {
         for key in keys_to_delete {
             match delete::<Key, StoredValue, _, _, Self::Error>(

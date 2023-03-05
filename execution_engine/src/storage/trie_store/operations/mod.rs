@@ -676,18 +676,15 @@ where
 
     let start = Instant::now();
 
-    let TrieScan {
+    let TrieScanRaw {
         tip,
         mut parents,
         steps,
-    } = scan::<_, _, _, _, E>(correlation_id, &txn, store, &key_bytes, &root_trie)?;
-
-    eprintln!("scan took {:?} in {} steps", start.elapsed(), steps);
-    // dbg!(parents.len());
+    } = scan_raw::<_, _, _, _, E>(correlation_id, &txn, store, &key_bytes, &root_trie)?;
 
     // Check that tip is a leaf
     match tip {
-        Trie::Leaf { key, .. } if key == *key_to_delete => {}
+        Either::Left(_) => {}
         _ => return Ok(DeleteResult::DoesNotExist),
     }
 

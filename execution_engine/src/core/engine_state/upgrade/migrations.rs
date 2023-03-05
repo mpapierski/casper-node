@@ -98,6 +98,7 @@ pub fn purge_era_info<S>(
     state: &S,
     mut state_root_hash: Digest,
     // largest_era_id: u64,
+    batch_size: usize,
 ) -> Result<MigrationResult, Error>
 where
     S: StateProvider + CommitProvider,
@@ -164,7 +165,7 @@ where
     println!("Deleting {} keys...", keys_to_delete.len());
 
     match state
-        .delete_keys(correlation_id, state_root_hash, &keys_to_delete)
+        .delete_keys(correlation_id, state_root_hash, &keys_to_delete, batch_size)
         .map_err(|error| Error::UnableToDeleteEraInfoKeys(error.into()))?
     {
         DeleteResult::Deleted(new_post_state_hash) => {

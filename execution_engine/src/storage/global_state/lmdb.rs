@@ -296,26 +296,14 @@ impl StateProvider for LmdbGlobalState {
         correlation_id: CorrelationId,
         mut state_root_hash: Digest,
         keys: &[Key],
+        batch_size: usize,
     ) -> Result<DeleteResult, Self::Error> {
-        // let mut txn = self.environment.create_read_write_txn()?;
-        for (chunk_index, keys) in keys.chunks(10000).enumerate() {
+        for (chunk_index, keys) in keys.chunks(batch_size).enumerate() {
             let scratch = self.get_scratch_store();
-
             let start = Instant::now();
-            // match delete_without_scratch::<
             for (i, key) in keys.iter().enumerate() {
-                match delete::<
-                    Key,
-                    StoredValue,
-                    // lmdb::RwTransaction,
-                    // LmdbTrieStore,
-                    _,
-                    _,
-                    Self::Error,
-                >(
+                match delete::<Key, StoredValue, _, _, Self::Error>(
                     correlation_id,
-                    // &mut txn,
-                    // &self.trie_store,
                     &scratch,
                     &scratch,
                     &state_root_hash,

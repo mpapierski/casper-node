@@ -240,8 +240,10 @@ impl StateProvider for ScratchGlobalState {
         correlation_id: CorrelationId,
         root: Digest,
         keys_to_delete: &[Key],
+        batch_size: usize,
     ) -> Result<DeleteResult, Self::Error> {
-        self.state.delete_keys(correlation_id, root, keys_to_delete)
+        self.state
+            .delete_keys(correlation_id, root, keys_to_delete, batch_size)
     }
 }
 
