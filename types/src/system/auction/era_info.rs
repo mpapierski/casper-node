@@ -195,8 +195,9 @@ impl EraInfo {
     ///   against the delegator public key.
     pub fn select(
         &self,
-        public_key: PublicKeyBytes,
+        public_key: impl Into<PublicKeyBytes>,
     ) -> impl Iterator<Item = &SeigniorageAllocation> {
+        let public_key = public_key.into();
         self.seigniorage_allocations
             .iter()
             .filter(move |allocation| match allocation {

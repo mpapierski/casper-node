@@ -6,7 +6,6 @@ use std::{
     collections::{HashSet, VecDeque},
     convert::TryInto,
     mem,
-    time::Instant,
 };
 
 use tracing::{error, warn};
@@ -413,16 +412,11 @@ where
 struct TrieScan<K, V> {
     tip: Trie<K, V>,
     parents: Parents<K, V>,
-    steps: usize,
 }
 
 impl<K, V> TrieScan<K, V> {
-    fn new(tip: Trie<K, V>, parents: Parents<K, V>, steps: usize) -> Self {
-        TrieScan {
-            tip,
-            parents,
-            steps,
-        }
+    fn new(tip: Trie<K, V>, parents: Parents<K, V>) -> Self {
+        TrieScan { tip, parents }
     }
 }
 
@@ -451,12 +445,10 @@ where
     let mut depth: usize = 0;
     let mut acc: Parents<K, V> = Vec::new();
 
-    let mut steps = 0usize;
     loop {
-        steps += 1;
         match current {
             leaf @ Trie::Leaf { .. } => {
-                return Ok(TrieScan::new(leaf, acc, steps));
+                return Ok(TrieScan::new(leaf, acc));
             }
             Trie::Node { pointer_block } => {
                 let index = {
@@ -471,7 +463,7 @@ where
                 let pointer = match maybe_pointer {
                     Some(pointer) => pointer,
                     None => {
-                        return Ok(TrieScan::new(Trie::Node { pointer_block }, acc, steps));
+                        return Ok(TrieScan::new(Trie::Node { pointer_block }, acc));
                     }
                 };
                 match store.get(txn, pointer.hash())? {
@@ -492,11 +484,7 @@ where
             Trie::Extension { affix, pointer } => {
                 let sub_path = &path[depth..depth + affix.len()];
                 if sub_path != affix.as_slice() {
-                    return Ok(TrieScan::new(
-                        Trie::Extension { affix, pointer },
-                        acc,
-                        steps,
-                    ));
+                    return Ok(TrieScan::new(Trie::Extension { affix, pointer }, acc));
                 }
                 match store.get(txn, pointer.hash())? {
                     Some(next) => {
@@ -552,19 +540,14 @@ where
 
     let key_bytes = key_to_delete.to_bytes()?;
 
-    let start = Instant::now();
+    let TrieScan { tip, mut parents } =
+        scan::<_, _, _, _, E>(correlation_id, &txn, store, &key_bytes, &root_trie)?;
 
-    let TrieScan {
-        tip,
-        mut parents,
-        steps,
-    } = scan::<_, _, _, _, E>(correlation_id, &txn, store, &key_bytes, &root_trie)?;
-
-  // Check that tip is a leaf
-  match tip {
-    Trie::Leaf { key, .. } if key == *key_to_delete => {}
-    _ => return Ok(DeleteResult::DoesNotExist),
-}
+    // Check that tip is a leaf
+    match tip {
+        Trie::Leaf { key, .. } if key == *key_to_delete => {}
+        _ => return Ok(DeleteResult::DoesNotExist),
+    }
 
     let mut new_elements: Vec<(Digest, Trie<K, V>)> = Vec::new();
 
@@ -751,6 +734,7 @@ where
     Ok(DeleteResult::Deleted(new_root))
 }
 
+#[allow(unused)]
 pub fn delete_without_scratch<K, V, T, S, E>(
     correlation_id: CorrelationId,
     txn: &mut T,
@@ -772,11 +756,8 @@ where
     };
 
     let key_bytes = key_to_delete.to_bytes()?;
-    let TrieScan {
-        tip,
-        mut parents,
-        steps,
-    } = scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)?;
+    let TrieScan { tip, mut parents } =
+        scan::<_, _, _, _, E>(correlation_id, txn, store, &key_bytes, &root_trie)?;
 
     // Check that tip is a leaf
     match tip {
@@ -1235,11 +1216,8 @@ where
                 value: value.to_owned(),
             };
             let path: Vec<u8> = key.to_bytes()?;
-            let TrieScan {
-                tip,
-                parents,
-                steps,
-            } = scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)?;
+            let TrieScan { tip, parents } =
+                scan::<K, V, T, S, E>(correlation_id, txn, store, &path, &current_root)?;
             let new_elements: Vec<(Digest, Trie<K, V>)> = match tip {
                 // If the "tip" is the same as the new leaf, then the leaf
                 // is already in the Trie.
