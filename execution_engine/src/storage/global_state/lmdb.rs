@@ -46,6 +46,8 @@ pub struct LmdbGlobalStateView {
     pub(crate) root_hash: Digest,
 }
 
+
+
 impl LmdbGlobalState {
     /// Creates an empty state from an existing environment and trie_store.
     pub fn empty(
