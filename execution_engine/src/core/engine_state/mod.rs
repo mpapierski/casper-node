@@ -2120,6 +2120,7 @@ where
     }
 }
 
+/// Migrate withdraw to unbonding
 pub fn migrate_withdraw_to_unbonding<S>(
     tracking_copy: &Rc<RefCell<TrackingCopy<<S as StateProvider>::Reader>>>,
     correlation_id: CorrelationId,
@@ -2174,6 +2175,8 @@ where
 
     let mut total_withdraw = 0usize;
     let mut total_unbond = 0usize;
+    let mut total_empty_withdraw = 0usize;
+    let mut total_empty_unbond = 0usize;
 
     for key in withdraw_keys {
         // Transform only those withdraw purses that are still to be
@@ -2188,6 +2191,9 @@ where
             .to_owned();
 
         total_withdraw += withdraw_purses.len();
+        if withdraw_purses.is_empty() {
+            total_empty_withdraw += 1;
+        }
 
         // Ensure that sufficient balance exists for all unbond purses that are to be
         // migrated.
@@ -2207,23 +2213,25 @@ where
             })
             .collect();
 
-        println!("unbonding purses {}", unbonding_purses.len());
-
         let unbonding_key = key
             .withdraw_to_unbond()
             .ok_or_else(|| Error::Bytesrepr("unbond".to_string()))?;
 
         if !unbonding_purses.is_empty() {
-
             total_unbond += unbonding_purses.len();
             tracking_copy
                 .borrow_mut()
                 .write(unbonding_key, StoredValue::Unbonding(unbonding_purses));
 
         }
+        else {
+            total_empty_unbond += 1;
+        }
     }
-    println!("total withdraw {}", total_withdraw);
-    println!("total unbond {}", total_unbond);
+    println!("total withdraw keys {} (non-empty entries)", total_withdraw);
+    println!("total withdraw keys {} (empty entries)", total_empty_withdraw);
+    println!("total unbond keys {} (non-empty entries)", total_unbond);
+    println!("total unbond keys {} (empty entries)", total_empty_unbond);
     eprintln!("elapsed {:?}", elapsed);
 
     Ok(())
