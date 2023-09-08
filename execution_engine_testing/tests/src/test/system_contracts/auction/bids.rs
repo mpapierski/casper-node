@@ -5,10 +5,10 @@ use num_traits::{One, Zero};
 use once_cell::sync::Lazy;
 
 use casper_engine_test_support::{
-    ExecuteRequestBuilder, InMemoryWasmTestBuilder, StepRequestBuilder, UpgradeRequestBuilder,
-    DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE, DEFAULT_AUCTION_DELAY,
-    DEFAULT_CHAINSPEC_REGISTRY, DEFAULT_EXEC_CONFIG, DEFAULT_GENESIS_CONFIG_HASH,
-    DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_MAX_ASSOCIATED_KEYS,
+    instrumented, ExecuteRequestBuilder, InMemoryWasmTestBuilder, StepRequestBuilder,
+    UpgradeRequestBuilder, DEFAULT_ACCOUNTS, DEFAULT_ACCOUNT_ADDR, DEFAULT_ACCOUNT_INITIAL_BALANCE,
+    DEFAULT_AUCTION_DELAY, DEFAULT_CHAINSPEC_REGISTRY, DEFAULT_EXEC_CONFIG,
+    DEFAULT_GENESIS_CONFIG_HASH, DEFAULT_GENESIS_TIMESTAMP_MILLIS, DEFAULT_MAX_ASSOCIATED_KEYS,
     DEFAULT_MAX_RUNTIME_CALL_STACK_HEIGHT, DEFAULT_PROTOCOL_VERSION,
     DEFAULT_ROUND_SEIGNIORAGE_RATE, DEFAULT_SYSTEM_CONFIG, DEFAULT_UNBONDING_DELAY,
     DEFAULT_VALIDATOR_SLOTS, DEFAULT_WASM_CONFIG, MINIMUM_ACCOUNT_CREATION_BALANCE,
@@ -254,7 +254,10 @@ fn should_add_new_bid() {
     )
     .build();
 
-    builder.exec(exec_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(exec_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     let bids: Bids = builder.get_bids();
 
@@ -294,7 +297,10 @@ fn should_increase_existing_bid() {
     )
     .build();
 
-    builder.exec(exec_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(exec_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     // 2nd bid top-up
     let exec_request_2 = ExecuteRequestBuilder::standard(
@@ -308,7 +314,10 @@ fn should_increase_existing_bid() {
     )
     .build();
 
-    builder.exec(exec_request_2).commit().expect_success();
+    builder
+        .exec_instrumented(exec_request_2, instrumented!())
+        .commit()
+        .expect_success();
 
     let bids: Bids = builder.get_bids();
 
@@ -348,7 +357,10 @@ fn should_decrease_existing_bid() {
         },
     )
     .build();
-    builder.exec(bid_request).expect_success().commit();
+    builder
+        .exec_instrumented(bid_request, instrumented!())
+        .expect_success()
+        .commit();
 
     // withdraw some amount
     let withdraw_request = ExecuteRequestBuilder::standard(
@@ -360,7 +372,10 @@ fn should_decrease_existing_bid() {
         },
     )
     .build();
-    builder.exec(withdraw_request).commit().expect_success();
+    builder
+        .exec_instrumented(withdraw_request, instrumented!())
+        .commit()
+        .expect_success();
 
     let bids: Bids = builder.get_bids();
 
@@ -434,9 +449,18 @@ fn should_run_delegate_and_undelegate() {
     )
     .build();
 
-    builder.exec(transfer_request_1).commit().expect_success();
-    builder.exec(transfer_request_2).commit().expect_success();
-    builder.exec(add_bid_request_1).commit().expect_success();
+    builder
+        .exec_instrumented(transfer_request_1, instrumented!())
+        .commit()
+        .expect_success();
+    builder
+        .exec_instrumented(transfer_request_2, instrumented!())
+        .commit()
+        .expect_success();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .commit()
+        .expect_success();
 
     let auction_hash = builder.get_auction_contract_hash();
 
@@ -468,7 +492,10 @@ fn should_run_delegate_and_undelegate() {
     )
     .build();
 
-    builder.exec(exec_request_1).commit().expect_success();
+    builder
+        .exec_instrumented(exec_request_1, instrumented!())
+        .commit()
+        .expect_success();
 
     let bids: Bids = builder.get_bids();
     assert_eq!(bids.len(), 1);
@@ -489,7 +516,10 @@ fn should_run_delegate_and_undelegate() {
     )
     .build();
 
-    builder.exec(exec_request_2).commit().expect_success();
+    builder
+        .exec_instrumented(exec_request_2, instrumented!())
+        .commit()
+        .expect_success();
 
     let bids: Bids = builder.get_bids();
     assert_eq!(bids.len(), 1);
@@ -511,7 +541,10 @@ fn should_run_delegate_and_undelegate() {
         },
     )
     .build();
-    builder.exec(exec_request_3).commit().expect_success();
+    builder
+        .exec_instrumented(exec_request_3, instrumented!())
+        .commit()
+        .expect_success();
 
     let bids: Bids = builder.get_bids();
     assert_eq!(bids.len(), 1);
@@ -613,8 +646,14 @@ fn should_calculate_era_validators() {
         BTreeSet::from_iter(vec![ACCOUNT_1_PK.clone(), ACCOUNT_2_PK.clone()])
     );
 
-    builder.exec(transfer_request_1).commit().expect_success();
-    builder.exec(transfer_request_2).commit().expect_success();
+    builder
+        .exec_instrumented(transfer_request_1, instrumented!())
+        .commit()
+        .expect_success();
+    builder
+        .exec_instrumented(transfer_request_2, instrumented!())
+        .commit()
+        .expect_success();
 
     // non-founding validator request
     let add_bid_request_1 = ExecuteRequestBuilder::standard(
@@ -628,7 +667,10 @@ fn should_calculate_era_validators() {
     )
     .build();
 
-    builder.exec(add_bid_request_1).commit().expect_success();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .commit()
+        .expect_success();
 
     let pre_era_id: EraId = builder.get_value(auction_hash, ERA_ID_KEY);
     assert_eq!(pre_era_id, EraId::from(0));
@@ -784,7 +826,10 @@ fn should_get_first_seigniorage_recipients() {
         Some(DEFAULT_GENESIS_TIMESTAMP_MILLIS + CASPER_LOCKED_FUNDS_PERIOD_MILLIS)
     );
 
-    builder.exec(transfer_request_1).commit().expect_success();
+    builder
+        .exec_instrumented(transfer_request_1, instrumented!())
+        .commit()
+        .expect_success();
 
     // run_auction should be executed first
     builder.run_auction(
@@ -856,7 +901,10 @@ fn should_release_founder_stake() {
         )
         .build();
 
-        builder.exec(partial_unbond).commit().expect_success();
+        builder
+            .exec_instrumented(partial_unbond, instrumented!())
+            .commit()
+            .expect_success();
     };
 
     let expect_unbond_failure = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
@@ -870,7 +918,9 @@ fn should_release_founder_stake() {
         )
         .build();
 
-        builder.exec(full_unbond).commit();
+        builder
+            .exec_instrumented(full_unbond, instrumented!())
+            .commit();
 
         let error = {
             let response = builder
@@ -937,7 +987,10 @@ fn should_release_founder_stake() {
     )
     .build();
 
-    builder.exec(fund_system_account).commit().expect_success();
+    builder
+        .exec_instrumented(fund_system_account, instrumented!())
+        .commit()
+        .expect_success();
 
     // Check bid and its vesting schedule
     {
@@ -1169,7 +1222,10 @@ fn should_calculate_era_validators_multiple_new_bids() {
             },
         )
         .build();
-        builder.exec(transfer_request_1).commit().expect_success();
+        builder
+            .exec_instrumented(transfer_request_1, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     // non-founding validator request
@@ -1194,8 +1250,14 @@ fn should_calculate_era_validators_multiple_new_bids() {
     )
     .build();
 
-    builder.exec(add_bid_request_1).commit().expect_success();
-    builder.exec(add_bid_request_2).commit().expect_success();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .commit()
+        .expect_success();
+    builder
+        .exec_instrumented(add_bid_request_2, instrumented!())
+        .commit()
+        .expect_success();
 
     // run auction and compute validators for new era
     builder.run_auction(
@@ -1301,7 +1363,10 @@ fn undelegated_funds_should_be_released() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     for _ in 0..5 {
@@ -1326,7 +1391,7 @@ fn undelegated_funds_should_be_released() {
     .build();
 
     builder
-        .exec(delegator_1_undelegate_request)
+        .exec_instrumented(delegator_1_undelegate_request, instrumented!())
         .commit()
         .expect_success();
 
@@ -1424,7 +1489,10 @@ fn fully_undelegated_funds_should_be_released() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     for _ in 0..5 {
@@ -1449,7 +1517,7 @@ fn fully_undelegated_funds_should_be_released() {
     .build();
 
     builder
-        .exec(delegator_1_undelegate_request)
+        .exec_instrumented(delegator_1_undelegate_request, instrumented!())
         .commit()
         .expect_success();
 
@@ -1582,7 +1650,10 @@ fn should_undelegate_delegators_when_validator_unbonds() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     for _ in 0..5 {
@@ -1622,7 +1693,7 @@ fn should_undelegate_delegators_when_validator_unbonds() {
     .build();
 
     builder
-        .exec(validator_1_withdraw_bid)
+        .exec_instrumented(validator_1_withdraw_bid, instrumented!())
         .commit()
         .expect_success();
 
@@ -1816,7 +1887,10 @@ fn should_undelegate_delegators_when_validator_fully_unbonds() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     // Fully unbond
@@ -1831,7 +1905,7 @@ fn should_undelegate_delegators_when_validator_fully_unbonds() {
     .build();
 
     builder
-        .exec(validator_1_withdraw_bid)
+        .exec_instrumented(validator_1_withdraw_bid, instrumented!())
         .commit()
         .expect_success();
 
@@ -1927,7 +2001,10 @@ fn should_handle_evictions() {
             },
         )
         .build();
-        builder.exec(run_request).commit().expect_success();
+        builder
+            .exec_instrumented(run_request, instrumented!())
+            .commit()
+            .expect_success();
     };
 
     let latest_validators = |builder: &mut InMemoryWasmTestBuilder| {
@@ -1995,7 +2072,10 @@ fn should_handle_evictions() {
 
     let mut builder = setup(accounts);
 
-    builder.exec(system_fund_request).commit().expect_success();
+    builder
+        .exec_instrumented(system_fund_request, instrumented!())
+        .commit()
+        .expect_success();
 
     // No evictions
     builder.run_auction(timestamp, Vec::new());
@@ -2328,7 +2408,7 @@ fn should_not_partially_undelegate_uninitialized_vesting_schedule() {
     )
     .build();
     builder
-        .exec(fund_delegator_account)
+        .exec_instrumented(fund_delegator_account, instrumented!())
         .commit()
         .expect_success();
 
@@ -2343,7 +2423,9 @@ fn should_not_partially_undelegate_uninitialized_vesting_schedule() {
     )
     .build();
 
-    builder.exec(partial_undelegate).commit();
+    builder
+        .exec_instrumented(partial_undelegate, instrumented!())
+        .commit();
     let error = {
         let response = builder
             .get_last_exec_results()
@@ -2398,7 +2480,7 @@ fn should_not_fully_undelegate_uninitialized_vesting_schedule() {
     )
     .build();
     builder
-        .exec(fund_delegator_account)
+        .exec_instrumented(fund_delegator_account, instrumented!())
         .commit()
         .expect_success();
 
@@ -2413,7 +2495,9 @@ fn should_not_fully_undelegate_uninitialized_vesting_schedule() {
     )
     .build();
 
-    builder.exec(full_undelegate).commit();
+    builder
+        .exec_instrumented(full_undelegate, instrumented!())
+        .commit();
     let error = {
         let response = builder
             .get_last_exec_results()
@@ -2505,7 +2589,10 @@ fn should_not_undelegate_vfta_holder_stake() {
     };
 
     for post_genesis_request in post_genesis_requests {
-        builder.exec(post_genesis_request).commit().expect_success();
+        builder
+            .exec_instrumented(post_genesis_request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     {
@@ -2553,7 +2640,9 @@ fn should_not_undelegate_vfta_holder_stake() {
         );
     }
 
-    builder.exec(partial_unbond).commit();
+    builder
+        .exec_instrumented(partial_unbond, instrumented!())
+        .commit();
     let error = {
         let response = builder
             .get_last_exec_results()
@@ -2603,7 +2692,10 @@ fn should_release_vfta_holder_stake() {
         )
         .build();
 
-        builder.exec(partial_unbond).commit().expect_success();
+        builder
+            .exec_instrumented(partial_unbond, instrumented!())
+            .commit()
+            .expect_success();
     };
 
     let expect_undelegate_failure = |builder: &mut InMemoryWasmTestBuilder, amount: u64| {
@@ -2618,7 +2710,9 @@ fn should_release_vfta_holder_stake() {
         )
         .build();
 
-        builder.exec(full_undelegate).commit();
+        builder
+            .exec_instrumented(full_undelegate, instrumented!())
+            .commit();
 
         let error = {
             let response = builder
@@ -2698,7 +2792,7 @@ fn should_release_vfta_holder_stake() {
     )
     .build();
     builder
-        .exec(fund_delegator_account)
+        .exec_instrumented(fund_delegator_account, instrumented!())
         .commit()
         .expect_success();
 
@@ -2712,7 +2806,10 @@ fn should_release_vfta_holder_stake() {
     )
     .build();
 
-    builder.exec(fund_system_account).commit().expect_success();
+    builder
+        .exec_instrumented(fund_system_account, instrumented!())
+        .commit()
+        .expect_success();
 
     // Check bid and its vesting schedule
     {
@@ -2958,7 +3055,10 @@ fn should_reset_delegators_stake_after_slashing() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     let auction_hash = builder.get_auction_contract_hash();
@@ -2997,7 +3097,10 @@ fn should_reset_delegators_stake_after_slashing() {
     )
     .build();
 
-    builder.exec(slash_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(slash_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     // Compare bids after slashing validator 2
     let bids_2: Bids = builder.get_bids();
@@ -3044,7 +3147,10 @@ fn should_reset_delegators_stake_after_slashing() {
     )
     .build();
 
-    builder.exec(slash_request_2).expect_success().commit();
+    builder
+        .exec_instrumented(slash_request_2, instrumented!())
+        .expect_success()
+        .commit();
 
     // Compare bids after slashing validator 2
     let bids_3: Bids = builder.get_bids();
@@ -3239,7 +3345,10 @@ fn should_delegate_and_redelegate() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     builder.advance_eras_by_default_auction_delay(vec![]);
@@ -3262,7 +3371,7 @@ fn should_delegate_and_redelegate() {
     .build();
 
     builder
-        .exec(delegator_1_redelegate_request)
+        .exec_instrumented(delegator_1_redelegate_request, instrumented!())
         .commit()
         .expect_success();
 
@@ -3462,7 +3571,10 @@ fn should_handle_redelegation_to_inactive_validator() {
     let mut builder = setup(DEFAULT_ACCOUNTS.clone());
 
     for request in post_genesis_requests {
-        builder.exec(request).commit().expect_success();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .commit()
+            .expect_success();
     }
 
     builder.advance_eras_by_default_auction_delay(vec![]);
@@ -3490,7 +3602,7 @@ fn should_handle_redelegation_to_inactive_validator() {
     .build();
 
     builder
-        .exec(invalid_redelegate_request)
+        .exec_instrumented(invalid_redelegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3512,7 +3624,7 @@ fn should_handle_redelegation_to_inactive_validator() {
     .build();
 
     builder
-        .exec(valid_redelegate_request)
+        .exec_instrumented(valid_redelegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3695,7 +3807,7 @@ fn should_continue_auction_state_from_release_1_4_x() {
     .build();
 
     builder
-        .exec(delegator_4_fund_request)
+        .exec_instrumented(delegator_4_fund_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3711,7 +3823,7 @@ fn should_continue_auction_state_from_release_1_4_x() {
     .build();
 
     builder
-        .exec(delegator_4_validator_1_delegate_request)
+        .exec_instrumented(delegator_4_validator_1_delegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3728,7 +3840,7 @@ fn should_continue_auction_state_from_release_1_4_x() {
     .build();
 
     builder
-        .exec(delegator_4_redelegate_request)
+        .exec_instrumented(delegator_4_redelegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3924,7 +4036,7 @@ fn should_transfer_to_main_purse_when_validator_is_no_longer_active() {
     .build();
 
     builder
-        .exec(delegator_4_fund_request)
+        .exec_instrumented(delegator_4_fund_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3940,7 +4052,7 @@ fn should_transfer_to_main_purse_when_validator_is_no_longer_active() {
     .build();
 
     builder
-        .exec(delegator_4_validator_1_delegate_request)
+        .exec_instrumented(delegator_4_validator_1_delegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3957,7 +4069,7 @@ fn should_transfer_to_main_purse_when_validator_is_no_longer_active() {
     .build();
 
     builder
-        .exec(delegator_4_redelegate_request)
+        .exec_instrumented(delegator_4_redelegate_request, instrumented!())
         .expect_success()
         .commit();
 
@@ -3971,7 +4083,10 @@ fn should_transfer_to_main_purse_when_validator_is_no_longer_active() {
     )
     .build();
 
-    builder.exec(withdraw_request).expect_success().commit();
+    builder
+        .exec_instrumented(withdraw_request, instrumented!())
+        .expect_success()
+        .commit();
 
     builder.advance_eras_by_default_auction_delay(vec![
         RewardItem::new(NON_FOUNDER_VALIDATOR_1_PK.clone(), 1),
@@ -4051,7 +4166,10 @@ fn should_enforce_minimum_delegation_amount() {
     let post_genesis_request = vec![transfer_to_validator_1, transfer_to_delegator_1];
 
     for request in post_genesis_request {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     let add_bid_request_1 = ExecuteRequestBuilder::standard(
@@ -4065,7 +4183,10 @@ fn should_enforce_minimum_delegation_amount() {
     )
     .build();
 
-    builder.exec(add_bid_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     for _ in 0..=builder.get_auction_delay() {
         let step_request = StepRequestBuilder::new()
@@ -4093,7 +4214,9 @@ fn should_enforce_minimum_delegation_amount() {
 
     // The delegation amount is below the default value of 500 CSPR,
     // therefore the delegation should not succeed.
-    builder.exec(delegation_request_1).expect_failure();
+    builder
+        .exec_instrumented(delegation_request_1, instrumented!())
+        .expect_failure();
 
     let error = builder.get_error().expect("must get error");
     assert!(matches!(
@@ -4144,7 +4267,10 @@ fn should_allow_delegations_with_minimal_floor_amount() {
     ];
 
     for request in post_genesis_request {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     let add_bid_request_1 = ExecuteRequestBuilder::standard(
@@ -4158,7 +4284,10 @@ fn should_allow_delegations_with_minimal_floor_amount() {
     )
     .build();
 
-    builder.exec(add_bid_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     for _ in 0..=builder.get_auction_delay() {
         let step_request = StepRequestBuilder::new()
@@ -4186,7 +4315,9 @@ fn should_allow_delegations_with_minimal_floor_amount() {
 
     // The delegation amount is below the default value of 500 CSPR,
     // therefore the delegation should not succeed.
-    builder.exec(delegation_request_1).expect_failure();
+    builder
+        .exec_instrumented(delegation_request_1, instrumented!())
+        .expect_failure();
 
     let error = builder.get_error().expect("must get error");
 
@@ -4206,7 +4337,10 @@ fn should_allow_delegations_with_minimal_floor_amount() {
     )
     .build();
 
-    builder.exec(delegation_request_2).expect_success().commit();
+    builder
+        .exec_instrumented(delegation_request_2, instrumented!())
+        .expect_success()
+        .commit();
 }
 
 #[ignore]
@@ -4268,7 +4402,10 @@ fn should_enforce_max_delegators_per_validator_cap() {
     ];
 
     for request in post_genesis_request {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     let add_bid_request_1 = ExecuteRequestBuilder::standard(
@@ -4282,7 +4419,10 @@ fn should_enforce_max_delegators_per_validator_cap() {
     )
     .build();
 
-    builder.exec(add_bid_request_1).expect_success().commit();
+    builder
+        .exec_instrumented(add_bid_request_1, instrumented!())
+        .expect_success()
+        .commit();
 
     for _ in 0..=builder.get_auction_delay() {
         let step_request = StepRequestBuilder::new()
@@ -4322,7 +4462,10 @@ fn should_enforce_max_delegators_per_validator_cap() {
     let delegation_requests = [delegation_request_1, delegation_request_2];
 
     for request in delegation_requests {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     let delegation_request_3 = ExecuteRequestBuilder::standard(
@@ -4336,7 +4479,9 @@ fn should_enforce_max_delegators_per_validator_cap() {
     )
     .build();
 
-    builder.exec(delegation_request_3).expect_failure();
+    builder
+        .exec_instrumented(delegation_request_3, instrumented!())
+        .expect_failure();
 
     let error = builder.get_error().expect("must get error");
 
@@ -4367,7 +4512,10 @@ fn should_enforce_max_delegators_per_validator_cap() {
     )
     .build();
 
-    builder.exec(undelegation_request).expect_success().commit();
+    builder
+        .exec_instrumented(undelegation_request, instrumented!())
+        .expect_success()
+        .commit();
 
     let current_delegator_count = builder
         .get_bids()
@@ -4389,7 +4537,10 @@ fn should_enforce_max_delegators_per_validator_cap() {
     )
     .build();
 
-    builder.exec(delegation_request_3).expect_success().commit();
+    builder
+        .exec_instrumented(delegation_request_3, instrumented!())
+        .expect_success()
+        .commit();
 
     let current_delegator_count = builder
         .get_bids()
@@ -4508,7 +4659,10 @@ fn should_transfer_to_main_purse_in_case_of_redelegation_past_max_delegation_cap
     builder.run_genesis(&PRODUCTION_RUN_GENESIS_REQUEST);
 
     for request in post_genesis_requests {
-        builder.exec(request).expect_success().commit();
+        builder
+            .exec_instrumented(request, instrumented!())
+            .expect_success()
+            .commit();
     }
 
     builder.advance_eras_by_default_auction_delay(vec![]);
@@ -4531,7 +4685,7 @@ fn should_transfer_to_main_purse_in_case_of_redelegation_past_max_delegation_cap
     .build();
 
     builder
-        .exec(delegator_1_redelegate_request)
+        .exec_instrumented(delegator_1_redelegate_request, instrumented!())
         .commit()
         .expect_success();
 
