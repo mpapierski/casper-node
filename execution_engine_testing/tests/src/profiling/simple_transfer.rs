@@ -34,6 +34,11 @@ const VERBOSE_ARG_SHORT: &str = "v";
 const VERBOSE_ARG_LONG: &str = "verbose";
 const VERBOSE_ARG_HELP: &str = "Display the transforms resulting from the contract execution";
 
+const TRANSFERS_ARG_NAME: &str = "transfers";
+const TRANSFERS_ARG_SHORT: &str = "t";
+const TRANSFERS_ARG_LONG: &str = "transfers";
+const TRANSFERS_ARG_HELP: &str = "Number of transfers to perform (default: 1)";
+
 const SIMPLE_TRANSFER_CONTRACT: &str = "simple_transfer.wasm";
 const ARG_ACCOUNT_HASH: &str = "account_hash";
 const ARG_AMOUNT: &str = "amount";
@@ -52,11 +57,19 @@ fn verbose_arg() -> Arg<'static, 'static> {
         .help(VERBOSE_ARG_HELP)
 }
 
+fn transfers_arg() -> Arg<'static, 'static> {
+    Arg::with_name(TRANSFERS_ARG_NAME)
+        .short(TRANSFERS_ARG_SHORT)
+        .long(TRANSFERS_ARG_LONG)
+        .help(TRANSFERS_ARG_HELP)
+}
+
 #[derive(Debug)]
 struct Args {
     root_hash: Option<Digest>,
     data_dir: PathBuf,
     verbose: bool,
+    transfers: u64,
 }
 
 impl Args {
@@ -69,6 +82,7 @@ impl Args {
             .arg(root_hash_arg())
             .arg(data_dir_arg)
             .arg(verbose_arg())
+            .arg(transfers_arg())
             .get_matches();
         let root_hash = arg_matches
             .value_of(ROOT_HASH_ARG_NAME)
@@ -76,16 +90,22 @@ impl Args {
             .and_then(|hash_bytes| Digest::try_from(hash_bytes.as_slice()).ok());
         let data_dir = profiling::data_dir(&arg_matches);
         let verbose = arg_matches.is_present(VERBOSE_ARG_NAME);
+        let transfers = arg_matches
+            .value_of(ROOT_HASH_ARG_NAME)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(1);
         Args {
             root_hash,
             data_dir,
             verbose,
+            transfers,
         }
     }
 }
 
 fn main() {
     let args = Args::new();
+    dbg!(&args);
 
     // If the required initial root hash wasn't passed as a command line arg, expect to read it in
     // from stdin to allow for it to be piped from the output of 'state-initializer'.
@@ -97,32 +117,44 @@ fn main() {
         digest
     });
 
+    println!("{:?}", args);
+    println!("Using root hash {}", root_hash);
+
     let account_1_account_hash = profiling::account_1_account_hash();
     let account_2_account_hash = profiling::account_2_account_hash();
 
-    let exec_request = {
-        let deploy = DeployItemBuilder::new()
-            .with_address(account_1_account_hash)
-            .with_deploy_hash([1; 32])
-            .with_session_code(
-                SIMPLE_TRANSFER_CONTRACT,
-                runtime_args! {
-                    ARG_ACCOUNT_HASH => account_2_account_hash,
-                    ARG_AMOUNT => U512::from(TRANSFER_AMOUNT)
-                },
-            )
-            .with_empty_payment_bytes(runtime_args! { "amount" => *DEFAULT_PAYMENT})
-            .with_authorization_keys(&[account_1_account_hash])
-            .build();
+    let exec_requests = {
+        let mut vec = Vec::new();
+        for _i in 1..=args.transfers {
+            let deploy = DeployItemBuilder::new()
+                .with_address(account_1_account_hash)
+                .with_deploy_hash([1; 32])
+                .with_session_code(
+                    SIMPLE_TRANSFER_CONTRACT,
+                    runtime_args! {
+                        ARG_ACCOUNT_HASH => account_2_account_hash,
+                        ARG_AMOUNT => U512::from(TRANSFER_AMOUNT),
+                    },
+                )
+                .with_empty_payment_bytes(runtime_args! { "amount" => *DEFAULT_PAYMENT})
+                .with_authorization_keys(&[account_1_account_hash])
+                .build();
 
-        ExecuteRequestBuilder::new().push_deploy(deploy).build()
+            let exec_request = ExecuteRequestBuilder::new().push_deploy(deploy).build();
+            vec.push(exec_request);
+        }
+        vec
     };
 
     let engine_config = EngineConfig::default();
 
     let mut test_builder = LmdbWasmTestBuilder::open(&args.data_dir, engine_config, root_hash);
 
-    test_builder.exec(exec_request).expect_success().commit();
+    for exec_request in exec_requests {
+        test_builder
+            .scratch_exec_and_commit(exec_request)
+            .expect_success();
+    }
 
     if args.verbose {
         println!("{:#?}", test_builder.get_execution_journals());

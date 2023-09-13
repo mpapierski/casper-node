@@ -21,7 +21,7 @@ fn create_account_with_amount(account: AccountHash, amount: U512) {
         Ok(TransferredTo::ExistingAccount) => {
             runtime::revert(ApiError::User(Error::AccountAlreadyExists as u16))
         }
-        Err(_) => runtime::revert(ApiError::Transfer),
+        Err(e) => runtime::revert(e),
     }
 }
 

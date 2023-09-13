@@ -55,6 +55,7 @@ fn main() {
             .with_session_code(
                 STATE_INITIALIZER_CONTRACT,
                 runtime_args! {
+                    "amount" => account_1_initial_amount,
                     ARG_ACCOUNT1_HASH => account_1_account_hash,
                     ARG_ACCOUNT1_AMOUNT => account_1_initial_amount,
                     ARG_ACCOUNT2_HASH => account_2_account_hash,
@@ -91,11 +92,10 @@ fn main() {
         DEFAULT_CHAINSPEC_REGISTRY.clone(),
     );
 
-    let post_state_hash = builder
-        .run_genesis(&run_genesis_request)
-        .exec(exec_request)
-        .expect_success()
-        .commit()
-        .get_post_state_hash();
+    builder.run_genesis(&run_genesis_request);
+
+    builder.exec(exec_request).expect_success().commit();
+
+    let post_state_hash = builder.get_post_state_hash();
     println!("{:?}", post_state_hash);
 }
