@@ -3,7 +3,9 @@ use std::{collections::BTreeMap, convert::TryInto, sync::Arc, time::Instant};
 use itertools::Itertools;
 use tracing::{debug, error, info, trace, warn};
 
-use casper_execution_engine::engine_state::{ExecutionEngineV1, WasmV1Request, WasmV1Result};
+use casper_execution_engine::engine_state::{
+    ExecutionEngineV1, InvalidRequest, WasmV1Request, WasmV1Result,
+};
 use casper_storage::{
     block_store::types::ApprovalsHashes,
     data_access_layer::{
@@ -108,7 +110,18 @@ pub fn execute_finalized_block(
 
         let initiator_addr = transaction.initiator_addr();
         let transaction_hash = transaction.hash();
-        let runtime_args = transaction.session_args().clone();
+        let runtime_args = match transaction.session_args() {
+            Some(args) => args.clone(),
+            None => {
+                debug!(%transaction_hash, "invalid transaction due to wrong runtime (missing runtime args)");
+                artifact_builder.with_invalid_wasm_v1_request(&InvalidRequest::InvalidRuntime(
+                    transaction.hash(),
+                ));
+                artifacts.push(artifact_builder.build());
+                continue;
+            }
+        };
+
         let entry_point = transaction.entry_point();
         let authorization_keys = transaction.authorization_keys();
 

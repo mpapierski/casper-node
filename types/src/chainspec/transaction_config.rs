@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::testing::TestRng;
 use crate::{
     bytesrepr::{self, FromBytes, ToBytes},
-    TimeDiff,
+    TimeDiff, TransactionRuntime,
 };
 
 pub use deploy_config::DeployConfig;
@@ -56,6 +56,9 @@ pub struct TransactionConfig {
     /// Configuration values specific to Deploy transactions.
     #[serde(rename = "deploy")]
     pub deploy_config: DeployConfig,
+    #[serde(rename = "runtime")]
+    /// Configuration of the transaction runtime.
+    pub transaction_runtime: TransactionRuntime,
     /// Configuration values specific to V1 transactions.
     #[serde(rename = "v1")]
     pub transaction_v1_config: TransactionV1Config,
@@ -78,6 +81,7 @@ impl TransactionConfig {
             rng.gen_range(DEFAULT_MIN_TRANSFER_MOTES..1_000_000_000_000_000);
         let max_timestamp_leeway = TimeDiff::from_seconds(rng.gen_range(0..6));
         let deploy_config = DeployConfig::random(rng);
+        let transaction_runtime = rng.gen();
         let transaction_v1_config = TransactionV1Config::random(rng);
 
         TransactionConfig {
@@ -93,6 +97,7 @@ impl TransactionConfig {
             native_transfer_minimum_motes,
             max_timestamp_leeway,
             deploy_config,
+            transaction_runtime,
             transaction_v1_config,
         }
     }
@@ -115,25 +120,45 @@ impl Default for TransactionConfig {
             max_timestamp_leeway: TimeDiff::from_seconds(5),
             deploy_config: DeployConfig::default(),
             transaction_v1_config: TransactionV1Config::default(),
+            transaction_runtime: TransactionRuntime::VmCasperV1,
         }
     }
 }
 
 impl ToBytes for TransactionConfig {
     fn write_bytes(&self, writer: &mut Vec<u8>) -> Result<(), bytesrepr::Error> {
-        self.max_ttl.write_bytes(writer)?;
-        self.max_transaction_size.write_bytes(writer)?;
-        self.block_max_mint_count.write_bytes(writer)?;
-        self.block_max_auction_count.write_bytes(writer)?;
-        self.block_max_install_upgrade_count.write_bytes(writer)?;
-        self.block_max_standard_count.write_bytes(writer)?;
-        self.block_max_approval_count.write_bytes(writer)?;
-        self.max_block_size.write_bytes(writer)?;
-        self.block_gas_limit.write_bytes(writer)?;
-        self.native_transfer_minimum_motes.write_bytes(writer)?;
-        self.max_timestamp_leeway.write_bytes(writer)?;
-        self.deploy_config.write_bytes(writer)?;
-        self.transaction_v1_config.write_bytes(writer)
+        let Self {
+            max_ttl,
+            max_transaction_size,
+            block_max_mint_count,
+            block_max_auction_count,
+            block_max_install_upgrade_count,
+            block_max_standard_count,
+            block_max_approval_count,
+            max_block_size,
+            block_gas_limit,
+            native_transfer_minimum_motes,
+            max_timestamp_leeway,
+            deploy_config,
+            transaction_runtime,
+            transaction_v1_config,
+        } = self;
+
+        max_ttl.write_bytes(writer)?;
+        max_transaction_size.write_bytes(writer)?;
+        block_max_mint_count.write_bytes(writer)?;
+        block_max_auction_count.write_bytes(writer)?;
+        block_max_install_upgrade_count.write_bytes(writer)?;
+        block_max_standard_count.write_bytes(writer)?;
+        block_max_approval_count.write_bytes(writer)?;
+        max_block_size.write_bytes(writer)?;
+        block_gas_limit.write_bytes(writer)?;
+        native_transfer_minimum_motes.write_bytes(writer)?;
+        max_timestamp_leeway.write_bytes(writer)?;
+        deploy_config.write_bytes(writer)?;
+        transaction_runtime.write_bytes(writer)?;
+        transaction_v1_config.write_bytes(writer)?;
+        Ok(())
     }
 
     fn to_bytes(&self) -> Result<Vec<u8>, bytesrepr::Error> {
@@ -143,19 +168,37 @@ impl ToBytes for TransactionConfig {
     }
 
     fn serialized_length(&self) -> usize {
-        self.max_ttl.serialized_length()
-            + self.max_transaction_size.serialized_length()
-            + self.block_max_mint_count.serialized_length()
-            + self.block_max_auction_count.serialized_length()
-            + self.block_max_install_upgrade_count.serialized_length()
-            + self.block_max_standard_count.serialized_length()
-            + self.block_max_approval_count.serialized_length()
-            + self.max_block_size.serialized_length()
-            + self.block_gas_limit.serialized_length()
-            + self.native_transfer_minimum_motes.serialized_length()
-            + self.max_timestamp_leeway.serialized_length()
-            + self.deploy_config.serialized_length()
-            + self.transaction_v1_config.serialized_length()
+        let Self {
+            max_ttl,
+            max_transaction_size,
+            block_max_mint_count,
+            block_max_auction_count,
+            block_max_install_upgrade_count,
+            block_max_standard_count,
+            block_max_approval_count,
+            max_block_size,
+            block_gas_limit,
+            native_transfer_minimum_motes,
+            max_timestamp_leeway,
+            deploy_config,
+            transaction_runtime,
+            transaction_v1_config,
+        } = self;
+
+        max_ttl.serialized_length()
+            + max_transaction_size.serialized_length()
+            + block_max_mint_count.serialized_length()
+            + block_max_auction_count.serialized_length()
+            + block_max_install_upgrade_count.serialized_length()
+            + block_max_standard_count.serialized_length()
+            + block_max_approval_count.serialized_length()
+            + max_block_size.serialized_length()
+            + block_gas_limit.serialized_length()
+            + native_transfer_minimum_motes.serialized_length()
+            + max_timestamp_leeway.serialized_length()
+            + deploy_config.serialized_length()
+            + transaction_runtime.serialized_length()
+            + transaction_v1_config.serialized_length()
     }
 }
 
@@ -173,6 +216,7 @@ impl FromBytes for TransactionConfig {
         let (native_transfer_minimum_motes, remainder) = u64::from_bytes(remainder)?;
         let (max_timestamp_leeway, remainder) = TimeDiff::from_bytes(remainder)?;
         let (deploy_config, remainder) = DeployConfig::from_bytes(remainder)?;
+        let (transaction_runtime, remainder) = TransactionRuntime::from_bytes(remainder)?;
         let (transaction_v1_config, remainder) = TransactionV1Config::from_bytes(remainder)?;
 
         let config = TransactionConfig {
@@ -188,6 +232,7 @@ impl FromBytes for TransactionConfig {
             native_transfer_minimum_motes,
             max_timestamp_leeway,
             deploy_config,
+            transaction_runtime,
             transaction_v1_config,
         };
         Ok((config, remainder))

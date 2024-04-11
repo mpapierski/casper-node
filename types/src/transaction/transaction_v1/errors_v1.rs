@@ -13,7 +13,10 @@ use serde::Serialize;
 use super::super::TransactionEntryPoint;
 #[cfg(doc)]
 use super::TransactionV1;
-use crate::{bytesrepr, crypto, CLType, DisplayIter, PricingMode, TimeDiff, Timestamp, U512};
+use crate::{
+    bytesrepr, crypto, CLType, DisplayIter, PricingMode, TimeDiff, Timestamp, TransactionRuntime,
+    U512,
+};
 
 /// Returned when a [`TransactionV1`] fails validation.
 #[derive(Clone, Eq, PartialEq, Debug)]
@@ -152,6 +155,13 @@ pub enum InvalidTransaction {
         /// The pricing mode as specified by the transaction.
         price_mode: PricingMode,
     },
+    /// The runtime specified in the transaction is invalid.
+    InvalidRuntime {
+        /// The expected runtime.
+        expected: TransactionRuntime,
+        /// The runtime specified in the transaction.
+        got: TransactionRuntime,
+    },
 }
 
 impl Display for InvalidTransaction {
@@ -281,6 +291,9 @@ impl Display for InvalidTransaction {
                     "received a transaction with an invalid mode {price_mode}"
                 )
             }
+            InvalidTransaction::InvalidRuntime { expected, got } => {
+                write!(formatter, "invalid runtime: expected {expected}, got {got}")
+            }
         }
     }
 }
@@ -316,7 +329,8 @@ impl StdError for InvalidTransaction {
             | InvalidTransaction::GasPriceConversion { .. }
             | InvalidTransaction::UnableToCalculateGasLimit
             | InvalidTransaction::UnableToCalculateGasCost
-            | InvalidTransaction::InvalidPricingMode { .. } => None,
+            | InvalidTransaction::InvalidPricingMode { .. }
+            | InvalidTransaction::InvalidRuntime { .. } => None,
         }
     }
 }

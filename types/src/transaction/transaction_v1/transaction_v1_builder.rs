@@ -11,7 +11,7 @@ use super::{
         TransactionScheduling, TransactionSessionKind, TransactionTarget,
     },
     transaction_v1_body::arg_handling,
-    InitiatorAddrAndSecretKey, PricingMode, TransactionV1, TransactionV1Body,
+    InitiatorAddrAndSecretKey, PricingMode, TransactionArgs, TransactionV1, TransactionV1Body,
 };
 use crate::{
     bytesrepr::Bytes, AddressableEntityHash, CLValue, CLValueError, EntityVersion, PackageHash,
@@ -380,7 +380,16 @@ impl<'a> TransactionV1Builder<'a> {
 
     /// Appends the given runtime arg into the body's `args`.
     pub fn with_runtime_arg<K: Into<String>>(mut self, key: K, cl_value: CLValue) -> Self {
-        self.body.args.insert_cl_value(key, cl_value);
+        match &mut self.body.args {
+            TransactionArgs::NamedArguments(named_args) => {
+                named_args.insert_cl_value(key.into(), cl_value);
+            }
+            TransactionArgs::Bytes(_) => {
+                let mut named_args = RuntimeArgs::new();
+                named_args.insert_cl_value(key.into(), cl_value);
+                self.body.args = TransactionArgs::NamedArguments(named_args);
+            }
+        }
         self
     }
 
@@ -389,7 +398,7 @@ impl<'a> TransactionV1Builder<'a> {
     /// NOTE: this overwrites any existing runtime args.  To append to existing args, use
     /// [`TransactionV1Builder::with_runtime_arg`].
     pub fn with_runtime_args(mut self, args: RuntimeArgs) -> Self {
-        self.body.args = args;
+        self.body.args = TransactionArgs::NamedArguments(args);
         self
     }
 

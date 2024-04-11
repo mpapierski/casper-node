@@ -34,6 +34,9 @@ pub enum InvalidRequest {
     /// Invalid target.
     #[error("invalid target for {0} attempting {1}")]
     InvalidTarget(TransactionHash, String),
+    /// Invalid runtime.
+    #[error("invalid runtime for {0}")]
+    InvalidRuntime(TransactionHash),
 }
 
 /// The item to be executed.
@@ -475,7 +478,13 @@ impl TryFrom<&TransactionV1> for SessionInfo {
 
     fn try_from(v1_txn: &TransactionV1) -> Result<Self, Self::Error> {
         let transaction_hash = TransactionHash::V1(*v1_txn.hash());
-        let args = v1_txn.args().clone();
+        let args = match v1_txn.args() {
+            Some(args) => args,
+            None => {
+                return Err(InvalidRequest::InvalidRuntime(transaction_hash));
+            }
+        };
+
         let session = match v1_txn.target() {
             TransactionTarget::Native => {
                 return Err(InvalidRequest::InvalidTarget(
@@ -499,7 +508,7 @@ impl TryFrom<&TransactionV1> for SessionInfo {
         Ok(SessionInfo(ExecutableInfo {
             item: session,
             entry_point: entry_point.clone(),
-            args,
+            args: args.clone(),
         }))
     }
 }

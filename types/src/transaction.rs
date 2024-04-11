@@ -358,9 +358,9 @@ impl Transaction {
     }
 
     /// The session args.
-    pub fn session_args(&self) -> &RuntimeArgs {
+    pub fn session_args(&self) -> Option<&RuntimeArgs> {
         match self {
-            Transaction::Deploy(deploy) => deploy.session().args(),
+            Transaction::Deploy(deploy) => Some(deploy.session().args()),
             Transaction::V1(transaction_v1) => transaction_v1.body().args(),
         }
     }

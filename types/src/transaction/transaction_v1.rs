@@ -1,4 +1,5 @@
 mod errors_v1;
+mod transaction_v1_args;
 mod transaction_v1_body;
 #[cfg(any(feature = "std", test))]
 mod transaction_v1_builder;
@@ -46,6 +47,7 @@ pub use errors_v1::{
     ExcessiveSizeErrorV1 as TransactionV1ExcessiveSizeError,
     InvalidTransaction as InvalidTransactionV1,
 };
+pub use transaction_v1_args::TransactionArgs;
 pub use transaction_v1_body::TransactionV1Body;
 #[cfg(any(feature = "std", test))]
 pub use transaction_v1_builder::{TransactionV1Builder, TransactionV1BuilderError};
@@ -178,12 +180,12 @@ impl TransactionV1 {
     }
 
     /// Returns the runtime args of the transaction.
-    pub fn args(&self) -> &RuntimeArgs {
+    pub fn args(&self) -> Option<&RuntimeArgs> {
         self.body.args()
     }
 
     /// Consumes `self`, returning the runtime args of the transaction.
-    pub fn take_args(self) -> RuntimeArgs {
+    pub fn take_args(self) -> Option<RuntimeArgs> {
         self.body.take_args()
     }
 
@@ -362,6 +364,22 @@ impl TransactionV1 {
         self.is_valid_size(transaction_config.max_transaction_size)?;
 
         let chain_name = chainspec.network_config.name.clone();
+
+        let body = self.body();
+        if let Some(runtime) = body.target().runtime() {
+            if *runtime != chainspec.transaction_config.transaction_runtime {
+                debug!(
+                    transaction_hash = %self.hash(),
+                    transaction_header = %self.header(),
+                    runtime = ?runtime,
+                    "invalid transaction runtime"
+                );
+                return Err(InvalidTransactionV1::InvalidRuntime {
+                    expected: chainspec.transaction_config.transaction_runtime,
+                    got: *runtime,
+                });
+            }
+        };
 
         let header = self.header();
         if header.chain_name() != chain_name {
