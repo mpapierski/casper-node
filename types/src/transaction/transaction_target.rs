@@ -95,6 +95,15 @@ impl TransactionTarget {
             _ => unreachable!(),
         }
     }
+
+    /// Returns the runtime of the transaction target, if any.
+    pub fn runtime(&self) -> Option<&TransactionRuntime> {
+        match self {
+            TransactionTarget::Native => None,
+            TransactionTarget::Stored { runtime, .. } => Some(runtime),
+            TransactionTarget::Session { runtime, .. } => Some(runtime),
+        }
+    }
 }
 
 impl Display for TransactionTarget {
