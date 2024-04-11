@@ -630,6 +630,15 @@ impl TryFrom<&TransactionV1> for PaymentInfo {
                     mode.to_string(),
                 ));
             }
+            PricingMode::GasLimited { gas_limit, .. } => {
+                if !v1_txn.is_v2_wasm() {
+                    return Err(InvalidRequest::UnsupportedMode(
+                        transaction_hash,
+                        pricing_mode.to_string(),
+                    ));
+                }
+                *gas_limit
+            }
         };
 
         let payment = match v1_txn.target() {

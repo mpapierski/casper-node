@@ -243,6 +243,17 @@ impl TransactionV1 {
         }
     }
 
+    /// Does this transaction have wasm targeting the v2 vm.
+    pub fn is_v2_wasm(&self) -> bool {
+        match self.target() {
+            TransactionTarget::Native => false,
+            TransactionTarget::Stored { runtime, .. }
+            | TransactionTarget::Session { runtime, .. } => {
+                matches!(runtime, TransactionRuntime::VmCasperV2)
+            }
+        }
+    }
+
     /// Should this transaction start in the initiating accounts context?
     pub fn is_account_session(&self) -> bool {
         let target_is_stored_contract = matches!(self.target(), TransactionTarget::Stored { .. });
@@ -421,6 +432,17 @@ impl TransactionV1 {
                 if !chainspec.core_config.allow_reservations {
                     // Currently Reserved isn't implemented and we should
                     // not be accepting transactions with this mode.
+                    return Err(InvalidTransactionV1::InvalidPricingMode {
+                        price_mode: price_mode.clone(),
+                    });
+                }
+            }
+            PricingMode::GasLimited { .. } => {
+                if price_handling == PricingHandling::Fixed
+                    && chainspec.transaction_config.transaction_runtime
+                        == TransactionRuntime::VmCasperV2
+                {
+                } else {
                     return Err(InvalidTransactionV1::InvalidPricingMode {
                         price_mode: price_mode.clone(),
                     });
@@ -649,6 +671,8 @@ impl GasLimited for TransactionV1 {
             PricingMode::Reserved { .. } => {
                 Motes::zero() // prepaid
             }
+            PricingMode::GasLimited { .. } => Motes::from_gas(gas_limit, gas_price)
+                .ok_or(InvalidTransactionV1::UnableToCalculateGasCost)?,
         };
         Ok(motes)
     }
@@ -708,6 +732,10 @@ impl GasLimited for TransactionV1 {
                     price_mode: PricingMode::Reserved { receipt: *receipt },
                 })
             }
+            PricingMode::GasLimited {
+                gas_limit,
+                gas_price_tolerance: _,
+            } => Gas::new(U512::from(*gas_limit)),
         };
         Ok(gas)
     }
