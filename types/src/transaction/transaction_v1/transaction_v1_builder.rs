@@ -381,13 +381,13 @@ impl<'a> TransactionV1Builder<'a> {
     /// Appends the given runtime arg into the body's `args`.
     pub fn with_runtime_arg<K: Into<String>>(mut self, key: K, cl_value: CLValue) -> Self {
         match &mut self.body.args {
-            TransactionArgs::NamedArguments(named_args) => {
+            TransactionArgs::VmCasperV1(named_args) => {
                 named_args.insert_cl_value(key.into(), cl_value);
             }
-            TransactionArgs::Bytes(_) => {
+            TransactionArgs::VmCasperV2 { .. } => {
                 let mut named_args = RuntimeArgs::new();
                 named_args.insert_cl_value(key.into(), cl_value);
-                self.body.args = TransactionArgs::NamedArguments(named_args);
+                self.body.args = TransactionArgs::VmCasperV1(named_args);
             }
         }
         self
@@ -398,7 +398,7 @@ impl<'a> TransactionV1Builder<'a> {
     /// NOTE: this overwrites any existing runtime args.  To append to existing args, use
     /// [`TransactionV1Builder::with_runtime_arg`].
     pub fn with_runtime_args(mut self, args: RuntimeArgs) -> Self {
-        self.body.args = TransactionArgs::NamedArguments(args);
+        self.body.args = TransactionArgs::VmCasperV1(args);
         self
     }
 

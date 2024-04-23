@@ -69,7 +69,7 @@ impl TransactionV1Body {
         scheduling: TransactionScheduling,
     ) -> Self {
         TransactionV1Body {
-            args: TransactionArgs::NamedArguments(input),
+            args: TransactionArgs::VmCasperV1(input),
             target,
             entry_point,
             scheduling,
@@ -79,16 +79,16 @@ impl TransactionV1Body {
     /// Returns the runtime args of the transaction.
     pub fn args(&self) -> Option<&RuntimeArgs> {
         match &self.args {
-            TransactionArgs::NamedArguments(args) => Some(args),
-            TransactionArgs::Bytes(_) => None,
+            TransactionArgs::VmCasperV1(args) => Some(args),
+            TransactionArgs::VmCasperV2 { .. } => None,
         }
     }
 
     /// Consumes `self`, returning the runtime args of the transaction.
     pub fn take_args(self) -> Option<RuntimeArgs> {
         match self.args {
-            TransactionArgs::NamedArguments(args) => Some(args),
-            TransactionArgs::Bytes(_) => None,
+            TransactionArgs::VmCasperV1(args) => Some(args),
+            TransactionArgs::VmCasperV2 { .. } => None,
         }
     }
 
@@ -161,8 +161,8 @@ impl TransactionV1Body {
     #[cfg(any(feature = "std", test))]
     pub(super) fn is_valid(&self, config: &TransactionConfig) -> Result<(), InvalidTransactionV1> {
         let args_length = match self.args {
-            TransactionArgs::NamedArguments(ref args) => args.serialized_length(),
-            TransactionArgs::Bytes(ref bytes) => bytes.len(),
+            TransactionArgs::VmCasperV1(ref args) => args.serialized_length(),
+            TransactionArgs::VmCasperV2 { ref input, .. } => input.len(),
         };
 
         if args_length > config.transaction_v1_config.max_args_length as usize {
@@ -178,7 +178,7 @@ impl TransactionV1Body {
         }
 
         let args = match &self.args {
-            TransactionArgs::NamedArguments(args) => {
+            TransactionArgs::VmCasperV1(args) => {
                 if config.transaction_runtime == TransactionRuntime::VmCasperV1 {
                     args
                 } else {
@@ -189,7 +189,7 @@ impl TransactionV1Body {
                     });
                 }
             }
-            TransactionArgs::Bytes(_) => {
+            TransactionArgs::VmCasperV2 { .. } => {
                 debug!(?config.transaction_runtime, "transaction args v2 are not supported yet");
                 return Err(InvalidTransactionV1::InvalidRuntime {
                     expected: TransactionRuntime::VmCasperV2,
@@ -514,7 +514,7 @@ mod tests {
         let mut config = TransactionConfig::default();
         config.transaction_v1_config.max_args_length = 10;
         let mut body = TransactionV1Body::random(rng);
-        body.args = TransactionArgs::NamedArguments(runtime_args! {"a" => 1_u8});
+        body.args = TransactionArgs::VmCasperV1(runtime_args! {"a" => 1_u8});
 
         let expected_error = InvalidTransactionV1::ExcessiveArgsLength {
             max_length: 10,
