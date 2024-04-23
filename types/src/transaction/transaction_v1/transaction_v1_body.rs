@@ -119,7 +119,9 @@ impl TransactionV1Body {
             return false;
         }
         match self.entry_point {
-            TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Transfer => false,
+            TransactionEntryPoint::Custom(_)
+            | TransactionEntryPoint::Selector(_)
+            | TransactionEntryPoint::Transfer => false,
             TransactionEntryPoint::AddBid
             | TransactionEntryPoint::WithdrawBid
             | TransactionEntryPoint::ActivateBid
@@ -200,7 +202,7 @@ impl TransactionV1Body {
 
         match &self.target {
             TransactionTarget::Native => match self.entry_point {
-                TransactionEntryPoint::Custom(_) => {
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => {
                     debug!(
                         entry_point = %self.entry_point,
                         "native transaction cannot have custom entry point"
@@ -209,6 +211,7 @@ impl TransactionV1Body {
                         entry_point: self.entry_point.clone(),
                     })
                 }
+
                 TransactionEntryPoint::Transfer => arg_handling::has_valid_transfer_args(
                     args,
                     config.native_transfer_minimum_motes,
@@ -228,7 +231,7 @@ impl TransactionV1Body {
                 }
             },
             TransactionTarget::Stored { .. } => match &self.entry_point {
-                TransactionEntryPoint::Custom(_) => Ok(()),
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => Ok(()),
                 TransactionEntryPoint::Transfer
                 | TransactionEntryPoint::AddBid
                 | TransactionEntryPoint::WithdrawBid
@@ -247,7 +250,7 @@ impl TransactionV1Body {
                 }
             },
             TransactionTarget::Session { module_bytes, .. } => match &self.entry_point {
-                TransactionEntryPoint::Custom(_) => {
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => {
                     if module_bytes.is_empty() {
                         debug!("transaction with session code must not have empty module bytes");
                         return Err(InvalidTransactionV1::EmptyModuleBytes);
