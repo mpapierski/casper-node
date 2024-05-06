@@ -227,7 +227,7 @@ impl TransactionV1Body {
                     arg_handling::has_valid_activate_bid_args(args)
                 }
                 TransactionEntryPoint::ChangeBidPublicKey => {
-                    arg_handling::has_valid_change_bid_public_key_args(&self.args)
+                    arg_handling::has_valid_change_bid_public_key_args(args)
                 }
             },
             TransactionTarget::Stored { .. } => match &self.entry_point {

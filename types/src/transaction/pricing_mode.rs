@@ -90,8 +90,6 @@ impl PricingMode {
             },
             2 => PricingMode::Reserved {
                 receipt: rng.gen(),
-                paid_amount: rng.gen(),
-                strike_price: rng.gen(),
             },
             3 => PricingMode::GasLimited {
                 gas_limit: rng.gen(),
@@ -260,8 +258,6 @@ mod tests {
             },
             PricingMode::Reserved {
                 receipt: Digest::hash("hello, world"),
-                paid_amount: 2,
-                strike_price: 1,
             },
             PricingMode::GasLimited {
                 gas_limit: 2,
