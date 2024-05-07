@@ -1,4 +1,5 @@
 mod errors_v1;
+mod transaction_v1_args;
 mod transaction_v1_body;
 #[cfg(any(feature = "std", test))]
 mod transaction_v1_builder;
@@ -48,6 +49,7 @@ pub use errors_v1::{
     ExcessiveSizeErrorV1 as TransactionV1ExcessiveSizeError,
     InvalidTransaction as InvalidTransactionV1,
 };
+pub use transaction_v1_args::TransactionArgs;
 pub use transaction_v1_body::TransactionV1Body;
 #[cfg(any(feature = "std", test))]
 pub use transaction_v1_builder::{TransactionV1Builder, TransactionV1BuilderError};
@@ -180,12 +182,12 @@ impl TransactionV1 {
     }
 
     /// Returns the runtime args of the transaction.
-    pub fn args(&self) -> &RuntimeArgs {
+    pub fn args(&self) -> Option<&RuntimeArgs> {
         self.body.args()
     }
 
     /// Consumes `self`, returning the runtime args of the transaction.
-    pub fn take_args(self) -> RuntimeArgs {
+    pub fn take_args(self) -> Option<RuntimeArgs> {
         self.body.take_args()
     }
 
@@ -237,6 +239,17 @@ impl TransactionV1 {
             | TransactionTarget::Session { runtime, .. } => {
                 matches!(runtime, TransactionRuntime::VmCasperV1)
                     && (self.is_standard() || self.is_install_or_upgrade())
+            }
+        }
+    }
+
+    /// Does this transaction have wasm targeting the v2 vm.
+    pub fn is_v2_wasm(&self) -> bool {
+        match self.target() {
+            TransactionTarget::Native => false,
+            TransactionTarget::Stored { runtime, .. }
+            | TransactionTarget::Session { runtime, .. } => {
+                matches!(runtime, TransactionRuntime::VmCasperV2)
             }
         }
     }
@@ -365,6 +378,22 @@ impl TransactionV1 {
 
         let chain_name = chainspec.network_config.name.clone();
 
+        let body = self.body();
+        if let Some(runtime) = body.target().runtime() {
+            if *runtime != chainspec.transaction_config.transaction_runtime {
+                debug!(
+                    transaction_hash = %self.hash(),
+                    transaction_header = %self.header(),
+                    runtime = ?runtime,
+                    "invalid transaction runtime"
+                );
+                return Err(InvalidTransactionV1::InvalidRuntime {
+                    expected: chainspec.transaction_config.transaction_runtime,
+                    got: *runtime,
+                });
+            }
+        };
+
         let header = self.header();
         if header.chain_name() != chain_name {
             debug!(
@@ -403,6 +432,17 @@ impl TransactionV1 {
                 if !chainspec.core_config.allow_reservations {
                     // Currently Reserved isn't implemented and we should
                     // not be accepting transactions with this mode.
+                    return Err(InvalidTransactionV1::InvalidPricingMode {
+                        price_mode: price_mode.clone(),
+                    });
+                }
+            }
+            PricingMode::GasLimited { .. } => {
+                if price_handling == PricingHandling::Fixed
+                    && chainspec.transaction_config.transaction_runtime
+                        == TransactionRuntime::VmCasperV2
+                {
+                } else {
                     return Err(InvalidTransactionV1::InvalidPricingMode {
                         price_mode: price_mode.clone(),
                     });
@@ -580,7 +620,9 @@ impl TransactionV1 {
     pub fn transaction_category(&self) -> TransactionCategory {
         match self.body().target() {
             TransactionTarget::Native => match self.body().entry_point() {
-                TransactionEntryPoint::Custom(_) => TransactionCategory::Standard,
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => {
+                    TransactionCategory::Standard
+                }
                 TransactionEntryPoint::Transfer => TransactionCategory::Mint,
                 TransactionEntryPoint::AddBid
                 | TransactionEntryPoint::WithdrawBid
@@ -631,6 +673,8 @@ impl GasLimited for TransactionV1 {
             PricingMode::Reserved { .. } => {
                 Motes::zero() // prepaid
             }
+            PricingMode::GasLimited { .. } => Motes::from_gas(gas_limit, gas_price)
+                .ok_or(InvalidTransactionV1::UnableToCalculateGasCost)?,
         };
         Ok(motes)
     }
@@ -652,11 +696,14 @@ impl GasLimited for TransactionV1 {
                     } else if self.is_native_auction() {
                         let entry_point = self.body().entry_point();
                         let amount = match entry_point {
-                            TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Transfer => {
+                            TransactionEntryPoint::Custom(_)
+                            | TransactionEntryPoint::Transfer
+                            | TransactionEntryPoint::Selector(_) => {
                                 return Err(InvalidTransactionV1::EntryPointCannotBeCustom {
                                     entry_point: entry_point.clone(),
                                 })
                             }
+
                             TransactionEntryPoint::AddBid | TransactionEntryPoint::ActivateBid => {
                                 costs.auction_costs().add_bid.into()
                             }
@@ -690,6 +737,10 @@ impl GasLimited for TransactionV1 {
                     price_mode: PricingMode::Reserved { receipt: *receipt },
                 })
             }
+            PricingMode::GasLimited {
+                gas_limit,
+                gas_price_tolerance: _,
+            } => Gas::new(U512::from(*gas_limit)),
         };
         Ok(gas)
     }

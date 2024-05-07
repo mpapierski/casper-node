@@ -28,6 +28,7 @@ const UNDELEGATE_TAG: u8 = 5;
 const REDELEGATE_TAG: u8 = 6;
 const ACTIVATE_BID_TAG: u8 = 7;
 const CHANGE_BID_PUBLIC_KEY_TAG: u8 = 8;
+const SELECTOR_TAG: u8 = 9;
 
 /// The entry point of a [`Transaction`].
 #[derive(Clone, Ord, PartialOrd, Eq, PartialEq, Hash, Serialize, Deserialize, Debug)]
@@ -160,13 +161,17 @@ pub enum TransactionEntryPoint {
         )
     )]
     ChangeBidPublicKey,
+
+    /// The selector for the entry point used for dispatching a stored contract under a
+    /// vm-casper-v2 runtime.
+    Selector(u32),
 }
 
 impl TransactionEntryPoint {
     /// Returns a random `TransactionEntryPoint`.
     #[cfg(any(feature = "testing", test))]
     pub fn random(rng: &mut TestRng) -> Self {
-        match rng.gen_range(0..8) {
+        match rng.gen_range(0..=9) {
             CUSTOM_TAG => TransactionEntryPoint::Custom(rng.random_string(1..21)),
             TRANSFER_TAG => TransactionEntryPoint::Transfer,
             ADD_BID_TAG => TransactionEntryPoint::AddBid,
@@ -176,6 +181,7 @@ impl TransactionEntryPoint {
             REDELEGATE_TAG => TransactionEntryPoint::Redelegate,
             ACTIVATE_BID_TAG => TransactionEntryPoint::ActivateBid,
             CHANGE_BID_PUBLIC_KEY_TAG => TransactionEntryPoint::ChangeBidPublicKey,
+            SELECTOR_TAG => TransactionEntryPoint::Selector(rng.gen()),
             _ => unreachable!(),
         }
     }
@@ -186,7 +192,8 @@ impl TransactionEntryPoint {
             TransactionEntryPoint::AddBid
             | TransactionEntryPoint::Delegate
             | TransactionEntryPoint::Custom(_)
-            | TransactionEntryPoint::Transfer => true,
+            | TransactionEntryPoint::Transfer
+            | TransactionEntryPoint::Selector(_) => true,
             TransactionEntryPoint::WithdrawBid
             | TransactionEntryPoint::Undelegate
             | TransactionEntryPoint::Redelegate
@@ -210,6 +217,9 @@ impl Display for TransactionEntryPoint {
             TransactionEntryPoint::Redelegate => write!(formatter, "redelegate"),
             TransactionEntryPoint::ActivateBid => write!(formatter, "activate_bid"),
             TransactionEntryPoint::ChangeBidPublicKey => write!(formatter, "change_bid_public_key"),
+            TransactionEntryPoint::Selector(selector) => {
+                write!(formatter, "selector({})", selector)
+            }
         }
     }
 }
@@ -231,6 +241,10 @@ impl ToBytes for TransactionEntryPoint {
             TransactionEntryPoint::ChangeBidPublicKey => {
                 CHANGE_BID_PUBLIC_KEY_TAG.write_bytes(writer)
             }
+            TransactionEntryPoint::Selector(selector) => {
+                SELECTOR_TAG.write_bytes(writer)?;
+                selector.write_bytes(writer)
+            }
         }
     }
 
@@ -244,6 +258,7 @@ impl ToBytes for TransactionEntryPoint {
         U8_SERIALIZED_LENGTH
             + match self {
                 TransactionEntryPoint::Custom(entry_point) => entry_point.serialized_length(),
+                TransactionEntryPoint::Selector(selector) => selector.serialized_length(),
                 TransactionEntryPoint::Transfer
                 | TransactionEntryPoint::AddBid
                 | TransactionEntryPoint::WithdrawBid
@@ -272,6 +287,10 @@ impl FromBytes for TransactionEntryPoint {
             REDELEGATE_TAG => Ok((TransactionEntryPoint::Redelegate, remainder)),
             ACTIVATE_BID_TAG => Ok((TransactionEntryPoint::ActivateBid, remainder)),
             CHANGE_BID_PUBLIC_KEY_TAG => Ok((TransactionEntryPoint::ChangeBidPublicKey, remainder)),
+            SELECTOR_TAG => {
+                let (selector, remainder) = u32::from_bytes(remainder)?;
+                Ok((TransactionEntryPoint::Selector(selector), remainder))
+            }
             _ => Err(bytesrepr::Error::Formatting),
         }
     }

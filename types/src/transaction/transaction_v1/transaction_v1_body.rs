@@ -15,7 +15,10 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(feature = "std", test))]
 use tracing::debug;
 
-use super::super::{RuntimeArgs, TransactionEntryPoint, TransactionScheduling, TransactionTarget};
+use super::{
+    super::{RuntimeArgs, TransactionEntryPoint, TransactionScheduling, TransactionTarget},
+    TransactionArgs,
+};
 
 #[cfg(any(all(feature = "std", feature = "testing"), test))]
 use super::TransactionCategory;
@@ -51,7 +54,7 @@ use crate::{
     schemars(description = "Body of a `TransactionV1`.")
 )]
 pub struct TransactionV1Body {
-    pub(super) args: RuntimeArgs,
+    pub(super) args: TransactionArgs,
     pub(super) target: TransactionTarget,
     pub(super) entry_point: TransactionEntryPoint,
     pub(super) scheduling: TransactionScheduling,
@@ -60,13 +63,13 @@ pub struct TransactionV1Body {
 impl TransactionV1Body {
     /// Returns a new `TransactionV1Body`.
     pub fn new(
-        args: RuntimeArgs,
+        input: RuntimeArgs,
         target: TransactionTarget,
         entry_point: TransactionEntryPoint,
         scheduling: TransactionScheduling,
     ) -> Self {
         TransactionV1Body {
-            args,
+            args: TransactionArgs::VmCasperV1(input),
             target,
             entry_point,
             scheduling,
@@ -74,13 +77,19 @@ impl TransactionV1Body {
     }
 
     /// Returns the runtime args of the transaction.
-    pub fn args(&self) -> &RuntimeArgs {
-        &self.args
+    pub fn args(&self) -> Option<&RuntimeArgs> {
+        match &self.args {
+            TransactionArgs::VmCasperV1(args) => Some(args),
+            TransactionArgs::VmCasperV2 { .. } => None,
+        }
     }
 
     /// Consumes `self`, returning the runtime args of the transaction.
-    pub fn take_args(self) -> RuntimeArgs {
-        self.args
+    pub fn take_args(self) -> Option<RuntimeArgs> {
+        match self.args {
+            TransactionArgs::VmCasperV1(args) => Some(args),
+            TransactionArgs::VmCasperV2 { .. } => None,
+        }
     }
 
     /// Returns the target of the transaction.
@@ -110,7 +119,9 @@ impl TransactionV1Body {
             return false;
         }
         match self.entry_point {
-            TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Transfer => false,
+            TransactionEntryPoint::Custom(_)
+            | TransactionEntryPoint::Selector(_)
+            | TransactionEntryPoint::Transfer => false,
             TransactionEntryPoint::AddBid
             | TransactionEntryPoint::WithdrawBid
             | TransactionEntryPoint::ActivateBid
@@ -141,7 +152,7 @@ impl TransactionV1Body {
     pub fn destructure(
         self,
     ) -> (
-        RuntimeArgs,
+        TransactionArgs,
         TransactionTarget,
         TransactionEntryPoint,
         TransactionScheduling,
@@ -151,7 +162,11 @@ impl TransactionV1Body {
 
     #[cfg(any(feature = "std", test))]
     pub(super) fn is_valid(&self, config: &TransactionConfig) -> Result<(), InvalidTransactionV1> {
-        let args_length = self.args.serialized_length();
+        let args_length = match self.args {
+            TransactionArgs::VmCasperV1(ref args) => args.serialized_length(),
+            TransactionArgs::VmCasperV2 { ref input, .. } => input.len(),
+        };
+
         if args_length > config.transaction_v1_config.max_args_length as usize {
             debug!(
                 args_length,
@@ -164,9 +179,30 @@ impl TransactionV1Body {
             });
         }
 
+        let args = match &self.args {
+            TransactionArgs::VmCasperV1(args) => {
+                if config.transaction_runtime == TransactionRuntime::VmCasperV1 {
+                    args
+                } else {
+                    debug!("transaction runtime args must be bytes");
+                    return Err(InvalidTransactionV1::InvalidRuntime {
+                        expected: TransactionRuntime::VmCasperV1,
+                        got: config.transaction_runtime,
+                    });
+                }
+            }
+            TransactionArgs::VmCasperV2 { .. } => {
+                debug!(?config.transaction_runtime, "transaction args v2 are not supported yet");
+                return Err(InvalidTransactionV1::InvalidRuntime {
+                    expected: TransactionRuntime::VmCasperV2,
+                    got: config.transaction_runtime,
+                });
+            }
+        };
+
         match &self.target {
             TransactionTarget::Native => match self.entry_point {
-                TransactionEntryPoint::Custom(_) => {
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => {
                     debug!(
                         entry_point = %self.entry_point,
                         "native transaction cannot have custom entry point"
@@ -175,32 +211,27 @@ impl TransactionV1Body {
                         entry_point: self.entry_point.clone(),
                     })
                 }
+
                 TransactionEntryPoint::Transfer => arg_handling::has_valid_transfer_args(
-                    &self.args,
+                    args,
                     config.native_transfer_minimum_motes,
                 ),
-                TransactionEntryPoint::AddBid => arg_handling::has_valid_add_bid_args(&self.args),
+                TransactionEntryPoint::AddBid => arg_handling::has_valid_add_bid_args(args),
                 TransactionEntryPoint::WithdrawBid => {
-                    arg_handling::has_valid_withdraw_bid_args(&self.args)
+                    arg_handling::has_valid_withdraw_bid_args(args)
                 }
-                TransactionEntryPoint::Delegate => {
-                    arg_handling::has_valid_delegate_args(&self.args)
-                }
-                TransactionEntryPoint::Undelegate => {
-                    arg_handling::has_valid_undelegate_args(&self.args)
-                }
-                TransactionEntryPoint::Redelegate => {
-                    arg_handling::has_valid_redelegate_args(&self.args)
-                }
+                TransactionEntryPoint::Delegate => arg_handling::has_valid_delegate_args(args),
+                TransactionEntryPoint::Undelegate => arg_handling::has_valid_undelegate_args(args),
+                TransactionEntryPoint::Redelegate => arg_handling::has_valid_redelegate_args(args),
                 TransactionEntryPoint::ActivateBid => {
-                    arg_handling::has_valid_activate_bid_args(&self.args)
+                    arg_handling::has_valid_activate_bid_args(args)
                 }
                 TransactionEntryPoint::ChangeBidPublicKey => {
-                    arg_handling::has_valid_change_bid_public_key_args(&self.args)
+                    arg_handling::has_valid_change_bid_public_key_args(args)
                 }
             },
             TransactionTarget::Stored { .. } => match &self.entry_point {
-                TransactionEntryPoint::Custom(_) => Ok(()),
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => Ok(()),
                 TransactionEntryPoint::Transfer
                 | TransactionEntryPoint::AddBid
                 | TransactionEntryPoint::WithdrawBid
@@ -219,7 +250,7 @@ impl TransactionV1Body {
                 }
             },
             TransactionTarget::Session { module_bytes, .. } => match &self.entry_point {
-                TransactionEntryPoint::Custom(_) => {
+                TransactionEntryPoint::Custom(_) | TransactionEntryPoint::Selector(_) => {
                     if module_bytes.is_empty() {
                         debug!("transaction with session code must not have empty module bytes");
                         return Err(InvalidTransactionV1::EmptyModuleBytes);
@@ -454,11 +485,16 @@ impl ToBytes for TransactionV1Body {
 
 impl FromBytes for TransactionV1Body {
     fn from_bytes(bytes: &[u8]) -> Result<(Self, &[u8]), bytesrepr::Error> {
-        let (args, remainder) = RuntimeArgs::from_bytes(bytes)?;
+        let (args, remainder) = TransactionArgs::from_bytes(bytes)?;
         let (target, remainder) = TransactionTarget::from_bytes(remainder)?;
         let (entry_point, remainder) = TransactionEntryPoint::from_bytes(remainder)?;
         let (scheduling, remainder) = TransactionScheduling::from_bytes(remainder)?;
-        let body = TransactionV1Body::new(args, target, entry_point, scheduling);
+        let body = TransactionV1Body {
+            args,
+            target,
+            entry_point,
+            scheduling,
+        };
         Ok((body, remainder))
     }
 }
@@ -481,7 +517,7 @@ mod tests {
         let mut config = TransactionConfig::default();
         config.transaction_v1_config.max_args_length = 10;
         let mut body = TransactionV1Body::random(rng);
-        body.args = runtime_args! {"a" => 1_u8};
+        body.args = TransactionArgs::VmCasperV1(runtime_args! {"a" => 1_u8});
 
         let expected_error = InvalidTransactionV1::ExcessiveArgsLength {
             max_length: 10,

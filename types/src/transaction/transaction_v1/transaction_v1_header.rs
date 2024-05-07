@@ -166,6 +166,10 @@ impl TransactionV1Header {
                 // TODO: Change this when reserve gets implemented.
                 0u8
             }
+            PricingMode::GasLimited {
+                gas_price_tolerance,
+                ..
+            } => gas_price_tolerance,
         }
     }
 
