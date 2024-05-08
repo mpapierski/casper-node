@@ -28,6 +28,7 @@ const WASM_STRING_PREFIX: &str = "byte-code-";
 
 const BYTE_CODE_PREFIX: &str = "byte-code-";
 const V1_WASM_PREFIX: &str = "v1-wasm-";
+const V2_WASM_PREFIX: &str = "v2-wasm-";
 const EMPTY_PREFIX: &str = "empty-";
 
 /// Associated error type of `TryFrom<&[u8]>` for `ByteCodeHash`.
@@ -89,6 +90,8 @@ impl Display for FromStrError {
 pub enum ByteCodeAddr {
     /// An address for byte code to be executed against the V1 Casper execution engine.
     V1CasperWasm(HashAddr),
+    /// An address for byte code to be executed against the V2 Casper execution engine.
+    V2CasperWasm(HashAddr),
     /// An empty byte code record
     Empty,
 }
@@ -104,6 +107,7 @@ impl ByteCodeAddr {
         match self {
             Self::Empty => ByteCodeKind::Empty,
             Self::V1CasperWasm(_) => ByteCodeKind::V1CasperWasm,
+            Self::V2CasperWasm(_) => ByteCodeKind::V2CasperWasm,
         }
     }
 
@@ -120,6 +124,8 @@ impl ByteCodeAddr {
                 (str, ByteCodeKind::Empty)
             } else if let Some(str) = byte_code.strip_prefix(V1_WASM_PREFIX) {
                 (str, ByteCodeKind::V1CasperWasm)
+            } else if let Some(str) = byte_code.strip_prefix(V2_WASM_PREFIX) {
+                (str, ByteCodeKind::V2CasperWasm)
             } else {
                 return Err(FromStrError::InvalidPrefix);
             };
@@ -127,6 +133,7 @@ impl ByteCodeAddr {
             let byte_code_addr = HashAddr::try_from(addr.as_ref()).map_err(FromStrError::Hash)?;
             return match tag {
                 ByteCodeKind::V1CasperWasm => Ok(ByteCodeAddr::V1CasperWasm(byte_code_addr)),
+                ByteCodeKind::V2CasperWasm => Ok(ByteCodeAddr::V2CasperWasm(byte_code_addr)),
                 ByteCodeKind::Empty => Ok(ByteCodeAddr::Empty),
             };
         }
@@ -147,6 +154,7 @@ impl ToBytes for ByteCodeAddr {
             + match self {
                 Self::Empty => 0,
                 Self::V1CasperWasm(_) => KEY_HASH_LENGTH,
+                Self::V2CasperWasm(_) => KEY_HASH_LENGTH,
             }
     }
 
@@ -154,6 +162,10 @@ impl ToBytes for ByteCodeAddr {
         match self {
             Self::Empty => writer.push(self.tag() as u8),
             Self::V1CasperWasm(addr) => {
+                writer.push(self.tag() as u8);
+                writer.extend(addr.to_bytes()?);
+            }
+            Self::V2CasperWasm(addr) => {
                 writer.push(self.tag() as u8);
                 writer.extend(addr.to_bytes()?);
             }
@@ -171,6 +183,10 @@ impl FromBytes for ByteCodeAddr {
                 let (addr, remainder) = HashAddr::from_bytes(remainder)?;
                 Ok((ByteCodeAddr::new_wasm_addr(addr), remainder))
             }
+            ByteCodeKind::V2CasperWasm => {
+                let (addr, remainder) = HashAddr::from_bytes(remainder)?;
+                Ok((ByteCodeAddr::V2CasperWasm(addr), remainder))
+            }
         }
     }
 }
@@ -184,6 +200,15 @@ impl Display for ByteCodeAddr {
                     "{}{}{}",
                     BYTE_CODE_PREFIX,
                     V1_WASM_PREFIX,
+                    base16::encode_lower(&addr)
+                )
+            }
+            ByteCodeAddr::V2CasperWasm(addr) => {
+                write!(
+                    f,
+                    "{}{}{}",
+                    BYTE_CODE_PREFIX,
+                    V2_WASM_PREFIX,
                     base16::encode_lower(&addr)
                 )
             }
@@ -206,6 +231,9 @@ impl Debug for ByteCodeAddr {
             ByteCodeAddr::V1CasperWasm(addr) => {
                 write!(f, "ByteCodeAddr::V1CasperWasm({:?})", addr)
             }
+            ByteCodeAddr::V2CasperWasm(addr) => {
+                write!(f, "ByteCodeAddr::V2CasperWasm({:?})", addr)
+            }
             ByteCodeAddr::Empty => {
                 write!(f, "ByteCodeAddr::Empty")
             }
@@ -216,8 +244,9 @@ impl Debug for ByteCodeAddr {
 #[cfg(any(feature = "testing", test))]
 impl Distribution<ByteCodeAddr> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ByteCodeAddr {
-        match rng.gen_range(0..=1) {
+        match rng.gen_range(0..=2) {
             1 => ByteCodeAddr::V1CasperWasm(rng.gen()),
+            2 => ByteCodeAddr::V2CasperWasm(rng.gen()),
             0 => ByteCodeAddr::Empty,
             _ => unreachable!(),
         }
@@ -389,6 +418,8 @@ pub enum ByteCodeKind {
     Empty = 0,
     /// Byte code to be executed with the version 1 Casper execution engine.
     V1CasperWasm = 1,
+    /// Byte code to be executed with the version 2 Casper execution engine.
+    V2CasperWasm = 2,
 }
 
 impl ToBytes for ByteCodeKind {
@@ -415,6 +446,9 @@ impl FromBytes for ByteCodeKind {
             byte_code_kind if byte_code_kind == ByteCodeKind::V1CasperWasm as u8 => {
                 Ok((ByteCodeKind::V1CasperWasm, remainder))
             }
+            byte_code_kind if byte_code_kind == ByteCodeKind::V2CasperWasm as u8 => {
+                Ok((ByteCodeKind::V2CasperWasm, remainder))
+            }
             _ => Err(Error::Formatting),
         }
     }
@@ -429,6 +463,9 @@ impl Display for ByteCodeKind {
             ByteCodeKind::V1CasperWasm => {
                 write!(f, "v1-casper-wasm")
             }
+            ByteCodeKind::V2CasperWasm => {
+                write!(f, "v2-casper-wasm")
+            }
         }
     }
 }
@@ -436,9 +473,10 @@ impl Display for ByteCodeKind {
 #[cfg(any(feature = "testing", test))]
 impl Distribution<ByteCodeKind> for Standard {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> ByteCodeKind {
-        match rng.gen_range(0..=1) {
+        match rng.gen_range(0..=2) {
             0 => ByteCodeKind::Empty,
             1 => ByteCodeKind::V1CasperWasm,
+            2 => ByteCodeKind::V2CasperWasm,
             _ => unreachable!(),
         }
     }
@@ -520,13 +558,11 @@ impl FromBytes for ByteCode {
 
 #[cfg(test)]
 mod tests {
-    use rand::RngCore;
-
     use super::*;
     use crate::testing::TestRng;
 
     #[test]
-    fn debug_repr_of_short_wasm() {
+    fn debug_repr_of_short_wasm_v1() {
         const SIZE: usize = 8;
         let wasm_bytes = vec![0; SIZE];
         let byte_code = ByteCode::new(ByteCodeKind::V1CasperWasm, wasm_bytes);
@@ -534,7 +570,15 @@ mod tests {
     }
 
     #[test]
-    fn debug_repr_of_long_wasm() {
+    fn debug_repr_of_short_wasm_v2() {
+        const SIZE: usize = 8;
+        let wasm_bytes = vec![0; SIZE];
+        let byte_code = ByteCode::new(ByteCodeKind::V2CasperWasm, wasm_bytes);
+        assert_eq!(format!("{:?}", byte_code), "ByteCode(0x0000000000000000)");
+    }
+
+    #[test]
+    fn debug_repr_of_long_wasm_v1() {
         const SIZE: usize = 65;
         let wasm_bytes = vec![0; SIZE];
         let byte_code = ByteCode::new(ByteCodeKind::V1CasperWasm, wasm_bytes);
@@ -546,15 +590,29 @@ mod tests {
     }
 
     #[test]
-    fn byte_code_bytesrepr_roundtrip() {
-        let rng = &mut TestRng::new();
-        let byte_code = ByteCode::new(rng.gen(), vec![]);
-        bytesrepr::test_serialization_roundtrip(&byte_code);
+    fn debug_repr_of_long_wasm_v2() {
+        const SIZE: usize = 65;
+        let wasm_bytes = vec![0; SIZE];
+        let byte_code = ByteCode::new(ByteCodeKind::V2CasperWasm, wasm_bytes);
+        // String output is less than the bytes itself
+        assert_eq!(
+            format!("{:?}", byte_code),
+            "ByteCode(0x00000000000000000000000000000000...)"
+        );
+    }
 
-        let mut buffer = vec![0u8; rng.gen_range(1..100)];
-        rng.fill_bytes(buffer.as_mut());
-        let byte_code = ByteCode::new(rng.gen(), buffer);
-        bytesrepr::test_serialization_roundtrip(&byte_code);
+    #[test]
+    fn byte_code_bytesrepr_roundtrip() {
+        let bytes = vec![0; 1024];
+
+        let bytecode_v1 = ByteCode::new(ByteCodeKind::V1CasperWasm, bytes.clone());
+        bytesrepr::test_serialization_roundtrip(&bytecode_v1);
+
+        let bytecode_v2 = ByteCode::new(ByteCodeKind::V2CasperWasm, bytes.clone());
+        bytesrepr::test_serialization_roundtrip(&bytecode_v2);
+
+        let bytecode_empty = ByteCode::new(ByteCodeKind::Empty, Default::default());
+        bytesrepr::test_serialization_roundtrip(&bytecode_empty);
     }
 
     #[test]

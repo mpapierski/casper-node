@@ -88,9 +88,7 @@ impl PricingMode {
             1 => PricingMode::Fixed {
                 gas_price_tolerance: rng.gen(),
             },
-            2 => PricingMode::Reserved {
-                receipt: rng.gen(),
-            },
+            2 => PricingMode::Reserved { receipt: rng.gen() },
             3 => PricingMode::GasLimited {
                 gas_limit: rng.gen(),
                 gas_price_tolerance: rng.gen(),
