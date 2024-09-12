@@ -373,6 +373,64 @@ fn ensure_valid_imports(module: &Module) -> Result<(), WasmValidationError> {
     Ok(())
 }
 
+pub struct PreprocessConfig {
+    require_memory: bool,
+    externalize_memory: bool,
+    inject_gas_counter: bool,
+    stack_height_limiter: bool,
+}
+
+impl Default for PreprocessConfig {
+    fn default() -> Self {
+        Self {
+            require_memory: true,
+            externalize_memory: true,
+            inject_gas_counter: true,
+            stack_height_limiter: true,
+        }
+    }
+}
+
+/// Preprocess config.
+#[derive(Default)]
+pub struct PreprocessConfigBuilder {
+    require_memory: Option<bool>,
+    externalize_memory: Option<bool>,
+    inject_gas_counter: Option<bool>,
+    stack_height_limiter: Option<bool>,
+}
+
+impl PreprocessConfigBuilder {
+    /// Set `require_memory`
+    pub fn with_require_memory(mut self, require_memory: bool) -> Self {
+        self.require_memory = Some(require_memory);
+        self
+    }
+    /// Set `externalize_memory`
+    pub fn with_externalize_memory(mut self, externalize_memory: bool) -> Self {
+        self.externalize_memory = Some(externalize_memory);
+        self
+    }
+
+    pub fn with_gas_counter(mut self, inject_gas_counter: bool) -> Self {
+        self.inject_gas_counter = Some(inject_gas_counter);
+        self
+    }
+
+    pub fn build(self) -> PreprocessConfig {
+        PreprocessConfig {
+            require_memory: self.require_memory.unwrap_or(true),
+            externalize_memory: self.externalize_memory.unwrap_or(true),
+            inject_gas_counter: self.inject_gas_counter.unwrap_or(true),
+            stack_height_limiter: self.stack_height_limiter.unwrap_or(true),
+        }
+    }
+
+    pub fn with_stack_height_limiter(mut self, stack_height_limiter: bool) -> Self {
+        self.stack_height_limiter = Some(stack_height_limiter);
+        self
+    }
+}
 /// Preprocesses Wasm bytes and returns a module.
 ///
 /// This process consists of a few steps:
@@ -384,9 +442,10 @@ fn ensure_valid_imports(module: &Module) -> Result<(), WasmValidationError> {
 ///
 /// In case the preprocessing rules can't be applied, an error is returned.
 /// Otherwise, this method returns a valid module ready to be executed safely on the host.
-pub(crate) fn preprocess(
+pub fn preprocess(
     wasm_config: WasmConfig,
     module_bytes: &[u8],
+    preprocess_config: PreprocessConfig,
 ) -> Result<Module, PreprocessingError> {
     let module = deserialize(module_bytes)?;
 
@@ -720,7 +779,13 @@ mod tests {
             0x0f, 0x0b, 0x02, 0x00, 0x0b,
         ];
 
-        match preprocess(WasmConfig::default(), &MODULE_BYTES_WITH_EMPTY_MEMORY).unwrap_err() {
+        match preprocess(
+            WasmConfig::default(),
+            &MODULE_BYTES_WITH_EMPTY_MEMORY,
+            PreprocessConfig::default(),
+        )
+        .unwrap_err()
+        {
             PreprocessingError::MissingMemorySection => (),
             error => panic!("expected MissingMemorySection, got {:?}", error),
         }
@@ -746,8 +811,12 @@ mod tests {
             .build()
             .build();
         let module_bytes = casper_wasm::serialize(module).expect("should serialize");
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(
                 &error,
@@ -785,8 +854,12 @@ mod tests {
             .build()
             .build();
         let module_bytes = casper_wasm::serialize(module).expect("should serialize");
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(
                 &error,
@@ -821,8 +894,12 @@ mod tests {
             .build()
             .build();
         let module_bytes = casper_wasm::serialize(module).expect("should serialize");
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(
                 &error,
@@ -843,8 +920,12 @@ mod tests {
             .build();
         let module_bytes = casper_wasm::serialize(module).expect("should serialize");
 
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(
                 &error,
@@ -865,8 +946,12 @@ mod tests {
             .build()
             .build();
         let module_bytes = casper_wasm::serialize(module).expect("should serialize");
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(
                 &error,
@@ -902,8 +987,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Multi value extension is not supported"),
@@ -935,8 +1024,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Atomic operations are not supported"),
@@ -968,8 +1061,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Bulk memory operations are not supported"),
@@ -1001,8 +1098,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "SIMD operations are not supported"),
@@ -1043,8 +1144,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Sign extension operations are not supported"),
@@ -1085,8 +1190,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Sign extension operations are not supported"),
@@ -1127,8 +1236,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Sign extension operations are not supported"),
@@ -1169,8 +1282,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Sign extension operations are not supported"),
@@ -1211,8 +1328,12 @@ mod tests {
 
             module.emit_wasm()
         };
-        let error = preprocess(WasmConfig::default(), &module_bytes)
-            .expect_err("should fail with an error");
+        let error = preprocess(
+            WasmConfig::default(),
+            &module_bytes,
+            PreprocessConfig::default(),
+        )
+        .expect_err("should fail with an error");
         assert!(
             matches!(&error, PreprocessingError::Deserialize(msg)
             if msg == "Sign extension operations are not supported"),

@@ -65,8 +65,9 @@ use crate::{
 };
 pub use stack::{RuntimeStack, RuntimeStackFrame, RuntimeStackOverflow};
 pub use wasm_prep::{
-    PreprocessingError, WasmValidationError, DEFAULT_BR_TABLE_MAX_SIZE, DEFAULT_MAX_GLOBALS,
-    DEFAULT_MAX_PARAMETER_COUNT, DEFAULT_MAX_TABLE_SIZE,
+    preprocess, PreprocessConfig, PreprocessConfigBuilder, PreprocessingError, WasmValidationError,
+    DEFAULT_BR_TABLE_MAX_SIZE, DEFAULT_MAX_GLOBALS, DEFAULT_MAX_PARAMETER_COUNT,
+    DEFAULT_MAX_TABLE_SIZE,
 };
 
 #[derive(Debug)]
@@ -1172,7 +1173,7 @@ where
         let wasm_config = engine_config.wasm_config();
         #[cfg(feature = "test-support")]
         let max_stack_height = wasm_config.max_stack_height;
-        let module = wasm_prep::preprocess(*wasm_config, module_bytes)?;
+        let module = preprocess(*wasm_config, module_bytes, PreprocessConfig::default())?;
         let (instance, memory) =
             utils::instance_and_memory(module.clone(), protocol_version, engine_config)?;
         self.memory = Some(memory);
