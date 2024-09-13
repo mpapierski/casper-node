@@ -1,15 +1,12 @@
-use casper_execution_engine::{runtime::{preprocess, PreprocessConfigBuilder, Runtime}, runtime_context::RuntimeContext};
-use casper_types::WasmConfig;
-use casper_wasm::elements::Module;
-use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
+use std::fs;
 
-// use execution_environment_bench::{
-//     common,
-//     wat_builder::{
-//         Block, CONFIRMATION_LOOP_ITERATIONS, CONFIRMATION_REPEAT_TIMES, DEFAULT_LOOP_ITERATIONS,
-//         DEFAULT_REPEAT_TIMES,
-//     },
-// };
+use casper_execution_engine::{
+    engine_state::EngineConfig,
+    runtime::{preprocess, utils, PreprocessConfigBuilder},
+};
+use casper_types::{ProtocolVersion, WasmConfig};
+use casper_wasmi::NopExternals;
+use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 
 /// Run all the benchmark or just the first in a group.
 const RUN_ALL_BENCHMARKS: bool = true;
@@ -65,6 +62,7 @@ pub fn benchmark(name: &str, i: usize, r: usize, repeat_code: &str) -> Benchmark
     )
 }
 
+#[derive(Debug)]
 pub struct Benchmark(pub String, pub String, pub u64);
 
 ///
@@ -222,7 +220,8 @@ impl Func {
                 self.imports,
                 vec![
                     "(table $table 10 funcref)".into(),
-                    "(elem func 0)".into(),
+                    // "(elem func 0)".into(),
+                    "(elem $table (i32.const 0) func 0)".into(),
                     "(memory $mem 1)".into(),
                 ],
                 self.lines,
@@ -717,10 +716,10 @@ pub fn benchmarks() -> Vec<Benchmark> {
         "(global.set $x_i32 (memory.grow (local.get $zero_i32)))",
     ));
     // The throughput for the following benchmarks is ~0.03 Gops/s
-    benchmarks.extend(benchmark_with_confirmation(
-        "memop/memory.fill",
-        "(memory.fill (local.get $zero_i32) (local.get $zero_i32) (local.get $zero_i32))",
-    ));
+    // benchmarks.extend(benchmark_with_confirmation(
+    //     "memop/memory.fill",
+    //     "(memory.fill (local.get $zero_i32) (local.get $zero_i32) (local.get $zero_i32))",
+    // ));
     // The throughput for the following benchmarks is ~0.02 Gops/s
     benchmarks.extend(benchmark_with_confirmation(
         "memop/memory.copy",
@@ -750,27 +749,50 @@ pub fn benchmarks() -> Vec<Benchmark> {
     benchmarks
 }
 
-#[derive(Clone)]
-struct ExecArgs<'a> {
-    module: Module,
-    wat: &'a str,
-}
+/// List of benchmarks targeting unsupported extensions.
+const SKIP_LIST: &[&str] = &[
+    "cvtop/i32.extend8_s", /*  fail: Deserialization error: Sign extension operations are not
+                            * supported */
+    "cvtop/i32.extend16_s", /*  fail: Deserialization error: Sign extension operations are not
+                             * supported */
+    "cvtop/i64.extend8_s", /*  fail: Deserialization error: Sign extension operations are not
+                            * supported */
+    "cvtop/i64.extend16_s", /*  fail: Deserialization error: Sign extension operations are not
+                             * supported */
+    "cvtop/i64.extend32_s", /*  fail: Deserialization error: Sign extension operations are not
+                             * supported */
+    "cvtop/i64.trunc_sat_f32_s", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i64.trunc_sat_f64_s", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i32.trunc_sat_f32_u", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i32.trunc_sat_f64_u", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i64.trunc_sat_f32_u", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i64.trunc_sat_f64_u", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i32.trunc_sat_f32_s", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "cvtop/i32.trunc_sat_f64_s", /*  fail: Deserialization error: Bulk memory operations are not
+                                  * supported */
+    "refop/ref.func",             //  fail: Deserialization error: Unknown opcode 210
+    "refop/ref.is_null-ref.func", //  fail: Deserialization error: Unknown opcode 210
+    "tabop/table.get",            //  fail: Deserialization error: Unknown opcode 37
+    "tabop/table.size",           /*  fail: Deserialization error: Bulk memory operations are
+                                   * not supported */
+    "memop/memory.copy", //  fail: Deserialization error: Bulk memory operations are not supported
+    "ctrlop/call_indirect", /*  fail: Wasm validation error: the number of tables must be at
+                          * most one */
+];
 
 pub fn criterion_benchmark(c: &mut Criterion) {
-    println!("generating benches");
-    let benchmarks = benchmarks();
-    println!("ok {}", benchmarks.len());
-    let group = "wasm_instructions";
+    let mut benchmarks = benchmarks();
 
-    {
-        let mut group = c.benchmark_group("foo");
-        group.bench_function("bar", |b| {
-            b.iter(|| {
-                Vec::<u64>::with_capacity(1024).into_boxed_slice();
-            });
-        });
-        group.finish();
-    }
+    benchmarks.retain(|Benchmark(id, _, _)| !SKIP_LIST.contains(&id.as_str()));
+
+    let group = "wasm_instructions";
 
     for Benchmark(id, wat, expected_ops) in benchmarks {
         let mut group = c.benchmark_group(group);
@@ -783,29 +805,46 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                     || {
                         // Lazily setup the benchmark arguments
                         let value = bench_args.get_or_insert({
-                            println!(
-                                "\n    Operations per benchmark iteration: {} ({}M)",
-                                expected_ops,
-                                expected_ops / 1_000_000
-                            );
-                            // println!("    WAT: {}", &wat);
-                            // ExecArgs { wat: wat.as_str() }
                             let wasm_bytes = wat::parse_str(&wat).unwrap();
-                            let preprocess_config = PreprocessConfigBuilder::default().with_externalize_memory(true).with_gas_counter(true).with_require_memory(true).with_stack_height_limiter(true).build();
-                            let module = preprocess(WasmConfig::default(), &wasm_bytes, preprocess_config).expect("Parse");
-                            ExecArgs {
-                                module,
-                                wat: wat.as_str(),
-                            }
+                            let preprocess_config = PreprocessConfigBuilder::default()
+                                .with_externalize_memory(true)
+                                .with_gas_counter(false)
+                                .with_require_memory(false)
+                                .with_stack_height_limiter(false)
+                                .build();
+                            let wat_copy = wat.clone();
+                            let module =
+                                preprocess(WasmConfig::default(), &wasm_bytes, preprocess_config)
+                                    .unwrap_or_else(|error| {
+                                        fs::write(
+                                            format!("/tmp/wasm_instructions_failure.wat"),
+                                            wat_copy,
+                                        )
+                                        .unwrap();
+                                        panic!("Error {error} in {id}");
+                                    });
+                            let (instance, memory) = utils::instance_and_memory(
+                                module.clone(),
+                                ProtocolVersion::V1_0_0,
+                                &EngineConfig::default(),
+                            )
+                            .unwrap();
+
+                            (instance, memory)
                         });
+
                         value.clone()
                     },
-                    |args| {
-                        // routine(exec_env, expected_ops, args);
-                        // let _ = args;
-                        // let module = preprocess(WasmConfig)
-                        //  Vec::with_capacity(1024).into_boxed_slice();
-                        // wasm_prep
+                    |(instance, _memory)| match instance.invoke_export(
+                        "canister_update test",
+                        &[],
+                        &mut NopExternals,
+                    ) {
+                        Ok(_) => {}
+                        Err(trap) => {
+                            fs::write("/tmp/fail.wat", &wat).unwrap();
+                            panic!("Error: {:?}", trap);
+                        }
                     },
                     BatchSize::SmallInput,
                 );

@@ -373,6 +373,7 @@ fn ensure_valid_imports(module: &Module) -> Result<(), WasmValidationError> {
     Ok(())
 }
 
+/// Preprocess config.
 pub struct PreprocessConfig {
     require_memory: bool,
     externalize_memory: bool,
@@ -406,17 +407,20 @@ impl PreprocessConfigBuilder {
         self.require_memory = Some(require_memory);
         self
     }
+
     /// Set `externalize_memory`
     pub fn with_externalize_memory(mut self, externalize_memory: bool) -> Self {
         self.externalize_memory = Some(externalize_memory);
         self
     }
 
+    /// Set `inject_gas_counter`
     pub fn with_gas_counter(mut self, inject_gas_counter: bool) -> Self {
         self.inject_gas_counter = Some(inject_gas_counter);
         self
     }
 
+    /// Set `stack_height_limiter`
     pub fn build(self) -> PreprocessConfig {
         PreprocessConfig {
             require_memory: self.require_memory.unwrap_or(true),
@@ -426,6 +430,7 @@ impl PreprocessConfigBuilder {
         }
     }
 
+    /// Set `stack_height_limiter`
     pub fn with_stack_height_limiter(mut self, stack_height_limiter: bool) -> Self {
         self.stack_height_limiter = Some(stack_height_limiter);
         self
@@ -447,28 +452,41 @@ pub fn preprocess(
     module_bytes: &[u8],
     preprocess_config: PreprocessConfig,
 ) -> Result<Module, PreprocessingError> {
-    let module = deserialize(module_bytes)?;
+    let mut module = deserialize(module_bytes)?;
 
     ensure_valid_access(&module)?;
 
-    if memory_section(&module).is_none() {
-        // `casper_wasm_utils::externalize_mem` expects a non-empty memory section to exist in the
-        // module, and panics otherwise.
-        return Err(PreprocessingError::MissingMemorySection);
+    if preprocess_config.require_memory {
+        if memory_section(&module).is_none() {
+            // `casper_wasm_utils::externalize_mem` expects a non-empty memory section to exist in
+            // the module, and panics otherwise.
+            return Err(PreprocessingError::MissingMemorySection);
+        }
     }
 
-    let module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
+    module = ensure_table_size_limit(module, DEFAULT_MAX_TABLE_SIZE)?;
+
     ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
     ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
     ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
     ensure_valid_imports(&module)?;
 
     let costs = RuledOpcodeCosts(wasm_config.opcode_costs());
-    let module = casper_wasm_utils::externalize_mem(module, None, wasm_config.max_memory);
-    let module = casper_wasm_utils::inject_gas_counter(module, &costs, DEFAULT_GAS_MODULE_NAME)
-        .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
-    let module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
-        .map_err(|_| PreprocessingError::StackLimiter)?;
+
+    if preprocess_config.externalize_memory {
+        module = casper_wasm_utils::externalize_mem(module, None, wasm_config.max_memory);
+    }
+
+    if preprocess_config.inject_gas_counter {
+        module = casper_wasm_utils::inject_gas_counter(module, &costs, DEFAULT_GAS_MODULE_NAME)
+            .map_err(|_| PreprocessingError::OperationForbiddenByGasRules)?;
+    }
+
+    if preprocess_config.stack_height_limiter {
+        module = stack_height::inject_limiter(module, wasm_config.max_stack_height)
+            .map_err(|_| PreprocessingError::StackLimiter)?;
+    }
+
     Ok(module)
 }
 

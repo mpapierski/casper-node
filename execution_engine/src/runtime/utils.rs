@@ -1,3 +1,4 @@
+//! Utilities for working with Wasm.
 use std::collections::BTreeMap;
 
 use casper_wasm::elements::Module;
@@ -23,7 +24,7 @@ use crate::{
 /// running it.
 ///
 /// Both [`ModuleRef`] and a [`MemoryRef`] are ready to be executed.
-pub(super) fn instance_and_memory(
+pub fn instance_and_memory(
     parity_module: Module,
     protocol_version: ProtocolVersion,
     engine_config: &EngineConfig,
