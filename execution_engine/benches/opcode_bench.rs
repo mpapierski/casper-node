@@ -751,40 +751,74 @@ pub fn benchmarks() -> Vec<Benchmark> {
 
 /// List of benchmarks targeting unsupported extensions.
 const SKIP_LIST: &[&str] = &[
-    "cvtop/i32.extend8_s", /*  fail: Deserialization error: Sign extension operations are not
-                            * supported */
-    "cvtop/i32.extend16_s", /*  fail: Deserialization error: Sign extension operations are not
-                             * supported */
-    "cvtop/i64.extend8_s", /*  fail: Deserialization error: Sign extension operations are not
-                            * supported */
-    "cvtop/i64.extend16_s", /*  fail: Deserialization error: Sign extension operations are not
-                             * supported */
-    "cvtop/i64.extend32_s", /*  fail: Deserialization error: Sign extension operations are not
-                             * supported */
-    "cvtop/i64.trunc_sat_f32_s", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i64.trunc_sat_f64_s", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i32.trunc_sat_f32_u", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i32.trunc_sat_f64_u", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i64.trunc_sat_f32_u", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i64.trunc_sat_f64_u", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i32.trunc_sat_f32_s", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "cvtop/i32.trunc_sat_f64_s", /*  fail: Deserialization error: Bulk memory operations are not
-                                  * supported */
-    "refop/ref.func",             //  fail: Deserialization error: Unknown opcode 210
-    "refop/ref.is_null-ref.func", //  fail: Deserialization error: Unknown opcode 210
-    "tabop/table.get",            //  fail: Deserialization error: Unknown opcode 37
-    "tabop/table.size",           /*  fail: Deserialization error: Bulk memory operations are
-                                   * not supported */
-    "memop/memory.copy", //  fail: Deserialization error: Bulk memory operations are not supported
-    "ctrlop/call_indirect", /*  fail: Wasm validation error: the number of tables must be at
-                          * most one */
+    "cvtop/i32.extend8_s",
+    "cvtop/i32.extend8_s/confirmation", /*  fail: Deserialization error: Sign extension
+                                         * operations are not
+                                         * supported */
+    "cvtop/i32.extend16_s",
+    "cvtop/i32.extend16_s/confirmation", /*  fail: Deserialization error: Sign extension
+                                          * operations are not
+                                          * supported */
+    "cvtop/i64.extend8_s",
+    "cvtop/i64.extend8_s/confirmation", /*  fail: Deserialization error: Sign extension
+                                         * operations are not
+                                         * supported */
+    "cvtop/i64.extend16_s",
+    "cvtop/i64.extend16_s/confirmation", /*  fail: Deserialization error: Sign extension
+                                          * operations are not
+                                          * supported */
+    "cvtop/i64.extend32_s",
+    "cvtop/i64.extend32_s/confirmation", /*  fail: Deserialization error: Sign extension
+                                          * operations are not
+                                          * supported */
+    "cvtop/i64.trunc_sat_f32_s",
+    "cvtop/i64.trunc_sat_f32_s/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i64.trunc_sat_f64_s",
+    "cvtop/i64.trunc_sat_f64_s/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i32.trunc_sat_f32_u",
+    "cvtop/i32.trunc_sat_f32_u/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i32.trunc_sat_f64_u",
+    "cvtop/i32.trunc_sat_f64_u/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i64.trunc_sat_f32_u",
+    "cvtop/i64.trunc_sat_f32_u/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i64.trunc_sat_f64_u",
+    "cvtop/i64.trunc_sat_f64_u/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i32.trunc_sat_f32_s",
+    "cvtop/i32.trunc_sat_f32_s/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "cvtop/i32.trunc_sat_f64_s",
+    "cvtop/i32.trunc_sat_f64_s/confirmation", /*  fail: Deserialization error: Bulk memory
+                                               * operations are not
+                                               * supported */
+    "refop/ref.func",
+    "refop/ref.func/confirmation", //  fail: Deserialization error: Unknown opcode 210
+    "refop/ref.is_null-ref.func",
+    "refop/ref.is_null-ref.func/confirmation", //  fail: Deserialization error: Unknown opcode 210
+    "tabop/table.get",
+    "tabop/table.get/confirmation", //  fail: Deserialization error: Unknown opcode 37
+    "tabop/table.size",
+    "tabop/table.size/confirmation", /*  fail: Deserialization error: Bulk memory operations are
+                                      * not supported */
+    "memop/memory.copy",
+    "memop/memory.copy/confirmation", /*  fail: Deserialization error: Bulk memory operations
+                                       * are not supported */
+    "ctrlop/call_indirect",
+    "ctrlop/call_indirect/confirmation", /*  fail: Wasm validation error: the number of tables
+                                          * must be at
+                                          * most one */
 ];
 
 pub fn criterion_benchmark(c: &mut Criterion) {
