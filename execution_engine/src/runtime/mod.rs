@@ -67,7 +67,7 @@ pub use stack::{RuntimeStack, RuntimeStackFrame, RuntimeStackOverflow};
 pub use wasm_prep::{
     preprocess, PreprocessConfig, PreprocessConfigBuilder, PreprocessingError, WasmValidationError,
     DEFAULT_BR_TABLE_MAX_SIZE, DEFAULT_MAX_GLOBALS, DEFAULT_MAX_PARAMETER_COUNT,
-    DEFAULT_MAX_TABLE_SIZE,
+    DEFAULT_MAX_TABLE_SIZE, RuledOpcodeCosts,
 };
 
 #[derive(Debug)]

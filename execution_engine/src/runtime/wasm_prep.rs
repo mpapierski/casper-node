@@ -379,6 +379,7 @@ pub struct PreprocessConfig {
     externalize_memory: bool,
     inject_gas_counter: bool,
     stack_height_limiter: bool,
+    validate_imports: bool,
 }
 
 impl Default for PreprocessConfig {
@@ -388,6 +389,7 @@ impl Default for PreprocessConfig {
             externalize_memory: true,
             inject_gas_counter: true,
             stack_height_limiter: true,
+            validate_imports: true,
         }
     }
 }
@@ -399,6 +401,7 @@ pub struct PreprocessConfigBuilder {
     externalize_memory: Option<bool>,
     inject_gas_counter: Option<bool>,
     stack_height_limiter: Option<bool>,
+    validate_imports: Option<bool>,
 }
 
 impl PreprocessConfigBuilder {
@@ -421,19 +424,26 @@ impl PreprocessConfigBuilder {
     }
 
     /// Set `stack_height_limiter`
+    pub fn with_stack_height_limiter(mut self, stack_height_limiter: bool) -> Self {
+        self.stack_height_limiter = Some(stack_height_limiter);
+        self
+    }
+
+    /// Set `validate_imports`
+    pub fn with_validate_imports(mut self, arg: bool) -> Self {
+        self.validate_imports = Some(arg);
+        self
+    }
+
+    /// Set `stack_height_limiter`
     pub fn build(self) -> PreprocessConfig {
         PreprocessConfig {
             require_memory: self.require_memory.unwrap_or(true),
             externalize_memory: self.externalize_memory.unwrap_or(true),
             inject_gas_counter: self.inject_gas_counter.unwrap_or(true),
             stack_height_limiter: self.stack_height_limiter.unwrap_or(true),
+            validate_imports: self.validate_imports.unwrap_or(true),
         }
-    }
-
-    /// Set `stack_height_limiter`
-    pub fn with_stack_height_limiter(mut self, stack_height_limiter: bool) -> Self {
-        self.stack_height_limiter = Some(stack_height_limiter);
-        self
     }
 }
 /// Preprocesses Wasm bytes and returns a module.
@@ -469,7 +479,10 @@ pub fn preprocess(
     ensure_br_table_size_limit(&module, DEFAULT_BR_TABLE_MAX_SIZE)?;
     ensure_global_variable_limit(&module, DEFAULT_MAX_GLOBALS)?;
     ensure_parameter_limit(&module, DEFAULT_MAX_PARAMETER_COUNT)?;
-    ensure_valid_imports(&module)?;
+
+    if preprocess_config.validate_imports {
+        ensure_valid_imports(&module)?;
+    }
 
     let costs = RuledOpcodeCosts(wasm_config.opcode_costs());
 
@@ -556,7 +569,13 @@ pub fn get_module_from_entry_points(
     }
 }
 
-struct RuledOpcodeCosts(OpcodeCosts);
+pub struct RuledOpcodeCosts(OpcodeCosts);
+
+impl From<OpcodeCosts> for RuledOpcodeCosts {
+    fn from(costs: OpcodeCosts) -> Self {
+        RuledOpcodeCosts(costs)
+    }
+}
 
 impl Rules for RuledOpcodeCosts {
     fn instruction_cost(&self, instruction: &Instruction) -> Option<u32> {

@@ -91,6 +91,15 @@ pub struct BrTableCost {
     pub size_multiplier: u32,
 }
 
+impl From<u32> for BrTableCost {
+    fn from(value: u32) -> Self {
+        BrTableCost {
+            cost: value,
+            size_multiplier: value,
+        }
+    }
+}
+
 impl Default for BrTableCost {
     fn default() -> Self {
         Self {
@@ -201,6 +210,26 @@ pub struct ControlFlowCosts {
     pub select: u32,
     /// Cost for `br_table` opcode.
     pub br_table: BrTableCost,
+}
+
+impl From<u32> for ControlFlowCosts {
+    fn from(value: u32) -> Self {
+        ControlFlowCosts {
+            block: value,
+            op_loop: value,
+            op_if: value,
+            op_else: value,
+            end: value,
+            br: value,
+            br_if: value,
+            op_return: value,
+            call: value,
+            call_indirect: value,
+            drop: value,
+            select: value,
+            br_table: BrTableCost::from(value),
+        }
+    }
 }
 
 impl Default for ControlFlowCosts {
@@ -606,6 +635,29 @@ impl FromBytes for OpcodeCosts {
             control_flow,
         };
         Ok((opcode_costs, bytes))
+    }
+}
+
+impl From<u32> for OpcodeCosts {
+    fn from(value: u32) -> Self {
+        OpcodeCosts {
+            bit: value,
+            add: value,
+            mul: value,
+            div: value,
+            load: value,
+            store: value,
+            op_const: value,
+            local: value,
+            global: value,
+            integer_comparison: value,
+            conversion: value,
+            unreachable: value,
+            nop: value,
+            current_memory: value,
+            grow_memory: value,
+            control_flow: ControlFlowCosts::from(value),
+        }
     }
 }
 
