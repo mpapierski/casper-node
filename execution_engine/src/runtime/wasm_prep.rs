@@ -569,6 +569,7 @@ pub fn get_module_from_entry_points(
     }
 }
 
+/// Ruled opcode costs.
 pub struct RuledOpcodeCosts(OpcodeCosts);
 
 impl From<OpcodeCosts> for RuledOpcodeCosts {
@@ -647,7 +648,7 @@ impl Rules for RuledOpcodeCosts {
 
             Instruction::I32Const(_) | Instruction::I64Const(_) => Some(costs.op_const),
 
-            Instruction::F32Const(_) | Instruction::F64Const(_) => None, // float_const
+            Instruction::F32Const(_) | Instruction::F64Const(_) => Some(100), // float_const
 
             Instruction::I32Eqz
             | Instruction::I32Eq
@@ -683,7 +684,7 @@ impl Rules for RuledOpcodeCosts {
             | Instruction::F64Lt
             | Instruction::F64Gt
             | Instruction::F64Le
-            | Instruction::F64Ge => None, // Unsupported comparison operators for floats.
+            | Instruction::F64Ge => Some(100), // Unsupported comparison operators for floats.
 
             Instruction::I32Clz | Instruction::I32Ctz | Instruction::I32Popcnt => Some(costs.bit),
 
@@ -752,7 +753,7 @@ impl Rules for RuledOpcodeCosts {
             | Instruction::F64Div
             | Instruction::F64Min
             | Instruction::F64Max
-            | Instruction::F64Copysign => None, // Unsupported math operators for floats.
+            | Instruction::F64Copysign => Some(100), // Unsupported math operators for floats.
 
             Instruction::I32WrapI64 | Instruction::I64ExtendSI32 | Instruction::I64ExtendUI32 => {
                 Some(costs.conversion)
@@ -775,12 +776,12 @@ impl Rules for RuledOpcodeCosts {
             | Instruction::F64ConvertUI32
             | Instruction::F64ConvertSI64
             | Instruction::F64ConvertUI64
-            | Instruction::F64PromoteF32 => None, // Unsupported conversion operators for floats.
+            | Instruction::F64PromoteF32 => Some(100), // Unsupported conversion operators for floats.
 
             Instruction::I32ReinterpretF32
             | Instruction::I64ReinterpretF64
             | Instruction::F32ReinterpretI32
-            | Instruction::F64ReinterpretI64 => None, /* Unsupported reinterpretation operators
+            | Instruction::F64ReinterpretI64 => Some(100), /* Unsupported reinterpretation operators
                                                        * for floats. */
         }
     }

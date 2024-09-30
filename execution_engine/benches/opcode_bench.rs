@@ -5,7 +5,7 @@ use casper_execution_engine::{
     runtime::{preprocess, utils, PreprocessConfigBuilder},
 };
 use casper_types::{ProtocolVersion, WasmConfig};
-use casper_wasmi::NopExternals;
+use casper_wasmi::{memory_units::Pages, Externals, FuncInstance, HostError, MemoryInstance, ModuleImportResolver, NopExternals, Signature};
 use criterion::{criterion_group, criterion_main, BatchSize, Criterion};
 
 /// Run all the benchmark or just the first in a group.
@@ -19,6 +19,104 @@ pub fn first_or_all<'a>(all: &'a [&'a str]) -> &'a [&'a str] {
         &all[..1]
     }
 }
+
+#[derive(Default)]
+struct MinimalWasmiResolver;
+
+#[derive(Debug)]
+struct MinimalWasmiExternals {
+    gas_used: u64,
+    block_gas_limit: u64,
+}
+
+impl MinimalWasmiExternals {
+    fn new( block_gas_limit: u64) -> Self {
+        Self {
+            gas_used: 0,
+            block_gas_limit,
+        }
+    }
+}
+
+const GAS_FUNC_IDX: usize = 7;
+
+impl ModuleImportResolver for MinimalWasmiResolver {
+    fn resolve_func(
+        &self,
+        field_name: &str,
+        _signature: &casper_wasmi::Signature,
+    ) -> Result<casper_wasmi::FuncRef, casper_wasmi::Error> {
+        if field_name == "gas" {
+            Ok(FuncInstance::alloc_host(
+                Signature::new(&[casper_wasmi::ValueType::I32; 1][..], None),
+                GAS_FUNC_IDX,
+            ))
+        } else {
+            Err(casper_wasmi::Error::Instantiation(format!(
+                "Export {} not found",
+                field_name
+            )))
+        }
+    }
+
+    fn resolve_memory(
+        &self,
+        field_name: &str,
+        memory_type: &casper_wasmi::MemoryDescriptor,
+    ) -> Result<casper_wasmi::MemoryRef, casper_wasmi::Error> {
+        if field_name == "memory" {
+            Ok(MemoryInstance::alloc(
+                Pages(memory_type.initial() as usize),
+                memory_type.maximum().map(|x| Pages(x as usize)),
+            )?)
+        } else {
+            panic!("invalid exported memory name {}", field_name);
+        }
+    }
+}
+
+#[derive(thiserror::Error, Debug)]
+#[error("gas limit")]
+struct GasLimit;
+
+impl HostError for GasLimit {}
+
+
+#[derive(thiserror::Error, Debug)]
+#[error("invalid index {index}")]
+struct InvalidIndex { index: usize }
+
+impl HostError for InvalidIndex {}
+
+
+impl Externals for MinimalWasmiExternals {
+    fn invoke_index(
+        &mut self,
+        index: usize,
+        args: casper_wasmi::RuntimeArgs,
+    ) -> Result<Option<casper_wasmi::RuntimeValue>, casper_wasmi::Trap> {
+        if index == GAS_FUNC_IDX {
+            let gas_used: u32 = args.nth_checked(0)?;
+            // match gas_used.checked_add(
+            match self.gas_used.checked_add(gas_used.into()) {
+                Some(new_gas_used) if new_gas_used > self.block_gas_limit => {
+                    return Err(GasLimit.into());
+                }
+                Some(new_gas_used) => {
+                    // dbg!(&new_gas_used, &self.block_gas_limit);
+                    self.gas_used = new_gas_used;
+                }
+                None => {
+                    unreachable!();
+                }
+            }
+            Ok(None)
+        } else {
+            Err(InvalidIndex { index }.into())
+        }
+    }
+}
+
 
 /// Creates a benchmark with its confirmation for the specified `code` snippet.
 ///
@@ -819,8 +917,24 @@ const SKIP_LIST: &[&str] = &[
     "ctrlop/call_indirect/confirmation", /*  fail: Wasm validation error: the number of tables
                                           * must be at
                                           * most one */
+
+//
+// f32/f64
+//
+
+
 ];
 
+#[test]
+fn foo() {
+    let mut benchmarks = benchmarks();
+assert!(false);
+    for Benchmark(id, wat, expected_ops) in &benchmarks {
+        let fname = id.to_owned().replace("/", "_");
+        let fname = format!("/tmp/{}_{expected_ops}.wat", fname);
+        fs::write(&fname, wat).unwrap();
+    }
+}
 pub fn criterion_benchmark(c: &mut Criterion) {
     let mut benchmarks = benchmarks();
 
@@ -842,7 +956,7 @@ pub fn criterion_benchmark(c: &mut Criterion) {
                             let wasm_bytes = wat::parse_str(&wat).unwrap();
                             let preprocess_config = PreprocessConfigBuilder::default()
                                 .with_externalize_memory(true)
-                                .with_gas_counter(false)
+                                .with_gas_counter(true)
                                 .with_require_memory(false)
                                 .with_stack_height_limiter(false)
                                 .build();
@@ -869,10 +983,12 @@ pub fn criterion_benchmark(c: &mut Criterion) {
 
                         value.clone()
                     },
+
+
                     |(instance, _memory)| match instance.invoke_export(
                         "canister_update test",
                         &[],
-                        &mut NopExternals,
+                        &mut MinimalWasmiExternals::new(u64::MAX),
                     ) {
                         Ok(_) => {}
                         Err(trap) => {
