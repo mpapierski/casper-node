@@ -144,5 +144,124 @@
       i64.mul
     end)
 
+    (func $recursive_ok (export "recursive_ok") (param $n i32) (result i32)
+        (if (result i32)
+            (local.get $n)
+            (then
+                (return
+                    (call $recursive_ok
+                        (i32.sub
+                            (local.get $n)
+                            (i32.const 1)
+                        )
+                    )
+                )
+            )
+            (else
+                (return (local.get $n))
+            )
+        )
+	)
 
+(func $recursive_scan (export "recursive_scan") (param $n i32) (result i32)
+        (if (result i32)
+            (i32.eq (local.get $n) (i32.const 0))
+            (then
+                ;; return 0 if $n == 0
+                (i32.const 0)
+            )
+            (else
+                ;; return $n + (call $recursive_scanc($n - 1)) otherwise
+                (i32.add
+                    (call $recursive_scan
+                        (i32.sub
+                            (local.get $n)
+                            (i32.const 1)
+                        )
+                    )
+                    (local.get $n)
+                )
+            )
+        )
+    )
+
+ (func (export "vec_add")
+        (param $ptr_result i32)
+        (param $ptr_a i32)
+        (param $ptr_b i32)
+        (param $len i32)
+        (local $n i32)
+        (block $exit
+            (loop $loop
+                (br_if ;; exit loop if $n == $len
+                    $exit
+                    (i32.eq
+                        (local.get $n)
+                        (local.get $len)
+                    )
+                )
+                (i64.store offset=0 ;; ptr_result[n] = ptr_a[n] + ptr_b[n]
+                    (i32.add
+                        (local.get $ptr_result)
+                        (i32.mul
+                            (local.get $n)
+                            (i32.const 8)
+                        )
+                    )
+                    (i64.add
+                        (i64.load32_s offset=0 ;; load ptr_a[n]
+                            (i32.add
+                                (local.get $ptr_a)
+                                (i32.mul
+                                    (local.get $n)
+                                    (i32.const 4)
+                                )
+                            )
+                        )
+                        (i64.load32_s offset=0 ;; load ptr_b[n]
+                            (i32.add
+                                (local.get $ptr_b)
+                                (i32.mul
+                                    (local.get $n)
+                                    (i32.const 4)
+                                )
+                            )
+                        )
+                    )
+                )
+                (local.set $n ;; increment n
+                    (i32.add (local.get $n) (i32.const 1))
+                 )
+                (br $loop) ;; continue loop
+            )
+        )
+        (return)
+    )
+
+    (func (export "fill_bytes") (param $ptr i32) (param $len i32) (param $value i32)
+        (local $n i32)
+        (block $exit
+            (loop $loop
+                (br_if ;; exit loop if $n == $len
+                    $exit
+                    (i32.eq
+                        (local.get $n)
+                        (local.get $len)
+                    )
+                )
+                (i32.store8 offset=0 ;; store $value at mem[ptr+n]
+                    (i32.add
+                        (local.get $ptr)
+                        (local.get $n)
+                    )
+                    (local.get $value)
+                )
+                (local.set $n ;; increment n
+                    (i32.add (local.get $n) (i32.const 1))
+                 )
+                (br $loop) ;; continue loop
+            )
+        )
+        (return)
+    )
 )
