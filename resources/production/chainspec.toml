@@ -227,54 +227,54 @@ gas_per_byte = 1_117_587
 
 [wasm.opcode_costs]
 # Bit operations multiplier.
-bit = 4500
+bit = 3550
 # Arithmetic add operations multiplier.
-add = 4500
+add = 4450
 # Mul operations multiplier.
-mul = 4500
+mul = 4450
 # Div operations multiplier.
 div = 4600
 # Memory load operation multiplier.
 load = 3800
 # Memory store operation multiplier.
-store = 3650
+store = 3350
 # Const store operation multiplier.
-const = 2950
+const = 2800
 # Local operations multiplier.
 local = 3700
 # Global operations multiplier.
 global = 4612
 # Integer operations multiplier.
-integer_comparison = 4459
+integer_comparison = 45
 # Conversion operations multiplier.
 conversion = 3600
 # Unreachable operation multiplier.
 unreachable = 2
 # Nop operation multiplier.
-nop = 2
+nop = 10
 # Get current memory operation multiplier.
 current_memory = 2850
 # Grow memory cost, per page (64kb).
-grow_memory = 3700
+grow_memory = 27033
 
 # Control flow operations multiplier.
 [wasm.opcode_costs.control_flow]
-block = 16704
-loop = 16704
-if = 16704
-else = 16704
-end = 16704
-br = 35_000
-br_if = 35_000
-return = 16704
-select = 16704
-call = 16704
-call_indirect = 16704
-drop = 16704
+block = 14000
+loop = 14000
+if = 14000
+else = 14000
+end = 14000
+br = 24300
+br_if = 24300
+return = 14000
+select = 14000
+call = 14000
+call_indirect = 14000
+drop = 14000
 
 [wasm.opcode_costs.control_flow.br_table]
 # Fixed cost per `br_table` opcode
-cost = 35_000
+cost = 24300
 # Size of target labels in the `br_table` opcode will be multiplied by `size_multiplier`
 size_multiplier = 100
 

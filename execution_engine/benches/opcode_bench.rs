@@ -925,18 +925,22 @@ const SKIP_LIST: &[&str] = &[
 
 ];
 
-#[test]
-fn foo() {
+
+pub fn criterion_benchmark(c: &mut Criterion) {
     let mut benchmarks = benchmarks();
-assert!(false);
+
+
+ {
+use std::io::Write;
+    let mut f = fs::File::create("/tmp/benches.csv").unwrap();
     for Benchmark(id, wat, expected_ops) in &benchmarks {
         let fname = id.to_owned().replace("/", "_");
         let fname = format!("/tmp/{}_{expected_ops}.wat", fname);
         fs::write(&fname, wat).unwrap();
+        let line = format!("{id},{expected_ops}\n");
+        f.write(line.as_bytes()).unwrap();
     }
-}
-pub fn criterion_benchmark(c: &mut Criterion) {
-    let mut benchmarks = benchmarks();
+ }
 
     benchmarks.retain(|Benchmark(id, _, _)| !SKIP_LIST.contains(&id.as_str()));
 
