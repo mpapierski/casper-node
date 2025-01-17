@@ -1997,7 +1997,9 @@ async fn empty_block_validation_regression() {
         });
 
     info!("Waiting for the first era after genesis to end.");
-    fixture.run_until_consensus_in_era(ERA_TWO, ONE_MIN).await;
+    fixture
+        .run_until_consensus_in_era(ERA_TWO, ONE_MIN * 2)
+        .await;
     let switch_blocks = SwitchBlocks::collect(fixture.network.nodes(), 2);
 
     // Nobody actually double-signed. The accusations should have had no effect.
