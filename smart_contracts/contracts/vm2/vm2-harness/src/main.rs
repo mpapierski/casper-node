@@ -10,10 +10,18 @@ use casper_macros::casper;
 use casper_sdk::{
     host::{self, Entity},
     log,
+    serializers::borsh,
     types::{Address, CallError},
 };
 
 use contracts::token_owner::TokenOwnerContractRef;
+
+#[casper(message)]
+struct TestMessage {
+    value1: u64,
+    value2: String,
+    value3: u32,
+}
 
 #[derive(Default)]
 struct Seed {
@@ -583,6 +591,28 @@ fn perform_test(seed: &mut Seed, flipper_address: Address) {
         assert_eq!(output, None);
     }
 
+    //
+    // Messages
+    //
+    {
+        let _current_test = next_test(&mut counter, "Messages");
+
+        let test_message = TestMessage {
+            value1: 42,
+            value2: "Hello, World!".to_string(),
+            value3: 123,
+        };
+
+        use casper_sdk::messages::Message;
+        // let message: &dyn casper_sdk::messages::Message = &test_message;
+        assert_eq!(test_message.topic(), "TestMessage");
+        assert_eq!(
+            test_message.payload(),
+            borsh::to_vec(&(42u64, "Hello, World!".to_string(), 123u32)).unwrap()
+        );
+
+        host::emit(test_message);
+    }
     log!("👋 Goodbye");
 }
 

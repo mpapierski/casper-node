@@ -34,8 +34,12 @@ struct MethodAttribute {
 
 #[derive(Debug, FromMeta)]
 struct StructMeta {
+    /// Contract state is a special struct that is used to store the state of the contract.
     #[darling(default)]
     contract_state: bool,
+    /// Message is a special struct that is used to send messages to other contracts.
+    #[darling(default)]
+    message: bool,
 }
 
 #[derive(Debug, FromMeta)]
@@ -93,14 +97,19 @@ pub fn casper(attrs: TokenStream, item: TokenStream) -> TokenStream {
 
     if let Ok(item_struct) = syn::parse::<ItemStruct>(item.clone()) {
         let struct_meta = StructMeta::from_list(&attr_args).unwrap();
-        if !struct_meta.contract_state {
+        if struct_meta.message {
+            process_casper_message_for_struct(item_struct)
+        } else if struct_meta.contract_state {
+            // #[casper(contract_state)]
+            process_casper_contract_state_for_struct(item_struct)
+        } else {
+            // For any other struct that will be part of a schema
+            // #[casper]
             let partial = generate_casper_state_for_struct(item_struct);
             quote! {
                 #partial
             }
             .into()
-        } else {
-            process_casper_contract_for_struct(item_struct)
         }
     } else if let Ok(item_enum) = syn::parse::<ItemEnum>(item.clone()) {
         let partial = generate_casper_state_for_enum(item_enum);
@@ -130,6 +139,31 @@ pub fn casper(attrs: TokenStream, item: TokenStream) -> TokenStream {
         );
         TokenStream::from(err.to_compile_error())
     }
+}
+
+fn process_casper_message_for_struct(item_struct: ItemStruct) -> TokenStream {
+    let struct_name = &item_struct.ident;
+
+    let maybe_derive_abi = get_maybe_derive_abi();
+
+    quote! {
+        #[derive(casper_sdk::serializers::borsh::BorshSerialize, casper_sdk::serializers::borsh::BorshDeserialize)]
+        #[borsh(crate = "casper_sdk::serializers::borsh")]
+        #maybe_derive_abi
+        #item_struct
+
+        impl casper_sdk::messages::Message for #struct_name {
+            #[inline]
+            fn topic(&self) -> &str {
+                stringify!(#struct_name)
+            }
+            #[inline]
+            fn payload(&self) -> Vec<u8> {
+                casper_sdk::serializers::borsh::to_vec(self).unwrap()
+            }
+        }
+    }
+    .into()
 }
 
 fn generate_export_function(func: ItemFn) -> TokenStream {
@@ -1141,7 +1175,7 @@ fn get_maybe_derive_abi() -> impl ToTokens {
     }
 }
 
-fn process_casper_contract_for_struct(contract_struct: ItemStruct) -> TokenStream {
+fn process_casper_contract_state_for_struct(contract_struct: ItemStruct) -> TokenStream {
     let struct_name = &contract_struct.ident;
     let ref_name = format_ident!("{struct_name}Ref");
     let vis = &contract_struct.vis;

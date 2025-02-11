@@ -1,6 +1,7 @@
 #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
 pub mod native;
 use crate::{
+    messages::Message,
     prelude::{
         ffi::c_void,
         marker::PhantomData,
@@ -487,4 +488,11 @@ pub fn casper_transfer(target_account: &Address, amount: u128) -> Result<(), Cal
 #[inline]
 pub fn get_block_time() -> u64 {
     unsafe { casper_sdk_sys::casper_env_block_time() }
+}
+
+/// Emit a message to the host.
+pub fn emit(message: impl Message) {
+    let _topic = message.topic();
+    let _payload = message.payload();
+    // Emit the message to the topic
 }

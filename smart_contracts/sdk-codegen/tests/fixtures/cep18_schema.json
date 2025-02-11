@@ -250,7 +250,6 @@
   "entry_points": [
     {
       "name": "new",
-      "selector": 2611912030,
       "arguments": [
         {
           "name": "token_name",
@@ -262,42 +261,36 @@
     },
     {
       "name": "my_balance",
-      "selector": 926069361,
       "arguments": [],
       "result": "U64",
       "flags": 0
     },
     {
       "name": "name",
-      "selector": 987428621,
       "arguments": [],
       "result": "String",
       "flags": 0
     },
     {
       "name": "symbol",
-      "selector": 2614203198,
       "arguments": [],
       "result": "String",
       "flags": 0
     },
     {
       "name": "decimals",
-      "selector": 2176884103,
       "arguments": [],
       "result": "U8",
       "flags": 0
     },
     {
       "name": "total_supply",
-      "selector": 3680728488,
       "arguments": [],
       "result": "U64",
       "flags": 0
     },
     {
       "name": "balance_of",
-      "selector": 259349078,
       "arguments": [
         {
           "name": "address",
@@ -309,7 +302,6 @@
     },
     {
       "name": "allowance",
-      "selector": 1778390622,
       "arguments": [
         {
           "name": "spender",
@@ -325,7 +317,6 @@
     },
     {
       "name": "approve",
-      "selector": 1746036384,
       "arguments": [
         {
           "name": "spender",
@@ -341,7 +332,6 @@
     },
     {
       "name": "decrease_allowance",
-      "selector": 4187548633,
       "arguments": [
         {
           "name": "spender",
@@ -357,7 +347,6 @@
     },
     {
       "name": "increase_allowance",
-      "selector": 4115780642,
       "arguments": [
         {
           "name": "spender",
@@ -373,7 +362,6 @@
     },
     {
       "name": "transfer",
-      "selector": 2225167777,
       "arguments": [
         {
           "name": "recipient",
@@ -389,7 +377,6 @@
     },
     {
       "name": "transfer_from",
-      "selector": 188313368,
       "arguments": [
         {
           "name": "owner",
@@ -409,7 +396,6 @@
     },
     {
       "name": "mint",
-      "selector": 3487406754,
       "arguments": [
         {
           "name": "owner",
@@ -425,7 +411,6 @@
     },
     {
       "name": "burn",
-      "selector": 2985279867,
       "arguments": [
         {
           "name": "owner",
