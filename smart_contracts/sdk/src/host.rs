@@ -1,7 +1,6 @@
 #[cfg(all(not(target_arch = "wasm32"), feature = "std"))]
 pub mod native;
 use crate::{
-    messages::Message,
     prelude::{
         ffi::c_void,
         marker::PhantomData,
@@ -9,6 +8,7 @@ use crate::{
         ptr::{self, NonNull},
     },
     serializers::borsh::{BorshDeserialize, BorshSerialize},
+    Message,
 };
 
 use casper_executor_wasm_common::{

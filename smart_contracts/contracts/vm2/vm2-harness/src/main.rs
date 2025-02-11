@@ -603,8 +603,8 @@ fn perform_test(seed: &mut Seed, flipper_address: Address) {
             value3: 123,
         };
 
-        use casper_sdk::messages::Message;
-        // let message: &dyn casper_sdk::messages::Message = &test_message;
+        use casper_sdk::Message;
+
         assert_eq!(test_message.topic(), "TestMessage");
         assert_eq!(
             test_message.payload(),

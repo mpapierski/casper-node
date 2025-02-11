@@ -5,7 +5,6 @@
 extern crate alloc;
 
 pub mod abi;
-pub mod messages;
 pub mod prelude;
 pub mod serializers;
 #[cfg(not(target_arch = "wasm32"))]
@@ -339,6 +338,14 @@ impl<'a, T: ContractRef> ContractBuilder<'a, T> {
         let create_result = host::casper_create(self.code, value, None, None, seed)?;
         Ok(ContractHandle::from_address(create_result.contract_address))
     }
+}
+
+/// Trait for converting a message data to a string.
+pub trait Message: BorshSerialize {
+    /// Returns the topic of the message.
+    fn topic(&self) -> &str;
+    /// Converts the message data to a string.
+    fn payload(&self) -> Vec<u8>;
 }
 
 #[cfg(test)]

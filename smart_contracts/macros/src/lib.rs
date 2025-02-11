@@ -147,16 +147,17 @@ fn process_casper_message_for_struct(item_struct: ItemStruct) -> TokenStream {
     let maybe_derive_abi = get_maybe_derive_abi();
 
     quote! {
-        #[derive(casper_sdk::serializers::borsh::BorshSerialize, casper_sdk::serializers::borsh::BorshDeserialize)]
+        #[derive(casper_sdk::serializers::borsh::BorshSerialize)]
         #[borsh(crate = "casper_sdk::serializers::borsh")]
         #maybe_derive_abi
         #item_struct
 
-        impl casper_sdk::messages::Message for #struct_name {
+        impl casper_sdk::Message for #struct_name {
             #[inline]
             fn topic(&self) -> &str {
                 stringify!(#struct_name)
             }
+
             #[inline]
             fn payload(&self) -> Vec<u8> {
                 casper_sdk::serializers::borsh::to_vec(self).unwrap()
