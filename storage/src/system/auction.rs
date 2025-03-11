@@ -281,7 +281,7 @@ pub trait Auction:
 
         let source = match &delegator_kind {
             DelegatorKind::PublicKey(pk) => {
-                let account_hash = pk.to_account_hash();
+                let account_hash = dbg!(pk.to_account_hash());
                 if !self.is_allowed_session_caller(&account_hash) {
                     return Err(Error::InvalidContext.into());
                 }

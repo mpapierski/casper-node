@@ -127,7 +127,15 @@ impl RuntimeArgs {
         V: CLTyped + ToBytes,
     {
         let cl_value = CLValue::from_t(value)?;
-        self.0.push(NamedArg(key.into(), cl_value));
+
+        let key_string = key.into();
+
+        if let Some(existing) = self.0.iter_mut().find(|arg| arg.name() == key_string) {
+            *existing = NamedArg(key_string, cl_value);
+        } else {
+            self.0.push(NamedArg(key_string, cl_value));
+        }
+
         Ok(())
     }
 
