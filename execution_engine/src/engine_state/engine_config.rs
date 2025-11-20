@@ -8,10 +8,8 @@ use num_traits::One;
 
 use casper_types::{
     account::AccountHash, FeeHandling, ProtocolVersion, PublicKey, RefundHandling, StorageCosts,
-    SystemConfig, TimeDiff, WasmConfig, DEFAULT_FEE_HANDLING, DEFAULT_MINIMUM_BID_AMOUNT,
-    DEFAULT_REFUND_HANDLING,
+    SystemConfig, TimeDiff, WasmConfig, DEFAULT_MINIMUM_BID_AMOUNT, DEFAULT_REFUND_HANDLING,
 };
-
 /// Default value for a maximum query depth configuration option.
 pub const DEFAULT_MAX_QUERY_DEPTH: u64 = 5;
 /// Default value for maximum associated keys configuration option.
@@ -28,6 +26,9 @@ pub const DEFAULT_MAX_STORED_VALUE_SIZE: u32 = 8 * 1024 * 1024;
 pub const DEFAULT_MINIMUM_DELEGATION_AMOUNT: u64 = 500 * 1_000_000_000;
 /// Default value for maximum delegation amount in motes.
 pub const DEFAULT_MAXIMUM_DELEGATION_AMOUNT: u64 = 1_000_000_000 * 1_000_000_000;
+
+/// Default fee handling setting when chainspec defaults are not available.
+const DEFAULT_FEE_HANDLING: FeeHandling = FeeHandling::NoFee;
 /// Default value for strict argument checking.
 pub const DEFAULT_STRICT_ARGUMENT_CHECKING: bool = false;
 /// 91 days / 7 days in a week = 13 weeks

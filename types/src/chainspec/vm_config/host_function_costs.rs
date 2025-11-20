@@ -5,7 +5,11 @@ use core::ops::Add;
 use datasize::DataSize;
 use derive_more::Add;
 use num_traits::Zero;
-use rand::{distributions::Standard, prelude::Distribution, Rng};
+#[cfg(any(feature = "testing", test))]
+use rand::{
+    distr::{Distribution, StandardUniform},
+    Rng,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -209,9 +213,10 @@ impl<const COUNT: usize> Zero for HostFunction<[Cost; COUNT]> {
     }
 }
 
-impl<T> Distribution<HostFunction<T>> for Standard
+#[cfg(any(feature = "testing", test))]
+impl<T> Distribution<HostFunction<T>> for StandardUniform
 where
-    Standard: Distribution<T>,
+    StandardUniform: Distribution<T>,
     T: AsRef<[Cost]>,
 {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> HostFunction<T> {
@@ -1053,7 +1058,7 @@ impl FromBytes for HostFunctionCostsV1 {
 }
 
 #[cfg(any(feature = "testing", test))]
-impl Distribution<HostFunctionCostsV1> for Standard {
+impl Distribution<HostFunctionCostsV1> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> HostFunctionCostsV1 {
         HostFunctionCostsV1 {
             read_value: rng.gen(),

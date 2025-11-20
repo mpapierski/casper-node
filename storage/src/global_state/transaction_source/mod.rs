@@ -1,6 +1,7 @@
 use casper_types::bytesrepr::Bytes;
 
 /// LMDB implementation of transaction source.
+#[cfg(feature = "lmdb-rkv")]
 pub mod lmdb;
 
 /// A transaction which can be committed or aborted.

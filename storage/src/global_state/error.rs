@@ -13,6 +13,7 @@ use super::trie_store::TrieStoreCacheError;
 #[non_exhaustive]
 pub enum Error {
     /// LMDB error returned from underlying `lmdb` crate.
+    #[cfg(feature = "lmdb-rkv")]
     #[error(transparent)]
     Lmdb(#[from] lmdb::Error),
 

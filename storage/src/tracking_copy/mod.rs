@@ -24,12 +24,15 @@ use tracing::error;
 
 use crate::{
     global_state::{
-        error::Error as GlobalStateError, state::StateReader,
-        trie_store::operations::compute_state_hash, DEFAULT_MAX_QUERY_DEPTH,
+        error::{Error, Error as GlobalStateError},
+        state::StateReader,
+        trie_store::operations::compute_state_hash,
     },
     tracking_copy::messages::NewContractMessagesEmitter,
     KeyPrefix,
 };
+#[cfg(feature = "lmdb-rkv")]
+use crate::global_state::DEFAULT_MAX_QUERY_DEPTH;
 use casper_types::{
     addressable_entity::NamedKeyAddr,
     bytesrepr::{self, ToBytes},
@@ -1161,6 +1164,7 @@ pub fn validate_balance_proof(
     Ok(())
 }
 
+#[cfg(feature = "lmdb-rkv")]
 use crate::global_state::{
     error::Error,
     state::{
@@ -1168,9 +1172,11 @@ use crate::global_state::{
         StateProvider,
     },
 };
+#[cfg(feature = "lmdb-rkv")]
 use tempfile::TempDir;
 
 /// Creates a temp global state with initial state and checks out a tracking copy on it.
+#[cfg(feature = "lmdb-rkv")]
 pub fn new_temporary_tracking_copy(
     initial_data: impl IntoIterator<Item = (Key, StoredValue)>,
     max_query_depth: Option<u64>,

@@ -1,0 +1,3 @@
+# Configure wasm32 builds to use getrandom's wasm_js backend without extra env vars.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="wasm_js"']

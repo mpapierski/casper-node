@@ -17,7 +17,7 @@ casper-types = { version = "8.0.0", path = "../types", features = ["datasize", "
 num-derive = { workspace = true }
 num-traits = { workspace = true }
 once_cell = { version = "1.5.2" }
-rand = "0.8.3"
+rand = "0.9.2"
 serde = { version = "1.0.183", features = ["derive"] }
 strum = "0.27"
 strum_macros = "0.27"

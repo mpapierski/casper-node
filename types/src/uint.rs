@@ -14,8 +14,9 @@ use num_traits::{
     AsPrimitive, Bounded, CheckedAdd, CheckedMul, CheckedSub, Num, One, Unsigned, WrappingAdd,
     WrappingSub, Zero,
 };
+#[cfg(any(feature = "testing", test))]
 use rand::{
-    distributions::{Distribution, Standard},
+    distr::{Distribution, StandardUniform},
     Rng,
 };
 use serde::{
@@ -447,7 +448,8 @@ macro_rules! impl_traits_for_uint {
             }
         }
 
-        impl Distribution<$type> for Standard {
+        #[cfg(any(feature = "testing", test))]
+        impl Distribution<$type> for StandardUniform {
             fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> $type {
                 let mut raw_bytes = [0u8; $total_bytes];
                 rng.fill_bytes(raw_bytes.as_mut());

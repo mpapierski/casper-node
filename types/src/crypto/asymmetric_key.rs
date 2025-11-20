@@ -226,7 +226,7 @@ impl SecretKey {
     #[cfg(any(feature = "std", feature = "testing", test))]
     pub fn generate_ed25519() -> Result<Self, ErrorExt> {
         let mut bytes = [0u8; Self::ED25519_LENGTH];
-        getrandom::getrandom(&mut bytes[..])?;
+        getrandom::fill(&mut bytes[..])?;
         SecretKey::ed25519_from_bytes(bytes).map_err(Into::into)
     }
 
@@ -234,7 +234,7 @@ impl SecretKey {
     #[cfg(any(feature = "std", feature = "testing", test))]
     pub fn generate_secp256k1() -> Result<Self, ErrorExt> {
         let mut bytes = [0u8; Self::SECP256K1_LENGTH];
-        getrandom::getrandom(&mut bytes[..])?;
+        getrandom::fill(&mut bytes[..])?;
         SecretKey::secp256k1_from_bytes(bytes).map_err(Into::into)
     }
 

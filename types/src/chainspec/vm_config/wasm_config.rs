@@ -3,7 +3,7 @@
 use datasize::DataSize;
 #[cfg(any(feature = "testing", test))]
 use rand::{
-    distributions::{Distribution, Standard},
+    distr::{Distribution, StandardUniform},
     Rng,
 };
 use serde::{Deserialize, Serialize};
@@ -52,7 +52,6 @@ impl WasmConfig {
     }
 
     /// Returns mutable v1 reference
-    #[cfg(any(feature = "testing", test))]
     pub fn v1_mut(&mut self) -> &mut WasmV1Config {
         &mut self.v1
     }
@@ -63,7 +62,6 @@ impl WasmConfig {
     }
 
     /// Returns mutable v2 reference
-    #[cfg(any(feature = "testing", test))]
     pub fn v2_mut(&mut self) -> &mut WasmV2Config {
         &mut self.v2
     }
@@ -103,7 +101,7 @@ impl FromBytes for WasmConfig {
 }
 
 #[cfg(any(feature = "testing", test))]
-impl Distribution<WasmConfig> for Standard {
+impl Distribution<WasmConfig> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> WasmConfig {
         WasmConfig {
             messages_limits: rng.gen(),

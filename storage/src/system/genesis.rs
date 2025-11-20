@@ -12,7 +12,7 @@ use itertools::Itertools;
 use num::Zero;
 use num_rational::Ratio;
 use rand::{
-    distributions::{Distribution, Standard},
+    distr::{Distribution, StandardUniform},
     Rng,
 };
 use serde::{Deserialize, Serialize};

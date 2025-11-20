@@ -19,7 +19,7 @@ blake2 = { version = "0.9.0", default-features = false }
 datasize = { version = "0.2.15", optional = true }
 derp = { version = "0.0.14", optional = true }
 ed25519-dalek = { version = "2.1.1", default-features = false, features = ["alloc", "zeroize"] }
-getrandom = { version = "0.2.0", features = ["rdrand", "js"], optional = true }
+getrandom = { version = "0.3.3", features = ["wasm_js"], optional = true }
 hex = { version = "0.4.2", default-features = false, features = ["alloc"] }
 hex_fmt = "0.3.0"
 humantime = { version = "2", optional = true }
@@ -33,9 +33,7 @@ num-rational = { version = "0.4.0", default-features = false, features = ["serde
 num-traits = { version = "0.2.19", default-features = false }
 once_cell = { version = "1.5.2", optional = true }
 pem = { version = "0.8.1", optional = true }
-proptest = { version = "1.0.0", optional = true }
-proptest-derive = { version = "0.5.1", optional = true }
-rand = { version = "0.8.3", default-features = false, features = ["small_rng"] }
+rand = { version = "0.9.2", default-features = false, features = ["small_rng"] }
 rand_pcg = { version = "0.3.0", optional = true }
 schemars = { version = "0.8.21", features = ["preserve_order"], optional = true }
 serde-map-to-array = "1.1.0"
@@ -55,7 +53,7 @@ base16 = { version = "0.2.1", features = ["std"] }
 bincode = "1.3.1"
 criterion = "0.5.1"
 derp = "0.0.14"
-getrandom = "0.2.0"
+getrandom = "0.3.3"
 humantime = "2"
 once_cell = "1.5.2"
 openssl = "0.10.70"
@@ -63,7 +61,7 @@ pem = "0.8.1"
 proptest = "1.0.0"
 proptest-derive = "0.5.1"
 proptest-attr-macro = "1.0.0"
-rand = "0.8.3"
+rand = "0.9.2"
 rand_pcg = "0.3.0"
 serde_json = "1"
 serde_test = "1"
@@ -77,7 +75,7 @@ url = "2.5.4"
 
 [features]
 json-schema = ["once_cell", "schemars", "serde-map-to-array/json-schema"]
-testing = ["proptest", "proptest-derive", "rand/default", "rand_pcg", "strum", "bincode", "thiserror", "getrandom", "derp"]
+testing = ["rand/default", "rand_pcg", "strum", "bincode", "thiserror", "getrandom", "derp"]
 # Includes a restricted set of std lib functionality suitable for usage e.g. in a JS environment when compiled to Wasm.
 std = ["base16/std", "derp", "getrandom/std", "humantime", "itertools/use_std", "libc", "once_cell", "pem", "serde_json/preserve_order", "thiserror", "untrusted"]
 # Includes a complete set of std lib functionality, including filesystem I/O operations.
@@ -85,6 +83,7 @@ std-fs-io = ["std"]
 # DEPRECATED - use "testing" instead of "gens".
 gens = ["testing"]
 version-sync = ["dep:version-sync"]
+wasm = ["getrandom/wasm_js"]
 
 [[bench]]
 name = "bytesrepr_bench"

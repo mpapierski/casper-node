@@ -6,7 +6,7 @@ use crate::{
 use datasize::DataSize;
 #[cfg(any(feature = "testing", test))]
 use rand::{
-    distributions::{Distribution, Standard},
+    distr::{Distribution, StandardUniform},
     Rng,
 };
 use serde::{Deserialize, Serialize};
@@ -66,13 +66,11 @@ impl WasmV1Config {
     }
 
     /// Returns mutable max_memory reference
-    #[cfg(any(feature = "testing", test))]
     pub fn max_memory_mut(&mut self) -> &mut u32 {
         &mut self.max_memory
     }
 
     /// Returns mutable max_stack_height reference
-    #[cfg(any(feature = "testing", test))]
     pub fn max_stack_height_mut(&mut self) -> &mut u32 {
         &mut self.max_stack_height
     }
@@ -131,7 +129,7 @@ impl FromBytes for WasmV1Config {
 }
 
 #[cfg(any(feature = "testing", test))]
-impl Distribution<WasmV1Config> for Standard {
+impl Distribution<WasmV1Config> for StandardUniform {
     fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> WasmV1Config {
         WasmV1Config {
             max_memory: rng.gen(),

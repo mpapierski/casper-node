@@ -11,6 +11,7 @@
 /// Address generator logic.
 pub mod address_generator;
 /// Block store logic.
+#[cfg(feature = "blockstore")]
 pub mod block_store;
 /// Data access layer logic.
 pub mod data_access_layer;
@@ -27,6 +28,7 @@ pub use data_access_layer::KeyPrefix;
 pub use tracking_copy::new_temporary_tracking_copy;
 pub use tracking_copy::TrackingCopy;
 
+#[cfg(feature = "blockstore")]
 pub use block_store::{
     lmdb::{DbTableId, UnknownDbTableId},
     DbRawBytesSpec,

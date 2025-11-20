@@ -5,8 +5,10 @@ use blake2::{
     digest::{Update, VariableOutput},
     Blake2bVar,
 };
+#[cfg(feature = "keccak-asm")]
 use keccak_asm::Digest as KeccakDigest;
-use sha2::Sha256;
+use sha2::{Digest as Sha2Digest, Sha256};
+use sha3::{Digest as Sha3Digest, Keccak256 as Keccak256Soft};
 
 /// The number of bytes in a hash.
 /// All hash functions in this module have a digest length of 32.
@@ -42,19 +44,32 @@ pub fn blake3<T: AsRef<[u8]>>(data: T) -> [u8; DIGEST_LENGTH] {
 
 /// The 32-byte digest sha256 hash function
 pub fn sha256<T: AsRef<[u8]>>(data: T) -> [u8; DIGEST_LENGTH] {
-    Sha256::digest(data).into()
+    Sha256::digest(data.as_ref()).into()
 }
 
 /// The 32-byte digest keccak256 hash function
 pub fn keccak256<T: AsRef<[u8]>>(data: T) -> [u8; DIGEST_LENGTH] {
-    use keccak_asm::Keccak256;
+    #[cfg(feature = "keccak-asm")]
+    {
+        use keccak_asm::Keccak256;
 
-    let mut h = Keccak256::new();
-    KeccakDigest::update(&mut h, &data);
-    let mut out = [0u8; 32];
-    let result = KeccakDigest::finalize(h);
-    out.copy_from_slice(&result);
-    out
+        let mut h = Keccak256::new();
+        KeccakDigest::update(&mut h, &data);
+        let mut out = [0u8; 32];
+        let result = KeccakDigest::finalize(h);
+        out.copy_from_slice(&result);
+        out
+    }
+
+    #[cfg(not(feature = "keccak-asm"))]
+    {
+        let mut hasher = Keccak256Soft::new();
+        Sha3Digest::update(&mut hasher, data.as_ref());
+        let mut out = [0u8; 32];
+        let result = Sha3Digest::finalize(hasher);
+        out.copy_from_slice(&result);
+        out
+    }
 }
 
 #[cfg(test)]

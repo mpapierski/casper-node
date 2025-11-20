@@ -1,6 +1,7 @@
 //! A store for persisting `Trie` values at their hashes.
 //!
 //! See the [lmdb](lmdb/index.html#usage) modules for usage examples.
+#[cfg(feature = "lmdb-rkv")]
 pub mod lmdb;
 /// Trie store operational logic.
 pub mod operations;

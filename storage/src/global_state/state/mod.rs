@@ -1,9 +1,11 @@
 //! Global state.
 
 /// Lmdb implementation of global state.
+#[cfg(feature = "lmdb-rkv")]
 pub mod lmdb;
 
 /// Lmdb implementation of global state with cache.
+#[cfg(feature = "lmdb-rkv")]
 pub mod scratch;
 
 use num_rational::Ratio;
@@ -43,7 +45,8 @@ use casper_types::{
     StoredValue, SystemHashRegistry, U512,
 };
 
-#[cfg(test)]
+
+#[cfg(all(test, feature = "lmdb-rkv"))]
 pub use self::lmdb::make_temporary_global_state;
 
 use super::trie_store::{operations::batch_write, TrieStoreCacheError};
@@ -82,7 +85,6 @@ use crate::{
     },
     global_state::{
         error::Error as GlobalStateError,
-        state::scratch::ScratchGlobalState,
         transaction_source::{Transaction, TransactionSource},
         trie::Trie,
         trie_store::{
@@ -103,6 +105,9 @@ use crate::{
     tracking_copy::{TrackingCopy, TrackingCopyEntityExt, TrackingCopyError, TrackingCopyExt},
     AddressGenerator,
 };
+
+#[cfg(feature = "lmdb-rkv")]
+use crate::global_state::state::scratch::ScratchGlobalState;
 
 const BID_ADDR_TAGS_RELEVANT_FOR_CONTEMPORARY_VALIDATORS: &[BidAddrTag] = &[
     BidAddrTag::Validator,
@@ -166,6 +171,7 @@ pub enum CommitError {
 }
 
 /// Scratch provider.
+#[cfg(feature = "lmdb-rkv")]
 pub trait ScratchProvider: CommitProvider {
     /// Get scratch state to db.
     fn get_scratch_global_state(&self) -> ScratchGlobalState;
