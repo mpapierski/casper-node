@@ -1342,6 +1342,26 @@ async fn assert_evm_transaction_validation_failure_is_not_fatal(
 }
 
 #[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_with_fractional_mote_value() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: 21_000,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ONE,
+        input: AlloyBytes::new(),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(
+        transaction,
+        0,
+        None,
+        "is not an exact number of motes",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn should_not_fatally_exit_for_evm_transaction_below_intrinsic_gas() {
     let transaction = TxLegacy {
         chain_id: Some(0x4353_50FF),
