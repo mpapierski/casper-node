@@ -7,7 +7,8 @@ use crate::{
 use alloy_consensus::{SignableTransaction, TxEip1559, TxEnvelope, TxLegacy};
 use alloy_eips::Encodable2718;
 use alloy_primitives::{
-    Address as AlloyAddress, Bytes as AlloyBytes, Signature as AlloySignature, TxKind, U256,
+    keccak256, Address as AlloyAddress, Bytes as AlloyBytes, Signature as AlloySignature, TxKind,
+    U256,
 };
 use casper_executor_evm::EMPTY_CODE_HASH;
 use casper_storage::{
@@ -22,8 +23,9 @@ use casper_types::{
     addressable_entity::NamedKeyAddr,
     runtime_args,
     system::mint::{ARG_AMOUNT, ARG_TARGET},
-    AccessRights, AddressableEntity, CLValue, Digest, EntityAddr, ExecutableDeployItem,
-    ExecutionInfo, InitiatorAddr, TransactionRuntimeParams, URef, URefAddr, DEFAULT_TRANSFER_COST,
+    AccessRights, AddressableEntity, ByteCode, ByteCodeKind, CLValue, Digest, EntityAddr,
+    ExecutableDeployItem, ExecutionInfo, InitiatorAddr, TransactionRuntimeParams, URef, URefAddr,
+    DEFAULT_TRANSFER_COST,
 };
 use k256::ecdsa::{signature::hazmat::PrehashSigner, SigningKey};
 use once_cell::sync::Lazy;
@@ -1048,8 +1050,26 @@ fn seed_evm_account_with_nonce(
     balance: U512,
     nonce: u64,
 ) {
+    seed_evm_account_with_nonce_and_code(fixture, address, balance, nonce, None);
+}
+
+fn seed_evm_account_with_nonce_and_code(
+    fixture: &mut TestFixture,
+    address: evm::Address,
+    balance: U512,
+    nonce: u64,
+    code: Option<Vec<u8>>,
+) {
     let main_purse = evm::deterministic_purse(address);
-    let values_to_write = vec![
+    let code_hash = code
+        .as_ref()
+        .map(|code| {
+            let mut bytes = [0; evm::HASH_LENGTH];
+            bytes.copy_from_slice(keccak256(code).as_slice());
+            evm::Hash::new(bytes)
+        })
+        .unwrap_or(EMPTY_CODE_HASH);
+    let mut values_to_write = vec![
         (
             Key::Evm(EvmAddr::Account(address)),
             StoredValue::CLValue(CLValue::from_t(Key::URef(main_purse)).unwrap()),
@@ -1060,13 +1080,19 @@ fn seed_evm_account_with_nonce(
         ),
         (
             Key::Evm(EvmAddr::CodeHash(address)),
-            StoredValue::CLValue(CLValue::from_t(EMPTY_CODE_HASH).unwrap()),
+            StoredValue::CLValue(CLValue::from_t(code_hash).unwrap()),
         ),
         (
             Key::Balance(main_purse.addr()),
             StoredValue::CLValue(CLValue::from_t(balance).unwrap()),
         ),
     ];
+    if let Some(code) = code {
+        values_to_write.push((
+            Key::Evm(EvmAddr::ByteCode(code_hash)),
+            StoredValue::ByteCode(ByteCode::new(ByteCodeKind::EvmPrague, code)),
+        ));
+    }
     for runner in fixture.network.runners_mut() {
         let execution_pre_state = runner
             .main_reactor()
@@ -1233,6 +1259,170 @@ fn alloy_address_to_evm_address(address: AlloyAddress) -> evm::Address {
     let mut bytes = [0; evm::ADDRESS_LENGTH];
     bytes.copy_from_slice(address.as_slice());
     evm::Address::new(bytes)
+}
+
+async fn assert_evm_transaction_validation_failure_is_not_fatal(
+    transaction: TxLegacy,
+    account_nonce: u64,
+    sender_code: Option<Vec<u8>>,
+    expected_error_fragment: &str,
+) {
+    let evm_config = EvmConfig {
+        enabled: true,
+        chain_id: transaction
+            .chain_id
+            .expect("test transaction should have a chain ID"),
+        spec: EvmSpec::Prague,
+        block_gas_limit: 30_000_000,
+        base_fee: 1,
+        wei_per_mote: DEFAULT_WEI_PER_MOTE,
+    };
+    let config = SingleTransactionTestCase::default_test_config()
+        .with_evm_config(evm_config)
+        .with_refund_handling(RefundHandling::NoRefund)
+        .with_fee_handling(FeeHandling::Burn);
+    let mut test = SingleTransactionTestCase::new(
+        Arc::clone(&ALICE_SECRET_KEY),
+        Arc::clone(&BOB_SECRET_KEY),
+        Arc::clone(&CHARLIE_SECRET_KEY),
+        Some(config),
+    )
+    .await;
+    test.fixture
+        .run_until_consensus_in_era(ERA_ONE, ONE_MIN)
+        .await;
+
+    let evm_transaction = signed_evm_legacy_transaction(transaction);
+    let sender = evm_transaction.from();
+    seed_evm_account_with_nonce_and_code(
+        &mut test.fixture,
+        sender,
+        U512::from(EVM_INITIAL_BALANCE),
+        account_nonce,
+        sender_code,
+    );
+    let initial_total_supply = test.get_total_supply(None);
+
+    let (_transaction_hash, block_height, execution_result) = test
+        .send_transaction(Transaction::from(evm_transaction))
+        .await;
+    let ExecutionResult::V2(failure) = execution_result else {
+        panic!("expected EVM transaction validation to produce a V2 precondition failure");
+    };
+    let error_message = failure
+        .error_message
+        .as_deref()
+        .expect("precondition failure should include an error message");
+    assert!(
+        error_message.contains(expected_error_fragment),
+        "expected error containing {expected_error_fragment:?}, got {error_message:?}"
+    );
+    assert_eq!(failure.cost, U512::zero());
+    assert_eq!(failure.consumed, Gas::zero());
+    assert_eq!(failure.refund, U512::zero());
+    assert!(failure.effects.is_empty());
+    assert!(failure.transfers.is_empty());
+    assert_eq!(
+        evm_account_at(&mut test.fixture, block_height, sender).nonce(),
+        account_nonce
+    );
+    assert_eq!(
+        evm_balance(&mut test.fixture, sender, block_height),
+        U512::from(EVM_INITIAL_BALANCE)
+    );
+    assert_eq!(
+        test.get_total_supply(Some(block_height)),
+        initial_total_supply
+    );
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_below_intrinsic_gas() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: 20_999,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ZERO,
+        input: AlloyBytes::new(),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(transaction, 0, None, "call gas cost")
+        .await;
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_below_prague_calldata_floor() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: 23_000,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ZERO,
+        input: AlloyBytes::from(vec![0xFF; 100]),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(transaction, 0, None, "gas floor").await;
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_with_oversized_initcode() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: EVM_TEST_GAS_LIMIT,
+        to: TxKind::Create,
+        value: U256::ZERO,
+        input: AlloyBytes::from(vec![0; 49_153]),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(
+        transaction,
+        0,
+        None,
+        "create initcode size limit",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_with_nonce_overflow() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: u64::MAX,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: EVM_TEST_GAS_LIMIT,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ZERO,
+        input: AlloyBytes::new(),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(
+        transaction,
+        u64::MAX,
+        None,
+        "nonce overflow in transaction",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_evm_transaction_from_sender_with_code() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: EVM_TEST_GAS_LIMIT,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ZERO,
+        input: AlloyBytes::new(),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(
+        transaction,
+        0,
+        Some(vec![opcode::STOP]),
+        "reject transactions from senders with deployed code",
+    )
+    .await;
 }
 
 #[tokio::test]
