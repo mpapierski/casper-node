@@ -906,6 +906,33 @@ fn evm_init_code_returning(runtime: Vec<u8>) -> Vec<u8> {
     init_code
 }
 
+fn evm_one_wei_transfer_then_selfdestruct_init_code(recipient: AlloyAddress) -> Vec<u8> {
+    let mut init_code = vec![
+        opcode::PUSH1,
+        0, // return size
+        opcode::PUSH1,
+        0, // return offset
+        opcode::PUSH1,
+        0, // calldata size
+        opcode::PUSH1,
+        0, // calldata offset
+        opcode::PUSH1,
+        1, // value
+        opcode::PUSH20,
+    ];
+    init_code.extend_from_slice(recipient.as_slice());
+    init_code.extend([
+        opcode::PUSH2,
+        0xff,
+        0xff, // gas
+        opcode::CALL,
+        opcode::POP,
+        opcode::ADDRESS,
+        opcode::SELFDESTRUCT,
+    ]);
+    init_code
+}
+
 fn evm_coinbase_transfer_init_code() -> Vec<u8> {
     let revert_offset = 19u8;
     evm_init_code_returning(vec![
@@ -1634,6 +1661,84 @@ async fn should_not_fatally_exit_for_competing_evm_transactions_with_the_same_no
         evm_balance(&mut test.fixture, sender, block_height),
         U512::from(EVM_INITIAL_BALANCE) - max_fee_amount
     );
+    assert_eq!(
+        test.get_total_supply(Some(block_height)),
+        initial_total_supply - max_fee_amount
+    );
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_selfdestruct_after_one_wei_transfer() {
+    let evm_config = EvmConfig {
+        enabled: true,
+        chain_id: 0x4353_50FF,
+        spec: EvmSpec::Prague,
+        block_gas_limit: 30_000_000,
+        base_fee: 1,
+        wei_per_mote: DEFAULT_WEI_PER_MOTE,
+    };
+    let config = SingleTransactionTestCase::default_test_config()
+        .with_evm_config(evm_config)
+        .with_refund_handling(RefundHandling::NoRefund)
+        .with_fee_handling(FeeHandling::Burn);
+    let mut test = SingleTransactionTestCase::new(
+        Arc::clone(&ALICE_SECRET_KEY),
+        Arc::clone(&BOB_SECRET_KEY),
+        Arc::clone(&CHARLIE_SECRET_KEY),
+        Some(config),
+    )
+    .await;
+    test.fixture
+        .run_until_consensus_in_era(ERA_ONE, ONE_MIN)
+        .await;
+
+    let recipient = AlloyAddress::repeat_byte(0x42);
+    let evm_transaction = signed_evm_legacy_transaction(TxLegacy {
+        chain_id: Some(evm_config.chain_id),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE,
+        gas_limit: 200_000,
+        to: TxKind::Create,
+        value: U256::from(DEFAULT_WEI_PER_MOTE),
+        input: AlloyBytes::from(evm_one_wei_transfer_then_selfdestruct_init_code(recipient)),
+    });
+    let sender = evm_transaction.from();
+    let initial_balance = U512::from(EVM_INITIAL_BALANCE);
+    seed_evm_account(&mut test.fixture, sender, initial_balance);
+    let initial_total_supply = test.get_total_supply(None);
+    let max_fee_amount = evm_transaction
+        .max_fee_amount(&evm_config)
+        .expect("maximum EVM fee should fit");
+
+    let (_transaction_hash, block_height, execution_result) = test
+        .send_transaction(Transaction::from(evm_transaction))
+        .await;
+    let ExecutionResult::Evm(execution_result) = execution_result else {
+        panic!("expected EVM execution result");
+    };
+    assert!(execution_result.error_message.is_none());
+    assert!(execution_result.receipt.status.is_success());
+    assert!(execution_result.receipt.gas_used > 0);
+    assert!(!execution_result.effects.is_empty());
+
+    assert_eq!(
+        evm_account_at(&mut test.fixture, block_height, sender).nonce(),
+        1
+    );
+    assert_eq!(
+        evm_balance(&mut test.fixture, sender, block_height),
+        initial_balance - max_fee_amount - U512::one()
+    );
+    assert_eq!(
+        evm_balance(
+            &mut test.fixture,
+            alloy_address_to_evm_address(recipient),
+            block_height,
+        ),
+        U512::zero()
+    );
+    // Dust is only reported by the executor for now. The fee is burned, but the discarded mote
+    // remains in total supply until a later consumer handles the outcome's dust amount.
     assert_eq!(
         test.get_total_supply(Some(block_height)),
         initial_total_supply - max_fee_amount
