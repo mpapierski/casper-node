@@ -37,7 +37,7 @@ use casper_types::{
     bytesrepr::{Bytes, ToBytes},
     evm,
     execution::ExecutionResultV1,
-    EvmAddr, EvmConfig, EvmSpec, EvmTransaction, DEFAULT_WEI_PER_MOTE,
+    EvmAddr, EvmConfig, EvmSpec, EvmTransaction, EvmTransactionError, DEFAULT_WEI_PER_MOTE,
 };
 
 pub(crate) static ALICE_SECRET_KEY: Lazy<Arc<SecretKey>> = Lazy::new(|| {
@@ -1039,6 +1039,15 @@ fn signed_evm_legacy_transaction(transaction: TxLegacy) -> EvmTransaction {
 }
 
 fn seed_evm_account(fixture: &mut TestFixture, address: evm::Address, balance: U512) {
+    seed_evm_account_with_nonce(fixture, address, balance, 0);
+}
+
+fn seed_evm_account_with_nonce(
+    fixture: &mut TestFixture,
+    address: evm::Address,
+    balance: U512,
+    nonce: u64,
+) {
     let main_purse = evm::deterministic_purse(address);
     let values_to_write = vec![
         (
@@ -1047,7 +1056,7 @@ fn seed_evm_account(fixture: &mut TestFixture, address: evm::Address, balance: U
         ),
         (
             Key::Evm(EvmAddr::Nonce(address)),
-            StoredValue::CLValue(CLValue::from_t(0u64).unwrap()),
+            StoredValue::CLValue(CLValue::from_t(nonce).unwrap()),
         ),
         (
             Key::Evm(EvmAddr::CodeHash(address)),
@@ -1224,6 +1233,164 @@ fn alloy_address_to_evm_address(address: AlloyAddress) -> evm::Address {
     let mut bytes = [0; evm::ADDRESS_LENGTH];
     bytes.copy_from_slice(address.as_slice());
     evm::Address::new(bytes)
+}
+
+#[tokio::test]
+async fn should_not_fatally_exit_for_competing_evm_transactions_with_the_same_nonce() {
+    const NONCE: u64 = 104;
+
+    let evm_config = EvmConfig {
+        enabled: true,
+        chain_id: 0x4353_50FF,
+        spec: EvmSpec::Prague,
+        block_gas_limit: 30_000_000,
+        base_fee: 1,
+        wei_per_mote: DEFAULT_WEI_PER_MOTE,
+    };
+    let config = SingleTransactionTestCase::default_test_config()
+        .with_evm_config(evm_config)
+        .with_refund_handling(RefundHandling::NoRefund)
+        .with_fee_handling(FeeHandling::Burn);
+    let mut test = SingleTransactionTestCase::new(
+        Arc::clone(&ALICE_SECRET_KEY),
+        Arc::clone(&BOB_SECRET_KEY),
+        Arc::clone(&CHARLIE_SECRET_KEY),
+        Some(config),
+    )
+    .await;
+    test.fixture
+        .run_until_consensus_in_era(ERA_ONE, ONE_MIN)
+        .await;
+
+    let first =
+        signed_evm_create_transaction(evm_config.chain_id, NONCE, evm_log_emitting_init_code());
+    let second = signed_evm_create_transaction(
+        evm_config.chain_id,
+        NONCE,
+        evm_init_code_returning(vec![opcode::STOP]),
+    );
+    let sender = first.from();
+    assert_eq!(second.from(), sender);
+    seed_evm_account_with_nonce(
+        &mut test.fixture,
+        sender,
+        U512::from(EVM_INITIAL_BALANCE),
+        NONCE,
+    );
+    let initial_total_supply = test.get_total_supply(None);
+    let max_fee_amount = first
+        .max_fee_amount(&evm_config)
+        .expect("maximum EVM fee should fit");
+    assert_eq!(second.max_fee_amount(&evm_config), Some(max_fee_amount));
+
+    let first_hash = Transaction::from(first.clone()).hash();
+    let second_hash = Transaction::from(second.clone()).hash();
+    assert_ne!(first_hash, second_hash);
+
+    // Both transactions can be accepted against nonce 104 before either one executes.
+    test.fixture
+        .inject_transaction(Transaction::from(first))
+        .await;
+    test.fixture
+        .inject_transaction(Transaction::from(second))
+        .await;
+
+    test.fixture
+        .run_until(
+            move |nodes| {
+                nodes.values().all(|runner| {
+                    let storage = runner.main_reactor().storage();
+                    storage.read_execution_result(&first_hash).is_some()
+                        && storage.read_execution_result(&second_hash).is_some()
+                })
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+
+    let (first_execution_info, second_execution_info) = {
+        let (_node_id, runner) = test.fixture.network.nodes().iter().next().unwrap();
+        let storage = runner.main_reactor().storage();
+        (
+            storage
+                .read_execution_info(first_hash)
+                .expect("first competing EVM transaction should be included"),
+            storage
+                .read_execution_info(second_hash)
+                .expect("second competing EVM transaction should be included"),
+        )
+    };
+    assert_eq!(
+        first_execution_info.block_height,
+        second_execution_info.block_height
+    );
+    let block_height = first_execution_info.block_height;
+    test.fixture
+        .run_until(
+            move |nodes| {
+                nodes.values().all(|runner| {
+                    runner
+                        .main_reactor()
+                        .storage()
+                        .read_block_header_by_height(block_height, true)
+                        .is_ok_and(|header| header.is_some())
+                })
+            },
+            Duration::from_secs(30),
+        )
+        .await;
+    let first_execution_result = first_execution_info
+        .execution_result
+        .expect("first competing EVM transaction should have an execution result");
+    let second_execution_result = second_execution_info
+        .execution_result
+        .expect("second competing EVM transaction should have an execution result");
+
+    let (successful_result, invalid_nonce_result) =
+        match (first_execution_result, second_execution_result) {
+            (ExecutionResult::Evm(success), ExecutionResult::V2(invalid_nonce))
+            | (ExecutionResult::V2(invalid_nonce), ExecutionResult::Evm(success)) => {
+                (success, invalid_nonce)
+            }
+            results => {
+                panic!("expected one successful and one invalid EVM transaction: {results:?}")
+            }
+        };
+
+    assert_eq!(
+        successful_result.receipt.status,
+        evm::ReceiptStatus::Success
+    );
+    assert_eq!(successful_result.cost, max_fee_amount);
+    assert_eq!(successful_result.refund, U512::zero());
+
+    let expected_error = EvmTransactionError::InvalidNonce {
+        expected: NONCE + 1,
+        actual: NONCE,
+    }
+    .to_string();
+    assert_eq!(
+        invalid_nonce_result.error_message.as_deref(),
+        Some(expected_error.as_str())
+    );
+    assert_eq!(invalid_nonce_result.cost, U512::zero());
+    assert_eq!(invalid_nonce_result.consumed, Gas::zero());
+    assert_eq!(invalid_nonce_result.refund, U512::zero());
+    assert!(invalid_nonce_result.effects.is_empty());
+    assert!(invalid_nonce_result.transfers.is_empty());
+
+    assert_eq!(
+        evm_account_at(&mut test.fixture, block_height, sender).nonce(),
+        NONCE + 1
+    );
+    assert_eq!(
+        evm_balance(&mut test.fixture, sender, block_height),
+        U512::from(EVM_INITIAL_BALANCE) - max_fee_amount
+    );
+    assert_eq!(
+        test.get_total_supply(Some(block_height)),
+        initial_total_supply - max_fee_amount
+    );
 }
 
 #[tokio::test]
