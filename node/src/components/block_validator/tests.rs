@@ -880,6 +880,26 @@ async fn should_reject_peer_fetched_evm_transaction_with_fractional_mote_value()
     .await;
 }
 
+#[tokio::test]
+async fn should_reject_peer_fetched_evm_transaction_with_positive_effective_priority_fee() {
+    let mut rng = TestRng::new();
+    let timestamp = Timestamp::from(1_000);
+    assert_peer_fetched_evm_transaction_is_rejected(
+        &mut rng,
+        timestamp,
+        |chainspec| {
+            signed_evm_legacy_transaction(
+                chainspec.evm_config.chain_id,
+                timestamp,
+                chainspec.evm_config.base_fee_wei() + 1,
+                AlloyU256::ZERO,
+            )
+        },
+        "effective priority fee per gas 1 is unsupported",
+    )
+    .await;
+}
+
 /// Verifies that the block validator checks transaction and transfer timestamps and ttl.
 #[tokio::test]
 async fn ttl() {
