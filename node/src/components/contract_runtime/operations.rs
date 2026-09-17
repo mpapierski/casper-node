@@ -1073,31 +1073,12 @@ pub fn execute_finalized_block(
         let is_valid_evm_request;
         let allow_execution = {
             let is_not_penalized = !balance_identifier.is_penalty();
-            // in the case of custom payment, we do all payment processing up front after checking
-            // if the initiator can cover the penalty payment, and then either charge the full
-            // amount in the happy path or the penalty amount in the sad path...in whichever case
-            // the sad path is handled by is_penalty and the balance in the payment purse is
-            // the penalty payment or the full amount but is 'sufficient' either way
-            let actual_cost = artifact_builder.actual_cost(); // use actual cost here
-            let required_balance = if let Some(evm_transaction) = evm_transaction {
-                evm_transaction
-                    .required_balance(actual_cost, &chainspec.evm_config)
-                    .ok_or_else(|| {
-                        BlockExecutionError::PaymentError(
-                            "EVM value is not an exact mote amount or value plus fee overflowed U512"
-                                .to_string(),
-                        )
-                    })?
-            } else {
-                actual_cost
-            };
-            let is_sufficient_balance =
-                is_custom_payment || post_payment_balance_result.is_sufficient(required_balance);
-            let is_allowed_by_chainspec = chainspec.is_supported(lane_id);
             // Transactions are accepted against a shared pre-state, but execute sequentially
             // against the evolving block state. Run all revm transaction preconditions here so
             // any state-dependent mismatch becomes a per-transaction failure before a payment
-            // hold or other durable effect is created.
+            // hold or other durable effect is created. This must also precede required-balance
+            // calculation: EVM validation rejects values that cannot be represented as motes,
+            // whereas required-balance calculation cannot report a transaction-scoped error.
             is_valid_evm_request = if let (Some(evm_transaction), Some(origin_resolution)) =
                 (evm_transaction, evm_origin_resolution.as_ref())
             {
@@ -1130,6 +1111,31 @@ pub fn execute_finalized_block(
             } else {
                 true
             };
+            // in the case of custom payment, we do all payment processing up front after checking
+            // if the initiator can cover the penalty payment, and then either charge the full
+            // amount in the happy path or the penalty amount in the sad path...in whichever case
+            // the sad path is handled by is_penalty and the balance in the payment purse is
+            // the penalty payment or the full amount but is 'sufficient' either way
+            let actual_cost = artifact_builder.actual_cost(); // use actual cost here
+            let is_sufficient_balance = if is_valid_evm_request {
+                let required_balance = if let Some(evm_transaction) = evm_transaction {
+                    evm_transaction
+                        .required_balance(actual_cost, &chainspec.evm_config)
+                        .ok_or_else(|| {
+                            BlockExecutionError::PaymentError(
+                                "EVM value is not an exact mote amount or value plus fee overflowed U512"
+                                    .to_string(),
+                            )
+                        })?
+                } else {
+                    actual_cost
+                };
+                is_custom_payment || post_payment_balance_result.is_sufficient(required_balance)
+            } else {
+                // Preserve the EVM validation error already recorded on the artifact builder.
+                true
+            };
+            let is_allowed_by_chainspec = chainspec.is_supported(lane_id);
             let allow = is_not_penalized
                 && is_sufficient_balance
                 && is_allowed_by_chainspec
