@@ -501,6 +501,7 @@ impl ExecutionArtifactBuilder {
                     .initiator
                     .evm_address()
                     .expect("EVM execution result requires an EVM initiator"),
+                error_message: self.error_message,
                 current_price: self.current_price,
                 limit: self.limit,
                 cost: actual_cost,

@@ -1413,17 +1413,14 @@ pub fn execute_finalized_block(
         }
 
         if is_evm && !allow_execution {
-            artifact_builder.with_zero_cost();
-            if is_valid_evm_request {
-                let effective_gas_price = evm_transaction
-                    .expect("EVM transaction should exist")
-                    .effective_gas_price(chainspec.evm_config.base_fee_wei());
-                artifact_builder.with_evm_receipt(
-                    evm_precondition_receipt(effective_gas_price),
-                    U512::zero(),
-                    Effects::new(),
-                );
-            }
+            let effective_gas_price = evm_transaction
+                .expect("EVM transaction should exist")
+                .effective_gas_price(chainspec.evm_config.base_fee_wei());
+            artifact_builder.with_zero_cost().with_evm_receipt(
+                evm_precondition_receipt(effective_gas_price),
+                U512::zero(),
+                Effects::new(),
+            );
             artifacts.push(artifact_builder.build());
             continue;
         }

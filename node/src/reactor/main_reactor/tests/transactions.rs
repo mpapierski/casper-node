@@ -1961,6 +1961,14 @@ async fn should_require_balance_for_eip1559_signed_maximum() {
         execution_result.receipt.status,
         evm::ReceiptStatus::Halt(evm::HaltReason::Unknown)
     );
+    assert!(
+        execution_result
+            .error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("has less than")),
+        "expected insufficient purse balance error, got {:?}",
+        execution_result.error_message
+    );
     assert_eq!(execution_result.receipt.gas_used, 0);
     assert_eq!(execution_result.cost, U512::zero());
     assert_eq!(execution_result.refund, U512::zero());
@@ -2123,6 +2131,10 @@ async fn should_reject_evm_transaction_when_value_and_fee_exceed_balance() {
     assert_eq!(
         execution_result.receipt.status,
         evm::ReceiptStatus::Halt(evm::HaltReason::Unknown)
+    );
+    assert_eq!(
+        execution_result.error_message.as_deref(),
+        Some("Insufficient funds")
     );
     assert_eq!(execution_result.receipt.gas_used, 0);
     assert_eq!(execution_result.cost, U512::zero());
