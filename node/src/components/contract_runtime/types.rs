@@ -413,6 +413,13 @@ impl ExecutionArtifactBuilder {
         self
     }
 
+    pub fn with_invalid_evm_request(&mut self, invalid_request: &EvmTransactionError) -> &mut Self {
+        if self.error_message.is_none() {
+            self.error_message = Some(format!("{}", invalid_request));
+        }
+        self
+    }
+
     pub fn with_auction_method_error(
         &mut self,
         auction_method_error: &AuctionMethodError,

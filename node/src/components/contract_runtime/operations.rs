@@ -383,22 +383,32 @@ fn evm_account_has_nonce<R>(
 where
     R: StateReader<Key, StoredValue, Error = casper_storage::global_state::error::Error>,
 {
+    Ok(evm_account_nonce(tracking_copy, address)?.is_some())
+}
+
+fn evm_account_nonce<R>(
+    tracking_copy: &mut TrackingCopy<R>,
+    address: EvmAddress,
+) -> Result<Option<u64>, BlockExecutionError>
+where
+    R: StateReader<Key, StoredValue, Error = casper_storage::global_state::error::Error>,
+{
     let key = Key::Evm(casper_types::EvmAddr::Nonce(address));
     match tracking_copy
         .read(&key)
         .map_err(|error| BlockExecutionError::PaymentError(error.to_string()))?
     {
         Some(StoredValue::CLValue(cl_value)) => {
-            let _nonce = cl_value
+            let nonce = cl_value
                 .into_t::<u64>()
                 .map_err(|error| BlockExecutionError::PaymentError(error.to_string()))?;
-            Ok(true)
+            Ok(Some(nonce))
         }
         Some(stored_value) => Err(BlockExecutionError::PaymentError(format!(
             "unexpected stored value for {key}: expected StoredValue::CLValue(u64), found {}",
             stored_value.type_name()
         ))),
-        None => Ok(false),
+        None => Ok(None),
     }
 }
 
@@ -1018,7 +1028,7 @@ pub fn execute_finalized_block(
         ));
 
         artifact_builder.with_available(post_payment_balance_result.available_balance().copied());
-        let allow_execution = {
+        let (allow_execution, is_valid_evm_nonce) = {
             let is_not_penalized = !balance_identifier.is_penalty();
             // in the case of custom payment, we do all payment processing up front after checking
             // if the initiator can cover the penalty payment, and then either charge the full
@@ -1041,7 +1051,33 @@ pub fn execute_finalized_block(
             let is_sufficient_balance =
                 is_custom_payment || post_payment_balance_result.is_sufficient(required_balance);
             let is_allowed_by_chainspec = chainspec.is_supported(lane_id);
-            let allow = is_not_penalized && is_sufficient_balance && is_allowed_by_chainspec;
+            // Multiple EVM transactions with the same nonce can pass acceptance against the same
+            // pre-state and be included in one block. Since block execution is sequential, an
+            // earlier transaction can advance the account nonce before a later one reaches this
+            // precondition check.
+            let is_valid_evm_nonce = if let Some(evm_transaction) = evm_transaction {
+                let mut tracking_copy = scratch_state
+                    .tracking_copy(state_root_hash)?
+                    .ok_or(BlockExecutionError::RootNotFound(state_root_hash))?;
+                let expected = evm_account_nonce(&mut tracking_copy, evm_transaction.from())?
+                    .unwrap_or_default();
+                let actual = evm_transaction.nonce();
+                if actual != expected {
+                    let invalid_request =
+                        casper_types::EvmTransactionError::InvalidNonce { expected, actual };
+                    debug!(%transaction_hash, %invalid_request, "invalid EVM request");
+                    artifact_builder.with_invalid_evm_request(&invalid_request);
+                    false
+                } else {
+                    true
+                }
+            } else {
+                true
+            };
+            let allow = is_not_penalized
+                && is_sufficient_balance
+                && is_allowed_by_chainspec
+                && is_valid_evm_nonce;
             if !allow {
                 let err_msg = {
                     if !is_sufficient_balance {
@@ -1056,11 +1092,11 @@ pub fn execute_finalized_block(
                 if artifact_builder.error_message().is_none() {
                     artifact_builder.with_error_message(err_msg);
                 }
-                info!(%transaction_hash, ?balance_identifier, ?is_sufficient_balance, ?is_not_penalized, ?is_allowed_by_chainspec, "payment preprocessing unsuccessful");
+                info!(%transaction_hash, ?balance_identifier, ?is_sufficient_balance, ?is_not_penalized, ?is_allowed_by_chainspec, ?is_valid_evm_nonce, "payment preprocessing unsuccessful");
             } else {
-                debug!(%transaction_hash, ?balance_identifier, ?is_sufficient_balance, ?is_not_penalized, ?is_allowed_by_chainspec, "payment preprocessing successful");
+                debug!(%transaction_hash, ?balance_identifier, ?is_sufficient_balance, ?is_not_penalized, ?is_allowed_by_chainspec, ?is_valid_evm_nonce, "payment preprocessing successful");
             }
-            allow
+            (allow, is_valid_evm_nonce)
         };
 
         if allow_execution {
@@ -1321,14 +1357,17 @@ pub fn execute_finalized_block(
         }
 
         if is_evm && !allow_execution {
-            let effective_gas_price = evm_transaction
-                .expect("EVM transaction should exist")
-                .effective_gas_price(chainspec.evm_config.base_fee_wei());
-            artifact_builder.with_zero_cost().with_evm_receipt(
-                evm_precondition_receipt(effective_gas_price),
-                U512::zero(),
-                Effects::new(),
-            );
+            artifact_builder.with_zero_cost();
+            if is_valid_evm_nonce {
+                let effective_gas_price = evm_transaction
+                    .expect("EVM transaction should exist")
+                    .effective_gas_price(chainspec.evm_config.base_fee_wei());
+                artifact_builder.with_evm_receipt(
+                    evm_precondition_receipt(effective_gas_price),
+                    U512::zero(),
+                    Effects::new(),
+                );
+            }
             artifacts.push(artifact_builder.build());
             continue;
         }
