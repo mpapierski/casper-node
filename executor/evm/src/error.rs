@@ -1,7 +1,7 @@
 //! Error types returned by the Casper EVM executor.
 
 use casper_storage::{block_store::BlockStoreError, tracking_copy::TrackingCopyError};
-use casper_types::Key;
+use casper_types::{EvmTransactionError, Key};
 
 use crate::account_state::AccountStorageError;
 
@@ -34,6 +34,9 @@ pub enum Error {
     /// Failed to translate revm transaction environment.
     #[error("failed to build EVM transaction environment: {0}")]
     Transaction(String),
+    /// revm rejected the transaction during pre-execution validation.
+    #[error("EVM transaction validation failed: {0}")]
+    InvalidTransaction(#[source] EvmTransactionError),
     /// revm rejected execution before producing state.
     #[error("EVM execution failed: {0}")]
     Revm(String),
