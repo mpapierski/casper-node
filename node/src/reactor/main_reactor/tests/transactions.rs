@@ -1362,6 +1362,26 @@ async fn should_not_fatally_exit_for_evm_transaction_with_fractional_mote_value(
 }
 
 #[tokio::test]
+async fn should_reject_evm_transaction_with_positive_effective_priority_fee() {
+    let transaction = TxLegacy {
+        chain_id: Some(0x4353_50FF),
+        nonce: 0,
+        gas_price: EVM_TEST_GAS_PRICE + 1,
+        gas_limit: 21_000,
+        to: TxKind::Call(AlloyAddress::repeat_byte(0x22)),
+        value: U256::ZERO,
+        input: AlloyBytes::new(),
+    };
+    assert_evm_transaction_validation_failure_is_not_fatal(
+        transaction,
+        0,
+        None,
+        "effective priority fee per gas 1 is unsupported",
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn should_not_fatally_exit_for_evm_transaction_below_intrinsic_gas() {
     let transaction = TxLegacy {
         chain_id: Some(0x4353_50FF),
