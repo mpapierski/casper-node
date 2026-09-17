@@ -1368,8 +1368,83 @@ async fn assert_evm_transaction_validation_failure_is_not_fatal(
     );
 }
 
+async fn assert_evm_transaction_is_rejected_before_execution(transaction: TxLegacy) {
+    let evm_config = EvmConfig {
+        enabled: true,
+        chain_id: transaction
+            .chain_id
+            .expect("test transaction should have a chain ID"),
+        spec: EvmSpec::Prague,
+        block_gas_limit: 30_000_000,
+        base_fee: 1,
+        wei_per_mote: DEFAULT_WEI_PER_MOTE,
+    };
+    let config = SingleTransactionTestCase::default_test_config()
+        .with_evm_config(evm_config)
+        .with_refund_handling(RefundHandling::NoRefund)
+        .with_fee_handling(FeeHandling::Burn);
+    let mut test = SingleTransactionTestCase::new(
+        Arc::clone(&ALICE_SECRET_KEY),
+        Arc::clone(&BOB_SECRET_KEY),
+        Arc::clone(&CHARLIE_SECRET_KEY),
+        Some(config),
+    )
+    .await;
+    test.fixture
+        .run_until_consensus_in_era(ERA_ONE, ONE_MIN)
+        .await;
+
+    let evm_transaction = signed_evm_legacy_transaction(transaction);
+    let transaction_hash = TransactionHash::from(evm_transaction.hash());
+    let sender = evm_transaction.from();
+    seed_evm_account(&mut test.fixture, sender, U512::from(EVM_INITIAL_BALANCE));
+    let initial_total_supply = test.get_total_supply(None);
+    let initial_block_height = test
+        .fixture
+        .network
+        .nodes()
+        .values()
+        .next()
+        .expect("network should contain a node")
+        .main_reactor()
+        .storage()
+        .highest_complete_block_height()
+        .expect("network should have a completed block");
+
+    test.fixture
+        .inject_transaction(Transaction::from(evm_transaction))
+        .await;
+    let final_block_height = initial_block_height + 2;
+    test.fixture
+        .run_until_block_height(final_block_height, ONE_MIN)
+        .await;
+
+    for runner in test.fixture.network.nodes().values() {
+        assert!(
+            runner
+                .main_reactor()
+                .storage()
+                .read_execution_info(transaction_hash)
+                .is_none(),
+            "chainspec-incompliant EVM transaction should not be included in a block"
+        );
+    }
+    assert_eq!(
+        evm_account_at(&mut test.fixture, final_block_height, sender).nonce(),
+        0
+    );
+    assert_eq!(
+        evm_balance(&mut test.fixture, sender, final_block_height),
+        U512::from(EVM_INITIAL_BALANCE)
+    );
+    assert_eq!(
+        test.get_total_supply(Some(final_block_height)),
+        initial_total_supply
+    );
+}
+
 #[tokio::test]
-async fn should_not_fatally_exit_for_evm_transaction_with_fractional_mote_value() {
+async fn should_reject_evm_transaction_with_fractional_mote_value_before_execution() {
     let transaction = TxLegacy {
         chain_id: Some(0x4353_50FF),
         nonce: 0,
@@ -1379,17 +1454,11 @@ async fn should_not_fatally_exit_for_evm_transaction_with_fractional_mote_value(
         value: U256::ONE,
         input: AlloyBytes::new(),
     };
-    assert_evm_transaction_validation_failure_is_not_fatal(
-        transaction,
-        0,
-        None,
-        "is not an exact number of motes",
-    )
-    .await;
+    assert_evm_transaction_is_rejected_before_execution(transaction).await;
 }
 
 #[tokio::test]
-async fn should_reject_evm_transaction_with_positive_effective_priority_fee() {
+async fn should_reject_evm_transaction_with_positive_effective_priority_fee_before_execution() {
     let transaction = TxLegacy {
         chain_id: Some(0x4353_50FF),
         nonce: 0,
@@ -1399,13 +1468,7 @@ async fn should_reject_evm_transaction_with_positive_effective_priority_fee() {
         value: U256::ZERO,
         input: AlloyBytes::new(),
     };
-    assert_evm_transaction_validation_failure_is_not_fatal(
-        transaction,
-        0,
-        None,
-        "effective priority fee per gas 1 is unsupported",
-    )
-    .await;
+    assert_evm_transaction_is_rejected_before_execution(transaction).await;
 }
 
 #[tokio::test]
