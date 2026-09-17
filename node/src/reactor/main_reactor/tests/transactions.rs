@@ -1306,22 +1306,27 @@ async fn assert_evm_transaction_validation_failure_is_not_fatal(
     let (_transaction_hash, block_height, execution_result) = test
         .send_transaction(Transaction::from(evm_transaction))
         .await;
-    let ExecutionResult::V2(failure) = execution_result else {
-        panic!("expected EVM transaction validation to produce a V2 precondition failure");
-    };
-    let error_message = failure
-        .error_message
-        .as_deref()
+    let error_message = execution_result
+        .error_message()
         .expect("precondition failure should include an error message");
     assert!(
         error_message.contains(expected_error_fragment),
         "expected error containing {expected_error_fragment:?}, got {error_message:?}"
     );
+    // Sidecar projects every block-included EVM transaction from an EVM result, including
+    // transactions rejected by an execution-time precondition.
+    let ExecutionResult::Evm(failure) = execution_result else {
+        panic!("expected EVM transaction validation to produce an EVM execution result");
+    };
+    assert!(
+        !failure.receipt.status.is_success(),
+        "EVM validation failure should have a failed receipt"
+    );
     assert_eq!(failure.cost, U512::zero());
-    assert_eq!(failure.consumed, Gas::zero());
+    assert_eq!(failure.receipt.gas_used, 0);
     assert_eq!(failure.refund, U512::zero());
     assert!(failure.effects.is_empty());
-    assert!(failure.transfers.is_empty());
+    assert!(failure.receipt.logs.is_empty());
     assert_eq!(
         evm_account_at(&mut test.fixture, block_height, sender).nonce(),
         account_nonce
@@ -1536,16 +1541,36 @@ async fn should_not_fatally_exit_for_competing_evm_transactions_with_the_same_no
         .execution_result
         .expect("second competing EVM transaction should have an execution result");
 
-    let (successful_result, invalid_nonce_result) =
-        match (first_execution_result, second_execution_result) {
-            (ExecutionResult::Evm(success), ExecutionResult::V2(invalid_nonce))
-            | (ExecutionResult::V2(invalid_nonce), ExecutionResult::Evm(success)) => {
-                (success, invalid_nonce)
-            }
-            results => {
-                panic!("expected one successful and one invalid EVM transaction: {results:?}")
-            }
-        };
+    let expected_error = EvmTransactionError::InvalidNonce {
+        expected: NONCE + 1,
+        actual: NONCE,
+    }
+    .to_string();
+    let first_error = first_execution_result.error_message();
+    let second_error = second_execution_result.error_message();
+    assert!(
+        matches!(
+            (first_error.as_deref(), second_error.as_deref()),
+            (Some(actual), None) | (None, Some(actual)) if actual == expected_error
+        ),
+        "expected one successful result and one {expected_error:?} failure, got \
+         {first_error:?} and {second_error:?}"
+    );
+
+    // A failed precondition must not change the result variant: otherwise one rejected EVM
+    // transaction prevents sidecar from projecting receipts for every EVM transaction in the block.
+    let (first_result, second_result) = match (first_execution_result, second_execution_result) {
+        (ExecutionResult::Evm(first), ExecutionResult::Evm(second)) => (first, second),
+        results => panic!("expected both EVM transactions to have EVM results: {results:?}"),
+    };
+    let (successful_result, invalid_nonce_result) = match (
+        first_result.receipt.status.is_success(),
+        second_result.receipt.status.is_success(),
+    ) {
+        (true, false) => (first_result, second_result),
+        (false, true) => (second_result, first_result),
+        statuses => panic!("expected one successful and one failed EVM receipt: {statuses:?}"),
+    };
 
     assert_eq!(
         successful_result.receipt.status,
@@ -1554,20 +1579,12 @@ async fn should_not_fatally_exit_for_competing_evm_transactions_with_the_same_no
     assert_eq!(successful_result.cost, max_fee_amount);
     assert_eq!(successful_result.refund, U512::zero());
 
-    let expected_error = EvmTransactionError::InvalidNonce {
-        expected: NONCE + 1,
-        actual: NONCE,
-    }
-    .to_string();
-    assert_eq!(
-        invalid_nonce_result.error_message.as_deref(),
-        Some(expected_error.as_str())
-    );
+    assert!(!invalid_nonce_result.receipt.status.is_success());
     assert_eq!(invalid_nonce_result.cost, U512::zero());
-    assert_eq!(invalid_nonce_result.consumed, Gas::zero());
+    assert_eq!(invalid_nonce_result.receipt.gas_used, 0);
     assert_eq!(invalid_nonce_result.refund, U512::zero());
     assert!(invalid_nonce_result.effects.is_empty());
-    assert!(invalid_nonce_result.transfers.is_empty());
+    assert!(invalid_nonce_result.receipt.logs.is_empty());
 
     assert_eq!(
         evm_account_at(&mut test.fixture, block_height, sender).nonce(),
