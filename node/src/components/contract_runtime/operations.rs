@@ -50,7 +50,8 @@ use casper_types::{
     BlockHash, BlockHeader, BlockTime, BlockV2, CLValue, Chainspec, ChecksumRegistry, Digest,
     EntityAddr, EraEndV2, EraId, EvmTransactionError as CasperEvmTransactionError, FeeHandling,
     Gas, InvalidTransaction, InvalidTransactionV1, Key, ProtocolVersion, PublicKey, RefundHandling,
-    StoredValue, TimeDiff, Transaction, TransactionEntryPoint, AUCTION_LANE_ID, MINT_LANE_ID, U512,
+    StoredValue, TimeDiff, Timestamp, Transaction, TransactionEntryPoint, AUCTION_LANE_ID,
+    MINT_LANE_ID, U512,
 };
 
 use super::{
@@ -148,24 +149,42 @@ fn evm_transaction_precondition_failure<R, S>(
     data_access_layer: &DataAccessLayer<S>,
     tracking_copy: &mut TrackingCopy<R>,
     protocol_version: ProtocolVersion,
-    evm_config: casper_types::EvmConfig,
+    chainspec: &Chainspec,
     block_context: EvmBlockContext,
-    transaction: &casper_types::EvmTransaction,
+    transaction: &MetaTransaction,
     identity_plan: EvmIdentityPlan,
 ) -> Result<Option<CasperEvmTransactionError>, BlockExecutionError>
 where
     R: StateReader<Key, StoredValue, Error = casper_storage::global_state::error::Error>,
 {
+    let evm_transaction = transaction
+        .as_evm()
+        .ok_or(BlockExecutionError::InvalidTransactionVariant)?;
+    // Transactions obtained while validating a proposed block do not necessarily pass through
+    // the transaction acceptor. Repeat its chainspec checks so network-reachable policy failures
+    // are recorded on the transaction instead of reaching payment or execution.
+    let block_timestamp = Timestamp::from(block_context.timestamp.saturating_mul(1_000));
+    if let Err(error) =
+        transaction.is_config_compliant(chainspec, TimeDiff::default(), block_timestamp)
+    {
+        return match error {
+            InvalidTransaction::Evm(error) => Ok(Some(error)),
+            error => Err(BlockExecutionError::TransactionConversion(
+                error.to_string(),
+            )),
+        };
+    }
+
     // Execution applies this plan immediately before entering the EVM. Apply it
     // only to this disposable tracking copy so validation sees the same caller
     // identity without committing identity state for a rejected transaction.
     apply_evm_identity_plan(tracking_copy, protocol_version, identity_plan)?;
 
-    let result = EvmExecutor::new(evm_config).validate_transaction(
+    let result = EvmExecutor::new(chainspec.evm_config).validate_transaction(
         data_access_layer,
         tracking_copy,
         block_context,
-        transaction,
+        evm_transaction,
     );
     let invalid_request = match result {
         Ok(()) => return Ok(None),
@@ -1074,12 +1093,12 @@ pub fn execute_finalized_block(
         let allow_execution = {
             let is_not_penalized = !balance_identifier.is_penalty();
             // Transactions are accepted against a shared pre-state, but execute sequentially
-            // against the evolving block state. Run all revm transaction preconditions here so
+            // against the evolving block state. Run all EVM transaction preconditions here so
             // any state-dependent mismatch becomes a per-transaction failure before a payment
             // hold or other durable effect is created. This must also precede required-balance
             // calculation: EVM validation rejects values that cannot be represented as motes,
             // whereas required-balance calculation cannot report a transaction-scoped error.
-            is_valid_evm_request = if let (Some(evm_transaction), Some(origin_resolution)) =
+            is_valid_evm_request = if let (Some(_), Some(origin_resolution)) =
                 (evm_transaction, evm_origin_resolution.as_ref())
             {
                 let block_context = evm_block_context(
@@ -1096,9 +1115,9 @@ pub fn execute_finalized_block(
                     data_access_layer,
                     &mut tracking_copy,
                     protocol_version,
-                    chainspec.evm_config,
+                    chainspec,
                     block_context,
-                    evm_transaction,
+                    &transaction,
                     origin_resolution.identity_plan,
                 )? {
                     Some(invalid_request) => {
