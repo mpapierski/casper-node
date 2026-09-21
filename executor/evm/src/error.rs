@@ -34,15 +34,15 @@ pub enum Error {
     /// Failed to translate revm transaction environment.
     #[error("failed to build EVM transaction environment: {0}")]
     Transaction(String),
-    /// revm rejected the transaction during pre-execution validation.
-    #[error("EVM transaction validation failed: {0}")]
-    InvalidTransaction(#[source] EvmTransactionError),
     /// revm rejected execution before producing state.
     #[error("EVM execution failed: {0}")]
     Revm(String),
     /// Failed to apply EVM state changes to the tracking copy.
     #[error("failed to apply EVM state changes: {0}")]
     State(String),
+    /// revm rejected the transaction during pre-execution validation.
+    #[error("EVM transaction validation failed: {0}")]
+    InvalidTransaction(#[source] EvmTransactionError),
 }
 
 /// Errors emitted by the revm database adapter.
