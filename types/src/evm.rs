@@ -31,5 +31,6 @@ pub use transaction::{
 pub use config::{EvmConfig, EvmSpec, DEFAULT_WEI_PER_MOTE, MINIMUM_WEI_PER_MOTE};
 pub use evm_addr::EvmAddr;
 pub use transaction::{
-    EvmApproval, EvmTransaction, EvmTransactionError, EvmTransactionHash, EvmTransactionKind,
+    EvmAccessListItem, EvmApproval, EvmTransaction, EvmTransactionError, EvmTransactionHash,
+    EvmTransactionKind,
 };
